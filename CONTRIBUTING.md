@@ -10,6 +10,8 @@
 
 较大的功能或架构调整，请先在 Ideas 中说明用户问题、建议范围和替代方案，达成方向共识后再提交代码。不要用公开 Issue 或 Discussion 上传数据库、日志、API Key、Token、真实持仓及个人路径。
 
+较大功能在写业务代码前，请按仓库根目录 [`AGENTS.md`](AGENTS.md) 的流程：先把设计落到 [`docs/superpowers/specs/`](docs/superpowers/specs/)，再写 [`docs/superpowers/plans/`](docs/superpowers/plans/) 中的实现计划。文档目录分工见 [`docs/README.md`](docs/README.md)。
+
 ## 本地开发
 
 要求：Node.js 20.x、pnpm 10.x，以及能够构建 Electron 原生依赖的 Windows 开发环境。
