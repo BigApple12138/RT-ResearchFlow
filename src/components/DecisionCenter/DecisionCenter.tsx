@@ -778,8 +778,8 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
   }
 
   return (
-    <div data-testid="decision-center-root" className="grid h-full min-h-0 grid-rows-[166px_minmax(0,1fr)] gap-4 overflow-hidden bg-[linear-gradient(120deg,rgba(22,138,159,0.08),transparent_34%),linear-gradient(0deg,rgba(216,72,62,0.04),transparent_50%),#edf2f5] px-[22px] pb-[22px] pt-[18px] text-slate-900 dark:bg-[linear-gradient(120deg,rgba(20,184,166,0.08),transparent_34%),linear-gradient(0deg,rgba(239,68,68,0.05),transparent_52%),#020617] dark:text-slate-100">
-      <section className="grid min-h-0 gap-[14px] xl:grid-cols-[1.15fr_1.45fr_360px]">
+    <div data-testid="decision-center-root" className="grid h-full min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden bg-[linear-gradient(120deg,rgba(22,138,159,0.08),transparent_34%),linear-gradient(0deg,rgba(216,72,62,0.04),transparent_50%),#edf2f5] px-[22px] pb-[22px] pt-[18px] text-slate-900 dark:bg-[linear-gradient(120deg,rgba(20,184,166,0.08),transparent_34%),linear-gradient(0deg,rgba(239,68,68,0.05),transparent_52%),#020617] dark:text-slate-100">
+      <section className="grid shrink-0 gap-[14px] xl:grid-cols-[1.15fr_1.45fr_360px]">
         <div className="relative flex min-w-0 flex-col justify-between overflow-hidden rounded-[10px] border border-slate-200/90 bg-white/90 px-4 py-3.5 shadow-sm shadow-slate-200/60 dark:border-slate-800 dark:bg-slate-900/90 dark:shadow-none">
           <div className="pointer-events-none absolute -right-10 -top-16 h-40 w-40 rounded-full bg-red-400/10 blur-sm dark:bg-red-500/10" />
           <div className="relative pr-24">
@@ -896,9 +896,9 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         </div>
       </section>
 
-      <div className="min-h-0 overflow-hidden">
+      <div className="flex min-h-0 flex-col overflow-hidden">
         {(error || discussionError) && (
-          <div className="border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 rounded-md px-3 py-2 text-sm">
+          <div className="shrink-0 border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 rounded-md px-3 py-2 text-sm">
             {error || discussionError}
           </div>
         )}
@@ -931,7 +931,7 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         )}
 
         {(signals.length > 0 || (historyData?.items.length ?? 0) > 0 || (isPortfolioView && actionQueue.length > 0) || (isPortfolioView && hasDueJudgmentFollowUps)) && !(isPortfolioView && hasNoHoldings && !hasDueJudgmentFollowUps) && (
-          <div className="grid h-full min-h-0 grid-cols-[330px_minmax(0,1fr)_364px] gap-4">
+          <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,330px)_minmax(0,1fr)_minmax(300px,364px)] gap-4 overflow-hidden">
             <div className="flex min-h-0 flex-col gap-3 overflow-hidden">
               {isPortfolioView && <JudgmentFollowUpPanel items={judgmentFollowUps} loading={judgmentFollowUpsLoading} error={judgmentFollowUpsError} onCompleted={() => { void loadJudgmentFollowUps(); void loadReviewStats(); void loadOutcomeMemory() }} />}
               <ActionQueuePanel

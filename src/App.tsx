@@ -1263,7 +1263,7 @@ export default function App() {
         )}
 
         {activeTab === 'decision-center' && (
-          <div data-testid="decision-center-page" className="flex-1 bg-white dark:bg-gray-900 overflow-hidden">
+          <div data-testid="decision-center-page" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
             <DecisionCenter
               initialization={initializationModel}
               initializationFlow={initializationFlow}
