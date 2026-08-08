@@ -1,0 +1,19 @@
+---
+description: Superpowers workflow gate — read AGENTS.md; no business code before approved spec/plan
+alwaysApply: true
+---
+
+# Superpowers workflow
+
+Before non-trivial feature work, read root [`AGENTS.md`](AGENTS.md) and [`docs/README.md`](docs/README.md). Do not duplicate those docs here.
+
+## Hard gate
+
+- New features or behavior changes: brainstorm → write `docs/superpowers/specs/YYYY-MM-DD-*-design.md` → user approves → write `docs/superpowers/plans/YYYY-MM-DD-*.md` → only then change product code.
+- Do not invent process docs under `docs/community/` or `docs/releases/`.
+- Before editing a module, read its `src/components/*/README.md` (FR rules). Update that README when behavior changes.
+- Small fixes (typo, test green, clear bugfix) may skip a full spec; keep changes verifiable.
+
+## Product invariants (summary)
+
+Local-first, narrow IPC, forward Migrations, no stock tips / auto-trading / credential commits. Full list in `AGENTS.md` and `CONTRIBUTING.md`.
