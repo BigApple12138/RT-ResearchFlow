@@ -935,7 +935,8 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     return {
       provider: row.provider,
       model: row.model,
-      hasApiKey: row.provider ? !!providerHasApiKey[row.provider] : false,
+      // Any configured provider key is enough for AI features; do not require legacy ai_config.provider.
+      hasApiKey: configured.length > 0,
       providerHasApiKey,
       providerConfigs,
       baseUrl: row.baseUrl ?? '',
