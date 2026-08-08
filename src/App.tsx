@@ -137,7 +137,7 @@ type SecondaryNavItem = {
   onSelect: () => void
 }
 
-const SECONDARY_NAV_TABS = new Set<Tab>(['trend-watcher', 'industry-heatmap', 'short-term-strategy', 'ai-analysis'])
+const SECONDARY_NAV_TABS = new Set<Tab>(['trend-watcher', 'industry-heatmap', 'short-term-strategy'])
 
 function readMarketOverviewSubTab(): MarketOverviewSubTab {
   const saved = localStorage.getItem('marketOverviewSubTab')
@@ -252,10 +252,8 @@ export default function App() {
     fetchHeatmapSnapshot,
     shortTermActiveSubTab,
     setShortTermActiveSubTab,
-    aiAnalysisSubTab,
-    setAIAnalysisSubTab,
-    clearPendingResearchDiscussion,
-    navigateToIndustryResearch,
+    aiAnalysisWorkbench,
+    openAIAnalysisWorkbench,
     navigateToBriefing,
     openPremarketScenario
   } = useAppStore()
@@ -272,6 +270,21 @@ export default function App() {
     () => new Set(briefings.map(item => item.sourceName)).size,
     [briefings]
   )
+
+  useEffect(() => {
+    const testApi = {
+      openAIAnalysisWorkbench: (workbench: null | 'deepResearch' | 'industryResearch', projectId?: string | null) => {
+        useAppStore.getState().openAIAnalysisWorkbench(workbench, projectId)
+      },
+      setAIAnalysisSubTab: (subTab: 'records' | 'deepResearch' | 'industryResearch') => {
+        useAppStore.getState().setAIAnalysisSubTab(subTab)
+      },
+    }
+    ;(window as unknown as { __RT_TEST__?: typeof testApi }).__RT_TEST__ = testApi
+    return () => {
+      delete (window as unknown as { __RT_TEST__?: typeof testApi }).__RT_TEST__
+    }
+  }, [])
 
   // Bootstrap: load initial data
   useEffect(() => {
@@ -679,42 +692,7 @@ export default function App() {
           setNavFlyoutTab(null)
         }
       })),
-    'ai-analysis': [
-        {
-          key: 'records',
-          label: '研判记录',
-          current: activeTab === 'ai-analysis' && aiAnalysisSubTab === 'records',
-          onSelect: () => {
-            clearPendingResearchDiscussion()
-            setAIAnalysisSubTab('records')
-            setActiveTab('ai-analysis')
-            setNavFlyoutTab(null)
-          }
-        },
-        {
-          key: 'deepResearch',
-          label: '深度研究',
-          current: activeTab === 'ai-analysis' && aiAnalysisSubTab === 'deepResearch',
-          onSelect: () => {
-            clearPendingResearchDiscussion()
-            setAIAnalysisSubTab('deepResearch')
-            setActiveTab('ai-analysis')
-            setNavFlyoutTab(null)
-          }
-        },
-        {
-          key: 'industryResearch',
-          label: '产业研究',
-          current: activeTab === 'ai-analysis' && aiAnalysisSubTab === 'industryResearch',
-          onSelect: () => {
-            clearPendingResearchDiscussion()
-            setAIAnalysisSubTab('industryResearch')
-            setActiveTab('ai-analysis')
-            setNavFlyoutTab(null)
-          }
-        }
-      ]
-  }), [activeTab, aiAnalysisSubTab, clearPendingResearchDiscussion, marketOverviewSubTab, setAIAnalysisSubTab, setActiveTab, setShortTermActiveSubTab, shortTermActiveSubTab, trendWatcherSubTab])
+  }), [activeTab, marketOverviewSubTab, setActiveTab, setShortTermActiveSubTab, shortTermActiveSubTab, trendWatcherSubTab])
 
   const navFlyoutTitle = navFlyoutTab ? NAV_TABS.find(item => item.tab === navFlyoutTab)?.label : undefined
   const navFlyoutItems = navFlyoutTab ? secondaryNavItemsByTab[navFlyoutTab] ?? [] : []
@@ -1084,13 +1062,15 @@ export default function App() {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {industryResearchTask && !(activeTab === 'ai-analysis' && aiAnalysisSubTab === 'industryResearch') && (
+        {industryResearchTask && activeTab !== 'ai-analysis' && (
           <button
             type="button"
             data-testid="industry-research-background-task"
             aria-live="polite"
-            aria-label={`${researchTaskLabel(industryResearchTask)}，点击返回产业研究项目`}
-            onClick={() => navigateToIndustryResearch(industryResearchTask.projectId)}
+            aria-label={`${researchTaskLabel(industryResearchTask)}，点击打开 AI 分析聊天`}
+            onClick={() => {
+              openAIAnalysisWorkbench('industryResearch', industryResearchTask.projectId)
+            }}
             className={[
               'flex min-h-[52px] shrink-0 flex-col justify-center gap-1 border-b px-4 py-1.5 text-left text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-cyan-400',
               industryResearchTask.status === 'failed'
@@ -1218,17 +1198,19 @@ export default function App() {
         )}
 
         {activeTab === 'ai-analysis' && (
-          <div data-testid="ai-analysis-page" className="flex flex-1 bg-white dark:bg-gray-900 overflow-hidden">
-            {aiAnalysisSubTab === 'records' && <AIAnalysis />}
-            {aiAnalysisSubTab === 'deepResearch' && (
+          <div data-testid="ai-analysis-page" className="flex flex-1 overflow-hidden bg-white dark:bg-gray-900">
+            {aiAnalysisWorkbench === 'deepResearch' ? (
               <DeepResearchWorkbench
                 onOpenAiConfig={() => {
                   setConfigDrawerTab('ai-config')
                   setConfigDrawerOpen(true)
                 }}
               />
+            ) : aiAnalysisWorkbench === 'industryResearch' ? (
+              <IndustryResearch />
+            ) : (
+              <AIAnalysis />
             )}
-            {aiAnalysisSubTab === 'industryResearch' && <IndustryResearch />}
           </div>
         )}
 

@@ -410,9 +410,10 @@ async function openDiscussion(window: Page, sessionId: number): Promise<void> {
   await window.waitForLoadState('domcontentloaded')
   const coldStartGuide = window.locator('[data-testid="cold-start-guide"]')
   if (await coldStartGuide.isVisible()) await coldStartGuide.getByLabel('关闭引导').click()
-  const recordsEntry = window.getByTestId('secondary-nav-ai-analysis-records')
-  if (!await recordsEntry.isVisible()) await window.getByTestId('nav-tab-ai-analysis').click()
-  await recordsEntry.click()
+  await window.getByTestId('nav-tab-ai-analysis').click()
+  await window.evaluate(() => {
+    ;(window as unknown as { __RT_TEST__?: { setAIAnalysisSubTab: (tab: string) => void } }).__RT_TEST__?.setAIAnalysisSubTab('records')
+  })
   await window.getByTestId(`ai-session-${sessionId}`).click()
   await expect(window.getByTestId('research-agent-panel')).toBeVisible({ timeout: 15_000 })
 }
@@ -421,10 +422,10 @@ async function openDeepResearch(window: Page): Promise<void> {
   await window.waitForLoadState('domcontentloaded')
   const coldStartGuide = window.locator('[data-testid="cold-start-guide"]')
   if (await coldStartGuide.isVisible()) await coldStartGuide.getByLabel('关闭引导').click()
-  const deepResearchEntry = window.getByTestId('secondary-nav-ai-analysis-deepResearch')
-  if (!await deepResearchEntry.isVisible()) await window.getByTestId('nav-tab-ai-analysis').click()
-  await expect(deepResearchEntry).toHaveText('深度研究')
-  await deepResearchEntry.click()
+  await window.getByTestId('nav-tab-ai-analysis').click()
+  await window.evaluate(() => {
+    ;(window as unknown as { __RT_TEST__?: { setAIAnalysisSubTab: (tab: string) => void } }).__RT_TEST__?.setAIAnalysisSubTab('deepResearch')
+  })
   await expect(window.getByTestId('deep-research-workbench')).toBeVisible({ timeout: 15_000 })
 }
 

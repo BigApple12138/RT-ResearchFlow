@@ -298,11 +298,14 @@ interface AppState {
   activeTab: Tab
   setActiveTab: (tab: Tab) => void
   aiAnalysisSubTab: AIAnalysisSubTab
+  /** Phase 2a: 无侧栏入口；仅程序化/后台任务/E2E 打开遗留工作台 */
+  aiAnalysisWorkbench: null | 'deepResearch' | 'industryResearch'
   pendingIndustryResearchProjectId: string | null
   pendingResearchDiscussionSessionId: number | null
   pendingResearchDiscussionReturnTarget: ResearchDiscussionReturnTarget | null
   researchDiscussionDrafts: Record<number, string>
   setAIAnalysisSubTab: (subTab: AIAnalysisSubTab) => void
+  openAIAnalysisWorkbench: (workbench: null | 'deepResearch' | 'industryResearch', projectId?: string | null) => void
   navigateToIndustryResearch: (projectId?: string | null) => void
   clearPendingIndustryResearchProject: () => void
   navigateToResearchDiscussion: (sessionId: number, initialDraft?: string | null) => void
@@ -421,6 +424,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   aiProgress: null,
   activeTab: 'decision-center',
   aiAnalysisSubTab: 'records',
+  aiAnalysisWorkbench: null,
   pendingIndustryResearchProjectId: null,
   pendingResearchDiscussionSessionId: null,
   pendingResearchDiscussionReturnTarget: null,
@@ -626,10 +630,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     activeTab: 'decision-center',
     premarketScenarioOpenRequest: Date.now(),
   }),
-  setAIAnalysisSubTab: (subTab) => set({ aiAnalysisSubTab: subTab }),
+  setAIAnalysisSubTab: (subTab) => set({
+    activeTab: 'ai-analysis',
+    aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: subTab === 'deepResearch' || subTab === 'industryResearch' ? subTab : null,
+    pendingResearchDiscussionSessionId: null,
+  }),
+  openAIAnalysisWorkbench: (workbench, projectId) => set({
+    activeTab: 'ai-analysis',
+    aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: workbench,
+    pendingIndustryResearchProjectId: workbench === 'industryResearch' ? (projectId ?? null) : null,
+    pendingResearchDiscussionSessionId: null,
+  }),
   navigateToIndustryResearch: (projectId) => set({
     activeTab: 'ai-analysis',
-    aiAnalysisSubTab: 'industryResearch',
+    aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: 'industryResearch',
     pendingIndustryResearchProjectId: projectId ?? null,
     pendingResearchDiscussionSessionId: null,
   }),
@@ -637,6 +654,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   navigateToResearchDiscussion: (sessionId, initialDraft) => set((state) => ({
     activeTab: 'ai-analysis',
     aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: null,
     pendingResearchDiscussionSessionId: sessionId,
     pendingIndustryResearchProjectId: null,
     researchDiscussionDrafts: initialDraft?.trim() && !state.researchDiscussionDrafts[sessionId]
@@ -661,27 +679,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         activeTab: 'ai-analysis',
         aiAnalysisSubTab: 'records',
+        aiAnalysisWorkbench: null,
         pendingResearchDiscussionSessionId: Number(target.entityId),
         pendingIndustryResearchProjectId: null,
         pendingResearchDiscussionReturnTarget: target,
       })
       return
     }
-    if (target.tab === 'ai-analysis' && target.subTab === 'deepResearch') {
+    if (target.tab === 'ai-analysis' && (target.subTab === 'deepResearch' || target.subTab === 'industryResearch')) {
       set({
         activeTab: 'ai-analysis',
-        aiAnalysisSubTab: 'deepResearch',
-        pendingIndustryResearchProjectId: null,
-        pendingResearchDiscussionSessionId: null,
-        pendingResearchDiscussionReturnTarget: target,
-      })
-      return
-    }
-    if (target.tab === 'ai-analysis' && target.subTab === 'industryResearch') {
-      set({
-        activeTab: 'ai-analysis',
-        aiAnalysisSubTab: 'industryResearch',
-        pendingIndustryResearchProjectId: target.entityId ?? null,
+        aiAnalysisSubTab: 'records',
+        aiAnalysisWorkbench: target.subTab,
+        pendingIndustryResearchProjectId: target.subTab === 'industryResearch' ? (target.entityId ?? null) : null,
         pendingResearchDiscussionSessionId: null,
         pendingResearchDiscussionReturnTarget: target,
       })

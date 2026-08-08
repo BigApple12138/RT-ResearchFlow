@@ -129,7 +129,7 @@ test('产业研究使用真实关系图并按需打开研究账本', async () =>
     if (await guide.isVisible()) await guide.getByLabel('关闭引导').click()
 
     await window.getByTestId('nav-tab-ai-analysis').click()
-    await window.getByTestId('secondary-nav-ai-analysis-industryResearch').click()
+    await window.evaluate(() => (window).__RT_TEST__?.setAIAnalysisSubTab('industryResearch'))
     await expect(window.getByTestId('industry-research-page')).toBeVisible({ timeout: 15000 })
     await expect(window.getByRole('heading', { name: '光通信产业传导图验收' })).toBeVisible()
 

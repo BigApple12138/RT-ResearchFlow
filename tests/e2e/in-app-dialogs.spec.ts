@@ -59,7 +59,7 @@ test.describe('项目内确认与反馈', () => {
       if (await coldStartGuide.isVisible()) await coldStartGuide.getByLabel('关闭引导').click()
 
       await window.locator('[data-testid="nav-tab-ai-analysis"]').click()
-      await window.locator('[data-testid="secondary-nav-ai-analysis-records"]').click()
+      await window.evaluate(() => (window).__RT_TEST__?.setAIAnalysisSubTab('records'))
       const session = window.locator(`[data-testid="ai-session-${fixture.sessionId}"]`)
       await expect(session).toBeVisible({ timeout: 15000 })
       const deleteSessionButton = window.getByRole('button', { name: `删除记录 ${fixture.sessionId}` })

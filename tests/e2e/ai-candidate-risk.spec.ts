@@ -114,7 +114,7 @@ test.describe('FR-240 A股候选恢复与持仓风险', () => {
       const coldStartGuide = window.locator('[data-testid="cold-start-guide"]')
       if (await coldStartGuide.isVisible()) await coldStartGuide.getByLabel('关闭引导').click()
       await window.locator('[data-testid="nav-tab-ai-analysis"]').click()
-      await window.locator('[data-testid="secondary-nav-ai-analysis-records"]').click()
+      await window.evaluate(() => (window).__RT_TEST__?.setAIAnalysisSubTab('records'))
       await expect(window.locator('[data-testid="ai-analysis-page"]')).toBeVisible({ timeout: 15000 })
 
       await window.locator(`[data-testid="ai-session-${ids.emptySessionId}"]`).click()
