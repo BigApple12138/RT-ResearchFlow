@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { SourceManager } from '../SourceManager/SourceManager'
 import { Settings } from '../Settings/Settings'
 import { AIConfig } from '../AIConfig/AIConfig'
@@ -41,8 +41,13 @@ const CONFIG_TABS: Array<{ key: ConfigDrawerTab; label: string }> = [
 ]
 
 export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuide, theme, onToggleTheme, initializationFlow, onStartInitialization, priorityNewsPreview, onStartPriorityNewsPreview, onShowNextPriorityNewsPreview, onStopPriorityNewsPreview }: ConfigDrawerProps) {
+  const [expanded, setExpanded] = useState(false)
+
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      setExpanded(false)
+      return
+    }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
     }
@@ -50,7 +55,16 @@ export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuid
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose])
 
+  // AI 配置字段多，默认用更宽抽屉，避免操作列被裁切。
+  useEffect(() => {
+    if (open && activeTab === 'ai-config') setExpanded(true)
+  }, [open, activeTab])
+
   if (!open) return null
+
+  const drawerWidthClass = expanded
+    ? 'w-[min(1280px,98vw)]'
+    : 'w-[min(920px,92vw)]'
 
   return (
     <div data-testid="config-drawer" className="electron-no-drag fixed inset-0 z-[9999] flex justify-end">
@@ -60,10 +74,13 @@ export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuid
         className="electron-no-drag absolute inset-0 bg-black/30 dark:bg-black/50"
         onClick={onClose}
       />
-      <aside className="electron-no-drag relative z-[71] flex h-full w-[min(920px,92vw)] flex-col border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl animate-[slideInFromRight_180ms_ease-out]">
+      <aside
+        data-expanded={expanded ? 'true' : 'false'}
+        className={`electron-no-drag relative z-[71] flex h-full ${drawerWidthClass} flex-col border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-2xl animate-[slideInFromRight_180ms_ease-out] transition-[width] duration-200`}
+      >
         <div className="electron-no-drag flex items-center gap-3 border-b border-gray-200 dark:border-gray-700 px-4 py-3">
           <div className="text-sm font-semibold text-gray-800 dark:text-gray-100">配置中心</div>
-          <div className="electron-no-drag flex rounded border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div className="electron-no-drag flex min-w-0 flex-1 overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
             {CONFIG_TABS.map(tab => (
               <button
                 key={tab.key}
@@ -71,7 +88,7 @@ export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuid
                 data-testid={`config-tab-${tab.key}`}
                 onClick={() => onTabChange(tab.key)}
                 className={[
-                  'electron-no-drag px-3 py-1.5 text-xs transition-colors',
+                  'electron-no-drag shrink-0 px-3 py-1.5 text-xs transition-colors',
                   activeTab === tab.key
                     ? 'bg-blue-600 text-white'
                     : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
@@ -81,13 +98,22 @@ export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuid
               </button>
             ))}
           </div>
-          <div className="flex-1" />
+          <button
+            type="button"
+            data-testid="config-drawer-expand-toggle"
+            onClick={() => setExpanded((prev) => !prev)}
+            className="shrink-0 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+            aria-pressed={expanded}
+            aria-label={expanded ? '收窄配置中心' : '加宽配置中心'}
+          >
+            {expanded ? '收窄' : '加宽'}
+          </button>
           {onOpenGuide && (
             <button
               type="button"
               data-testid="config-open-onboarding-guide-btn"
               onClick={onOpenGuide}
-              className="rounded-md border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-800 shadow-sm transition-colors hover:border-cyan-300 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:ring-offset-2 dark:border-cyan-800 dark:bg-cyan-950/60 dark:text-cyan-100 dark:hover:bg-cyan-900/70 dark:focus:ring-offset-gray-900"
+              className="shrink-0 rounded-md border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-800 shadow-sm transition-colors hover:border-cyan-300 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:ring-offset-2 dark:border-cyan-800 dark:bg-cyan-950/60 dark:text-cyan-100 dark:hover:bg-cyan-900/70 dark:focus:ring-offset-gray-900"
               aria-label="打开新用户引导"
             >
               新用户引导
@@ -96,7 +122,7 @@ export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuid
           <button
             type="button"
             onClick={onClose}
-            className="h-8 w-8 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-800 dark:hover:text-gray-100"
+            className="h-8 w-8 shrink-0 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-800 dark:hover:text-gray-100"
             aria-label="关闭"
           >
             ×
