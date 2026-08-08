@@ -88,6 +88,7 @@ import {
   buildBlockedResearchText,
   buildResearchAuditTraceView,
 } from '../services/researchEvidenceAuditService'
+import { runPortfolioBrief } from '../services/portfolioBriefService'
 import {
   countResearchDiscussionSessions,
   getResearchDiscussionContext,
@@ -1587,6 +1588,31 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       return { text: persistedText, messages }
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // ── ai:runPortfolioBrief ──────────────────────────────────────────────────────
+  ipcMain.handle('ai:runPortfolioBrief', async (_e, data: {
+    requestId?: string
+    sessionId?: number | null
+    mode?: 'analyze' | 'list' | 'checkConfig'
+  }) => {
+    const requestId = typeof data?.requestId === 'string' ? data.requestId : ''
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+      return { ok: false, code: 'INVALID_PARAM', message: 'requestId 格式无效' }
+    }
+    const sessionId = data?.sessionId == null ? null : Number(data.sessionId)
+    if (sessionId != null && (!Number.isInteger(sessionId) || sessionId <= 0)) {
+      return { ok: false, code: 'INVALID_PARAM', message: 'sessionId 无效' }
+    }
+    const mode = data?.mode === 'list' || data?.mode === 'checkConfig' || data?.mode === 'analyze'
+      ? data.mode
+      : 'analyze'
+    try {
+      return await runPortfolioBrief(getDb(), { requestId, sessionId, mode })
+    } catch (error) {
+      console.error('[ai:runPortfolioBrief]', error instanceof Error ? error.message : 'unknown')
+      return { ok: false, code: 'DB_ERROR', message: '持仓简报失败' }
     }
   })
 

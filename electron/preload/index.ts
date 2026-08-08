@@ -1758,6 +1758,19 @@ const api = {
     triggerRound2: (sessionId: number) => ipcRenderer.invoke('ai:triggerRound2', { sessionId }),
     followUp: (sessionId: number, message: string) =>
       ipcRenderer.invoke('ai:followUp', { sessionId, message }),
+    runPortfolioBrief: (payload: {
+      requestId: string
+      sessionId?: number | null
+      mode?: 'analyze' | 'list' | 'checkConfig'
+    }) =>
+      ipcRenderer.invoke('ai:runPortfolioBrief', payload) as Promise<{
+        ok: boolean
+        sessionId?: number
+        text?: string
+        messages?: Array<{ role: 'user' | 'assistant'; content: string }>
+        code?: string
+        message?: string
+      }>,
     startResearchDiscussion: (payload: {
       requestId: string
       origin: { type: 'daily_review' | 'weekly_review' | 'decision_signal' | 'judgment' | 'industry_research' | 'briefing' | 'manual'; id: string | null }
