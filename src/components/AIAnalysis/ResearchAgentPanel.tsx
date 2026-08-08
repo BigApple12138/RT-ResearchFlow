@@ -19,6 +19,10 @@ interface Props {
   sessionId: number
   draftQuestion: string
   onCompleted: () => Promise<void> | void
+  /** 递增时打开启动对话框（主聊天 suggest→确认） */
+  openSignal?: number
+  preferredQuestion?: string | null
+  onSessionBusyChange?: (busy: boolean) => void
 }
 
 const BASE_STATUS_META: Record<ResearchAgentRunSummaryView['status'], { label: string; tone: string }> = {
@@ -62,7 +66,14 @@ const MULTI_PERSPECTIVE_PHASE_LABEL: Record<ResearchAgentRunSummaryView['phase']
   persist: '讨论写回',
 }
 
-export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Props) {
+export function ResearchAgentPanel({
+  sessionId,
+  draftQuestion,
+  onCompleted,
+  openSignal = 0,
+  preferredQuestion = null,
+  onSessionBusyChange,
+}: Props) {
   const [runs, setRuns] = useState<ResearchAgentRunSummaryView[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ResearchAgentRunDetailView | null>(null)
@@ -73,9 +84,11 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
   const [error, setError] = useState<string | null>(null)
   const [pendingCancelRunId, setPendingCancelRunId] = useState<string | null>(null)
   const [pendingReviewRunId, setPendingReviewRunId] = useState<string | null>(null)
+  const [dialogQuestion, setDialogQuestion] = useState(draftQuestion)
   const previousStatuses = useRef(new Map<string, ResearchAgentRunSummaryView['status']>())
   const selectedRunIdRef = useRef<string | null>(null)
   const openButtonRef = useRef<HTMLButtonElement>(null)
+  const lastOpenSignal = useRef(0)
 
   const loadRuns = useCallback(async () => {
     const result = await window.api.researchAgent.listRuns(sessionId)
@@ -89,8 +102,9 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
     ))
     previousStatuses.current = new Map(next.map((run) => [run.id, run.status]))
     setRuns(next)
+    onSessionBusyChange?.(next.some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'paused'))
     if (completed) await onCompleted()
-  }, [onCompleted, sessionId])
+  }, [onCompleted, onSessionBusyChange, sessionId])
 
   useEffect(() => {
     setSelectedRunId(null)
@@ -115,10 +129,18 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
     }
   }), [loadRuns])
 
-  async function openDialog() {
+  async function openDialog(questionOverride?: string | null) {
+    const nextQuestion = (questionOverride ?? preferredQuestion ?? draftQuestion).trim()
+    setDialogQuestion(nextQuestion)
     setDialogOpen(true)
     setLoading(true)
     setError(null)
+    const globalRuns = await window.api.researchAgent.listRuns(null)
+    if (globalRuns.ok && globalRuns.data.some((run) => run.status === 'queued' || run.status === 'running')) {
+      setLoading(false)
+      setError('已有其他深度研究正在执行。请等待完成或取消后再启动。')
+      return
+    }
     const result = await window.api.researchAgent.preflight(sessionId)
     setLoading(false)
     if (!result.ok) {
@@ -127,6 +149,13 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
     }
     setPreflight(result.data)
   }
+
+  useEffect(() => {
+    if (!openSignal || openSignal === lastOpenSignal.current) return
+    lastOpenSignal.current = openSignal
+    void openDialog(preferredQuestion)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open only on signal edges
+  }, [openSignal])
 
   async function selectRun(runId: string) {
     setSelectedRunId(runId)
@@ -231,7 +260,7 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
       {dialogOpen && (
         <ResearchAgentStartDialog
           sessionId={sessionId}
-          initialQuestion={draftQuestion}
+          initialQuestion={dialogQuestion}
           preflight={preflight}
           loading={loading}
           error={error}
@@ -240,6 +269,7 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
             setDialogOpen(false)
             setPreflight(null)
             setSelectedRunId(run.id)
+            selectedRunIdRef.current = run.id
             await loadRuns()
             await selectRun(run.id)
           }}

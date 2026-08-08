@@ -24,6 +24,7 @@ import { AppConfirmDialog } from '../shared/AppConfirmDialog'
 import { publishAppToast } from '../shared/appToastBus'
 import { ResearchAuditTrace, type ResearchAuditTraceView } from '../shared/ResearchAuditTrace'
 import { ResearchAgentPanel } from './ResearchAgentPanel'
+import { detectResearchAgentIntent } from './researchAgentIntent'
 
 function extractStockCodes(text: string): string[] {
   const codes: string[] = []
@@ -443,6 +444,10 @@ export function AIAnalysis() {
   const [sessionQuery, setSessionQuery] = useState('')
   const [newDiscussionOpen, setNewDiscussionOpen] = useState(false)
   const [updatingContext, setUpdatingContext] = useState(false)
+  const [agentSuggest, setAgentSuggest] = useState<null | { intent: 'deep_research' | 'industry_research'; question: string }>(null)
+  const [agentOpenSignal, setAgentOpenSignal] = useState(0)
+  const [preferredAgentQuestion, setPreferredAgentQuestion] = useState<string | null>(null)
+  const [sessionAgentBusy, setSessionAgentBusy] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -649,6 +654,11 @@ export function AIAnalysis() {
   async function handleFollowUp() {
     const message = followUpInput.trim()
     if (!message || !detail) return
+    if (sessionAgentBusy) {
+      showToast('当前会话有深度研究进行中，请等待完成或取消后再追问。')
+      return
+    }
+    if (await captureResearchIntent(message)) return
     setSendingFollowUp(true)
     setFollowUpInput('')
     setActiveTab('chat')
@@ -752,13 +762,50 @@ export function AIAnalysis() {
     }
   }
 
+  async function ensureDiscussionSession(question: string): Promise<number | null> {
+    if (detail?.discussion) return detail.id
+    const created = await startDiscussion({
+      origin: { type: 'manual', id: null },
+      initialQuestion: question,
+      mode: 'new',
+      returnTarget: { tab: 'ai-analysis', subTab: 'records' },
+    })
+    if (!created) return null
+    const sessionId = created.discussion.sessionId
+    await loadAISessions()
+    await handleSelectSession(sessionId)
+    clearResearchDiscussionDraft(sessionId)
+    setActiveTab('chat')
+    return sessionId
+  }
+
+  async function captureResearchIntent(message: string): Promise<boolean> {
+    const intent = detectResearchAgentIntent(message)
+    if (!intent) return false
+    const sessionId = await ensureDiscussionSession(message)
+    if (sessionId == null) return true
+    setFollowUpInput('')
+    setAgentSuggest({ intent, question: message })
+    setPreferredAgentQuestion(message)
+    if (intent === 'industry_research') {
+      showToast('产业研究将作为聊天 subagent 接入（下一期）；深度研究可先用「启动深度研究」。')
+    }
+    return true
+  }
+
   async function handleComposerSend() {
+    const message = followUpInput.trim()
+    if (!message || sendingFollowUp || startingDiscussion) return
+    if (sessionAgentBusy) {
+      showToast('当前会话有深度研究进行中，请等待完成或取消后再追问。')
+      return
+    }
+    if (await captureResearchIntent(message)) return
+
     if (detail) {
       await handleFollowUp()
       return
     }
-    const message = followUpInput.trim()
-    if (!message || sendingFollowUp || startingDiscussion) return
     setSendingFollowUp(true)
     setFollowUpInput('')
     try {
@@ -801,9 +848,71 @@ export function AIAnalysis() {
   function renderQuickChips() {
     return (
       <div className="mb-2 flex flex-wrap gap-1.5" data-testid="research-quick-chips">
-        <button type="button" data-testid="chip-analyze-portfolio" disabled={sendingFollowUp || startingDiscussion} onClick={() => { void runQuickChip('analyze') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">分析我的持仓</button>
-        <button type="button" data-testid="chip-list-portfolio" disabled={sendingFollowUp || startingDiscussion} onClick={() => { void runQuickChip('list') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">我有哪些持仓</button>
-        <button type="button" data-testid="chip-check-ai-config" disabled={sendingFollowUp || startingDiscussion} onClick={() => { void runQuickChip('checkConfig') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">检查 AI 配置</button>
+        <button type="button" data-testid="chip-analyze-portfolio" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('analyze') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">分析我的持仓</button>
+        <button type="button" data-testid="chip-list-portfolio" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('list') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">我有哪些持仓</button>
+        <button type="button" data-testid="chip-check-ai-config" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('checkConfig') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">检查 AI 配置</button>
+      </div>
+    )
+  }
+
+  function renderAgentSuggestCard() {
+    if (!agentSuggest) return null
+    return (
+      <div data-testid="research-agent-suggest" className="mb-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2.5 text-xs text-cyan-950 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-100">
+        <div className="font-semibold">
+          {agentSuggest.intent === 'deep_research' ? '建议启动深度研究 subagent' : '产业研究 subagent（下一期）'}
+        </div>
+        <div className="mt-1 line-clamp-3 text-[11px] opacity-90">{agentSuggest.question}</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {agentSuggest.intent === 'deep_research' ? (
+            <button
+              type="button"
+              data-testid="research-agent-suggest-confirm"
+              className="rounded-md bg-cyan-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-cyan-800"
+              onClick={() => {
+                setPreferredAgentQuestion(agentSuggest.question)
+                setAgentOpenSignal((value) => value + 1)
+                setAgentSuggest(null)
+              }}
+            >
+              启动深度研究
+            </button>
+          ) : (
+            <button type="button" disabled className="rounded-md bg-slate-300 px-2.5 py-1 text-[11px] font-semibold text-white dark:bg-slate-700">产业研究即将接入</button>
+          )}
+          <button
+            type="button"
+            data-testid="research-agent-suggest-chat"
+            className="rounded-md border border-cyan-300 bg-white px-2.5 py-1 text-[11px] text-cyan-800 dark:border-cyan-800 dark:bg-slate-900 dark:text-cyan-100"
+            onClick={() => {
+              const question = agentSuggest.question
+              setAgentSuggest(null)
+              setFollowUpInput(question)
+              window.setTimeout(() => {
+                void (async () => {
+                  if (!detail) return
+                  setSendingFollowUp(true)
+                  try {
+                    const result = await window.api.ai.followUp(detail.id, question)
+                    if (result?.messages) {
+                      const latest = await window.api.ai.getSession(detail.id)
+                      setDetail(latest)
+                      await loadAISessions()
+                      setFollowUpInput('')
+                    } else if (result?.error) {
+                      showToast(`追问失败：${result.error}`)
+                    }
+                  } finally {
+                    setSendingFollowUp(false)
+                  }
+                })()
+              }, 0)
+            }}
+          >
+            改为普通追问
+          </button>
+          <button type="button" className="rounded-md px-2.5 py-1 text-[11px] text-slate-500" onClick={() => setAgentSuggest(null)}>关闭</button>
+        </div>
       </div>
     )
   }
@@ -1243,11 +1352,20 @@ export function AIAnalysis() {
               <ResearchAgentPanel
                 sessionId={detail.id}
                 draftQuestion={followUpInput}
+                preferredQuestion={preferredAgentQuestion}
+                openSignal={agentOpenSignal}
+                onSessionBusyChange={setSessionAgentBusy}
                 onCompleted={refreshAfterResearchAgent}
               />
             )}
 
             <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900" data-testid="research-composer">
+              {renderAgentSuggestCard()}
+              {sessionAgentBusy && (
+                <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                  深度研究进行中：已暂停追问，避免与研究运行争写同一会话。
+                </div>
+              )}
               {renderQuickChips()}
               <div className="flex gap-2">
                 <textarea
@@ -1258,14 +1376,14 @@ export function AIAnalysis() {
                     if (detail.discussion) setResearchDiscussionDraft(detail.id, event.target.value)
                   }}
                   onKeyDown={handleInputKeyDown}
-                  disabled={sendingFollowUp}
-                  placeholder={detail.discussion ? '继续讨论…' : '继续追问... (Enter 发送, Shift+Enter 换行)'}
+                  disabled={sendingFollowUp || sessionAgentBusy}
+                  placeholder={sessionAgentBusy ? '深度研究进行中…' : detail.discussion ? '继续讨论…' : '继续追问... (Enter 发送, Shift+Enter 换行)'}
                   rows={2}
                   className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
                 />
                 <button
                   onClick={() => { void handleComposerSend() }}
-                  disabled={!followUpInput.trim() || sendingFollowUp}
+                  disabled={!followUpInput.trim() || sendingFollowUp || sessionAgentBusy}
                   className="h-[52px] flex-shrink-0 rounded-lg bg-blue-600 px-4 text-xs text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700"
                 >
                   发送
@@ -1278,9 +1396,10 @@ export function AIAnalysis() {
             <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">新对话</h2>
               <p className="mt-2 max-w-md text-sm text-slate-500">直接提问即可开始。持仓分析不会把成本价发给模型；已缓存个股不等于持仓。</p>
-              <p className="mt-1 max-w-md text-xs text-slate-400">若需深挖个股或产业链，可稍后在深度研究 / 产业研究工作台手动启动。</p>
+              <p className="mt-1 max-w-md text-xs text-slate-400">说「深挖…」会建议启动深度研究 subagent（需确认）；产业研究下一期接入。</p>
             </div>
             <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900" data-testid="research-composer">
+              {renderAgentSuggestCard()}
               {renderQuickChips()}
               <div className="flex gap-2">
                 <textarea
@@ -1289,7 +1408,7 @@ export function AIAnalysis() {
                   onChange={(event) => setFollowUpInput(event.target.value)}
                   onKeyDown={handleInputKeyDown}
                   disabled={sendingFollowUp || startingDiscussion}
-                  placeholder="提出研究问题… (Enter 发送, Shift+Enter 换行)"
+                  placeholder="提出研究问题或说「深挖…」调度深度研究… (Enter 发送)"
                   rows={2}
                   className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
                 />
