@@ -499,9 +499,7 @@ export function AIAnalysis() {
       clearPendingDiscussion()
       showToast('来源讨论已删除，已接受的研究版本仍然保留。')
     }
-    if (aiSessions.length > 0 && selectedId === null) {
-      handleSelectSession(aiSessions[0].id)
-    }
+    // 默认停留在新对话 composer，不盲选历史第一条会话。
   }, [aiSessions, pendingDiscussionSessionId, sessionsReady])
 
   useEffect(() => {
@@ -705,13 +703,109 @@ export function AIAnalysis() {
     if (!result) return
     setNewDiscussionOpen(false)
     await loadAISessions()
+    const sessionId = result.discussion.sessionId
+    await handleSelectSession(sessionId)
+    clearResearchDiscussionDraft(sessionId)
+    if (value.question.trim()) {
+      setSendingFollowUp(true)
+      try {
+        const follow = await window.api.ai.followUp(sessionId, value.question.trim())
+        if (follow?.messages) {
+          const latest = await window.api.ai.getSession(sessionId)
+          setDetail(latest)
+          await loadAISessions()
+        } else if (follow?.error) {
+          showToast(`发送失败：${follow.error}`)
+          setFollowUpInput(value.question)
+        }
+      } finally {
+        setSendingFollowUp(false)
+      }
+    }
+  }
+
+  function startNewConversation() {
+    setSelectedId(null)
+    setDetail(null)
+    setFollowUpInput('')
+    setActiveTab('chat')
+  }
+
+  async function runQuickChip(mode: 'analyze' | 'list' | 'checkConfig') {
+    if (sendingFollowUp || startingDiscussion) return
+    setSendingFollowUp(true)
+    try {
+      const result = await window.api.ai.runPortfolioBrief({
+        requestId: crypto.randomUUID(),
+        sessionId: detail?.discussion ? detail.id : null,
+        mode,
+      })
+      if (!result.ok || result.sessionId == null) {
+        showToast(result.message || '操作失败')
+        return
+      }
+      await loadAISessions()
+      await handleSelectSession(result.sessionId)
+      setActiveTab('chat')
+    } finally {
+      setSendingFollowUp(false)
+    }
+  }
+
+  async function handleComposerSend() {
+    if (detail) {
+      await handleFollowUp()
+      return
+    }
+    const message = followUpInput.trim()
+    if (!message || sendingFollowUp || startingDiscussion) return
+    setSendingFollowUp(true)
+    setFollowUpInput('')
+    try {
+      const created = await startDiscussion({
+        origin: { type: 'manual', id: null },
+        initialQuestion: message,
+        mode: 'new',
+        returnTarget: { tab: 'ai-analysis', subTab: 'records' },
+      })
+      if (!created) {
+        setFollowUpInput(message)
+        return
+      }
+      const sessionId = created.discussion.sessionId
+      await loadAISessions()
+      await handleSelectSession(sessionId)
+      clearResearchDiscussionDraft(sessionId)
+      setActiveTab('chat')
+      const result = await window.api.ai.followUp(sessionId, message)
+      if (result?.messages) {
+        const latest = await window.api.ai.getSession(sessionId)
+        setDetail(latest)
+        await loadAISessions()
+      } else if (result?.error) {
+        showToast(`发送失败：${result.error}`)
+        setFollowUpInput(message)
+      }
+    } finally {
+      setSendingFollowUp(false)
+    }
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      handleFollowUp()
+      void handleComposerSend()
     }
+  }
+
+  function renderQuickChips() {
+    return (
+      <div className="mb-2 flex flex-wrap gap-1.5" data-testid="research-quick-chips">
+        <button type="button" data-testid="chip-analyze-portfolio" disabled={sendingFollowUp || startingDiscussion} onClick={() => { void runQuickChip('analyze') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">分析我的持仓</button>
+        <button type="button" data-testid="chip-list-portfolio" disabled={sendingFollowUp || startingDiscussion} onClick={() => { void runQuickChip('list') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">我有哪些持仓</button>
+        <button type="button" data-testid="chip-check-ai-config" disabled={sendingFollowUp || startingDiscussion} onClick={() => { void runQuickChip('checkConfig') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">检查 AI 配置</button>
+      </div>
+    )
   }
 
   async function handleGenerateStructuredResult(force = true) {
@@ -740,25 +834,6 @@ export function AIAnalysis() {
     setShowIndustryAnalysis(true)
   }
 
-  if (aiSessions.length === 0 && !isAnalyzing) {
-    return (
-      <div className="flex flex-1 items-center justify-center bg-slate-50 px-6 text-center dark:bg-slate-950">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">开始一次 AI 讨论</h2>
-          <p className="mt-2 text-sm text-slate-500">可以直接提出研究问题，也可以稍后从复盘、信号或产业研究进入。</p>
-          <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="mt-4 rounded-md bg-cyan-700 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-800">发起研究讨论</button>
-        </div>
-        <NewResearchDiscussionDialog
-          open={newDiscussionOpen}
-          submitting={startingDiscussion}
-          error={startDiscussionError}
-          onClose={() => setNewDiscussionOpen(false)}
-          onSubmit={(value) => { void createManualDiscussion(value) }}
-        />
-      </div>
-    )
-  }
-
   return (
     <div className="relative flex h-full flex-1 overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
 
@@ -770,7 +845,8 @@ export function AIAnalysis() {
               <div className="mt-0.5 text-[11px] text-slate-500">{aiSessions.length} 条会话</div>
             </div>
             <div className="flex gap-1">
-              <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="rounded-md bg-cyan-700 px-2 py-1 text-[11px] font-semibold text-white">讨论</button>
+              <button type="button" data-testid="new-conversation" onClick={startNewConversation} className={`rounded-md px-2 py-1 text-[11px] font-semibold ${selectedId == null ? 'bg-cyan-700 text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300'}`}>新对话</button>
+              <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">高级</button>
               <button onClick={requestDeleteAll} disabled={deleting || aiSessions.length === 0} className="rounded-md border border-red-200 px-2 py-1 text-[11px] text-red-500 transition-colors hover:bg-red-50 disabled:opacity-30 dark:border-red-900 dark:hover:bg-red-950/40">清除</button>
             </div>
           </div>
@@ -1171,7 +1247,8 @@ export function AIAnalysis() {
               />
             )}
 
-            <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900" data-testid="research-composer">
+              {renderQuickChips()}
               <div className="flex gap-2">
                 <textarea
                   ref={inputRef}
@@ -1187,7 +1264,7 @@ export function AIAnalysis() {
                   className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
                 />
                 <button
-                  onClick={handleFollowUp}
+                  onClick={() => { void handleComposerSend() }}
                   disabled={!followUpInput.trim() || sendingFollowUp}
                   className="h-[52px] flex-shrink-0 rounded-lg bg-blue-600 px-4 text-xs text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700"
                 >
@@ -1197,7 +1274,36 @@ export function AIAnalysis() {
             </div>
           </>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-slate-400">选择左侧记录查看详情</div>
+          <div className="flex flex-1 flex-col">
+            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">新对话</h2>
+              <p className="mt-2 max-w-md text-sm text-slate-500">直接提问即可开始。持仓分析不会把成本价发给模型；已缓存个股不等于持仓。</p>
+              <p className="mt-1 max-w-md text-xs text-slate-400">若需深挖个股或产业链，可稍后在深度研究 / 产业研究工作台手动启动。</p>
+            </div>
+            <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900" data-testid="research-composer">
+              {renderQuickChips()}
+              <div className="flex gap-2">
+                <textarea
+                  ref={inputRef}
+                  value={followUpInput}
+                  onChange={(event) => setFollowUpInput(event.target.value)}
+                  onKeyDown={handleInputKeyDown}
+                  disabled={sendingFollowUp || startingDiscussion}
+                  placeholder="提出研究问题… (Enter 发送, Shift+Enter 换行)"
+                  rows={2}
+                  className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
+                />
+                <button
+                  type="button"
+                  onClick={() => { void handleComposerSend() }}
+                  disabled={!followUpInput.trim() || sendingFollowUp || startingDiscussion}
+                  className="h-[52px] flex-shrink-0 rounded-lg bg-blue-600 px-4 text-xs text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700"
+                >
+                  发送
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </main>
 

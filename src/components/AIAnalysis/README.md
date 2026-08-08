@@ -4,6 +4,8 @@
 
 `AIAnalysis` 承载 AI 分析会话的投研研判工作台, 支持查看第一轮分析、来源与提示词、第二轮行情复核、追问记录、结构化研判结果、股票代码跳转和产业分析抽屉入口。FR-239 起同一工作台也承载从复盘、信号、判断和产业研究进入的持续研究讨论，不创建第二套聊天记录。
 
+本地投研 Agent Phase 1 起，研判记录默认常驻「新对话」composer（不再空态弹窗门槛，也不盲选历史第一条会话）；首条消息 create-and-send；快捷芯片「分析我的持仓 / 我有哪些持仓 / 检查 AI 配置」经 `ai:runPortfolioBrief` 写入讨论，持仓事实默认不含成本价。深度研究与产业研究仍为手动进阶入口，本阶段不自动调度。
+
 ## 实现思路
 
 组件继续复用 `window.api.ai` 会话接口, 并优先读取 P2 新增的 `structuredResult`。页面保持左侧分析记录、中间研判工作区、右侧研判侧栏三栏结构; 右侧的候选股票、可信度、主线、验证清单和状态优先来自结构化 JSON, 当结构化结果缺失或解析失败时回退到 P1 的文本派生逻辑。顶部标题不直接使用模型正文首行, 而是优先用结构化主线与摘要生成可读研判标题, 避免展示模型过程句或长段原文。
@@ -15,7 +17,8 @@
 - `activeTab`: 中央工作区页签, 包含本次研判、来源与提示词、行情复核和追问记录。
 - `prepareRound2MarketMarkdown/Round2InlineMarketVisual`: 按候选代码或名称定位第二轮Markdown中的股票章节，在该股原支撑/压力参考位置读取既有 `shortTerm:getStockMiniKline` 并嵌入单股K线。纯模型按会话北京时间发生日过滤未来数据，复算30日以内的MA5/MA20、近5/20日收益和高低区间；图表可用时移除重复价位行，少于10个有效交易日或读取失败时恢复该股原始文字参考。
 - `normalizeAIResponseMarkdown`: 在ReactMarkdown解析前修复模型常见的 `**标签：**正文`/`__标签：__正文` 闭合歧义。只调整展示投影，跳过代码围栏、行内代码和转义内容；首轮、第二轮和assistant追问共用，数据库原文不变。
-- `followUpInput/sendingFollowUp`: 控制追问输入与发送状态。
+- `followUpInput/sendingFollowUp`: 控制追问/新对话输入与发送状态；无选中会话时走 create-and-send。
+- 快捷芯片：`chip-analyze-portfolio` / `chip-list-portfolio` / `chip-check-ai-config`；`new-conversation` 回到新对话；`research-composer` 为底部输入区。
 - `generatingStructured`: 控制手动重建结构化研判结果的按钮状态。
 - `showIndustryAnalysis/industryAnalysisText/industryChainId`: 控制产业分析抽屉及自动匹配的产业链。
 - 选择记录时调用 `ai:getSession`; 触发行情复核时调用 `ai:triggerRound2`; 发送追问时调用 `ai:followUp`, 成功后重新读取当前会话, 以接收后台刷新后的结构化结果。
