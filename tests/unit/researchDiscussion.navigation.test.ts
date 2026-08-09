@@ -5,6 +5,7 @@ describe('研究讨论跨页导航', () => {
   beforeEach(() => {
     useAppStore.setState({
       activeTab: 'decision-center', aiAnalysisSubTab: 'records',
+      aiAnalysisWorkbench: null,
       pendingResearchDiscussionSessionId: null, pendingResearchDiscussionReturnTarget: null,
       researchDiscussionDrafts: {},
       pendingIndustryResearchProjectId: null,
