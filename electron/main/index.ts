@@ -70,6 +70,19 @@ import {
   shouldAllowRendererPermission,
 } from './security/navigationPolicy'
 
+/**
+ * electron-vite / 父终端断开后，stdout/stderr 可能已关闭。
+ * 扫描等路径里的 console.log 会触发 EPIPE 并变成未捕获异常弹窗；忽略断管即可。
+ */
+function ignoreBrokenPipe(stream: NodeJS.WriteStream | null | undefined): void {
+  stream?.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE' || err.code === 'EIO') return
+    throw err
+  })
+}
+ignoreBrokenPipe(process.stdout)
+ignoreBrokenPipe(process.stderr)
+
 let mainWindow: BrowserWindow | null = null
 let databaseReady = false
 

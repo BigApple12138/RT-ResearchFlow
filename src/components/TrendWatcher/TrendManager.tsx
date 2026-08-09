@@ -9,16 +9,12 @@ import {
   formatTrendDate,
 } from './TrendWorkbenchUi'
 import { TrendConfirmDialog } from './TrendConfirmDialog'
-import { suggestWatchlistCategory } from './trendWatchlistCategorySuggest'
-import { WATCHLIST_CATEGORY_TREE } from './trendWatchlistCategoryTree'
 import {
   buildWatchlistEntryFromCodes,
   isSyntheticWatchlistName,
   syntheticCandidateForSixDigit,
 } from './trendWatchlistAddResolve'
 import type { TrendWorkbenchItem, TrendWorkbenchPageProps } from './trendWorkbenchTypes'
-
-const CATEGORY_TREE = WATCHLIST_CATEGORY_TREE
 
 interface WatchItem {
   tsCode: string
@@ -39,6 +35,30 @@ interface ProgressState {
   current: number
   total: number
   detail: string
+}
+
+interface CategoryMapRuleRow {
+  id: number
+  keyword: string
+  matchField: 'industry' | 'concept' | 'name'
+  category: string
+  subCategory: string
+  priority: number
+  enabled: boolean
+}
+
+interface CategoryTreeNodeRow {
+  id: number
+  category: string
+  subCategory: string
+  sortOrder: number
+  enabled: boolean
+}
+
+interface WebPendingSuggestion {
+  label: string
+  suggestedCategory: string
+  suggestedSubCategory: string
 }
 
 export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: TrendWorkbenchPageProps) {
@@ -67,6 +87,38 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
   const [clearing, setClearing] = useState(false)
   const [categoryTouched, setCategoryTouched] = useState(false)
   const [categoryHint, setCategoryHint] = useState<string | null>(null)
+  const [categorySuggesting, setCategorySuggesting] = useState(false)
+  const [categoryTree, setCategoryTree] = useState<Record<string, string[]>>({})
+  const [categoryNodes, setCategoryNodes] = useState<CategoryTreeNodeRow[]>([])
+  const [maintainOpen, setMaintainOpen] = useState(false)
+  const [maintainTab, setMaintainTab] = useState<'rules' | 'tree'>('rules')
+  const [mapRules, setMapRules] = useState<CategoryMapRuleRow[]>([])
+  const [mapRulesLoading, setMapRulesLoading] = useState(false)
+  const [mapRuleDraft, setMapRuleDraft] = useState({
+    keyword: '',
+    matchField: 'concept' as 'industry' | 'concept' | 'name',
+    category: '',
+    subCategory: '',
+    priority: 80,
+  })
+  const [mapRuleMessage, setMapRuleMessage] = useState<string | null>(null)
+  const [treeDraft, setTreeDraft] = useState({ category: '', subCategory: '' })
+  const [treeMessage, setTreeMessage] = useState<string | null>(null)
+  const [treeDeleteTarget, setTreeDeleteTarget] = useState<{
+    category: string
+    subCategory: string
+    refs?: { inUseWatchlist: number; inUseRules: number }
+  } | null>(null)
+  const [treeDeleting, setTreeDeleting] = useState(false)
+  const [renameDraft, setRenameDraft] = useState<{
+    fromCategory: string
+    fromSubCategory: string
+    toCategory: string
+    toSubCategory: string
+  } | null>(null)
+  const [webSuggesting, setWebSuggesting] = useState(false)
+  const [webPending, setWebPending] = useState<WebPendingSuggestion[]>([])
+  const [webConfirmOpen, setWebConfirmOpen] = useState(false)
   const [selectedDetail, setSelectedDetail] = useState<TrendWorkbenchItem | null>(null)
   const [backfillRunning, setBackfillRunning] = useState(false)
   const [backfillProgress, setBackfillProgress] = useState<ProgressState | null>(null)
@@ -74,6 +126,7 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
   const [syncProgress, setSyncProgress] = useState<ProgressState | null>(null)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchRootRef = useRef<HTMLDivElement>(null)
+  const suggestSeqRef = useRef(0)
   const navigateToStock = useAppStore((state) => state.navigateToStock)
 
   const loadWatchRows = useCallback(async () => {
@@ -86,7 +139,32 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
     }
   }, [])
 
+  const loadMapRules = useCallback(async () => {
+    setMapRulesLoading(true)
+    try {
+      const response = await window.api.trend.listCategoryMapRules()
+      if (response.ok && response.data) setMapRules(response.data)
+    } finally {
+      setMapRulesLoading(false)
+    }
+  }, [])
+
+  const loadCategoryTree = useCallback(async () => {
+    const response = await window.api.trend.listCategoryTree()
+    if (response.ok && response.data) {
+      setCategoryTree(response.data.tree ?? {})
+      setCategoryNodes(response.data.nodes ?? [])
+    }
+  }, [])
+
   useEffect(() => { void loadWatchRows() }, [loadWatchRows])
+  useEffect(() => { void loadCategoryTree() }, [loadCategoryTree])
+  useEffect(() => {
+    if (maintainOpen && maintainTab === 'rules') void loadMapRules()
+  }, [maintainOpen, maintainTab, loadMapRules])
+  useEffect(() => {
+    if (maintainOpen && maintainTab === 'tree') void loadCategoryTree()
+  }, [maintainOpen, maintainTab, loadCategoryTree])
 
   useEffect(() => {
     const closeSearch = (event: MouseEvent) => {
@@ -153,12 +231,12 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
   const missingCodes = useMemo(() => allItems.filter((item) => item.dataCoverage.state !== 'ready').map((item) => item.tsCode), [allItems])
   const categoryOptions = useMemo(() => [
     { value: '', label: '暂不分类' },
-    ...Object.keys(CATEGORY_TREE).map((value) => ({ value, label: value })),
-  ], [])
+    ...Object.keys(categoryTree).map((value) => ({ value, label: value })),
+  ], [categoryTree])
   const subCategoryOptions = useMemo(() => [
     { value: '', label: selectedCategory ? '暂不选择赛道' : '请先选择分类' },
-    ...(CATEGORY_TREE[selectedCategory] ?? []).map((value) => ({ value, label: value })),
-  ], [selectedCategory])
+    ...(categoryTree[selectedCategory] ?? []).map((value) => ({ value, label: value })),
+  ], [categoryTree, selectedCategory])
   const listCategoryOptions = useMemo(() => buildFilterOptions(
     watchRows,
     'category',
@@ -207,7 +285,7 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
     }, 240)
   }
 
-  const applyCategorySuggestion = useCallback((stocks: Map<string, SearchResult>, force = false) => {
+  const applyCategorySuggestion = useCallback(async (stocks: Map<string, SearchResult>, force = false) => {
     if (!force && categoryTouched) return
     const first = stocks.values().next().value as SearchResult | undefined
     if (!first) {
@@ -218,36 +296,111 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
       }
       return
     }
-    const suggested = suggestWatchlistCategory(first.tsCode, watchRows)
-    if (!suggested) {
-      if (force) {
+    const seq = ++suggestSeqRef.current
+    setCategorySuggesting(true)
+    setCategoryHint(force ? '正在重新识别分类…' : '正在识别分类…')
+    try {
+      const response = await window.api.trend.suggestWatchlistCategory(first.tsCode)
+      if (seq !== suggestSeqRef.current) return
+      if (!force && categoryTouched) return
+      const multi = stocks.size > 1 ? '（批量共用首只建议，可改）' : ''
+      if (!response.ok || !response.data) {
         setSelectedCategory('')
         setSelectedSubCategory('')
-        setCategoryHint('未识别到内置分类，可手选后加入')
-        setCategoryTouched(false)
-      } else {
-        setCategoryHint('未识别到内置分类，可手选赛道')
+        setCategoryHint(`分类识别失败，可手选赛道${multi}`)
+        if (force) setCategoryTouched(false)
+        return
       }
+      const data = response.data
+      if (!data.category) {
+        setSelectedCategory('')
+        setSelectedSubCategory('')
+        setCategoryTouched(false)
+        if (data.eastmoneyIndustry) {
+          setCategoryHint(`东财行业：${data.eastmoneyIndustry} → 未命中规则，可手选或在下方维护映射${multi}`)
+        } else {
+          setCategoryHint(`未识别到分类，可手选赛道${multi}`)
+        }
+        return
+      }
+      setSelectedCategory(data.category)
+      setSelectedSubCategory(data.subCategory ?? '')
+      setCategoryTouched(false)
+      const sourceLabel = data.source === 'watchlist'
+        ? '沿用池内登记'
+        : data.source === 'eastmoney-map'
+          ? `东财映射${data.matchedKeyword ? `（${data.matchedKeyword}）` : ''}`
+          : '建议'
+      setCategoryHint(`已自动填写：${data.category} / ${data.subCategory || '未设赛道'} · ${sourceLabel}${multi}`)
+    } finally {
+      if (seq === suggestSeqRef.current) setCategorySuggesting(false)
+    }
+  }, [categoryTouched])
+
+  const runWebCategorySuggest = useCallback(async () => {
+    const first = selectedStocks.values().next().value as SearchResult | undefined
+    if (!first) return
+    setWebSuggesting(true)
+    setCategoryHint('正在联网补充分类…')
+    try {
+      const response = await window.api.trend.webSuggestWatchlistCategory({
+        tsCode: first.tsCode,
+        name: first.name,
+      })
+      if (!response.ok || !response.data) {
+        setCategoryHint(response.message ?? '联网补充失败，可手选或重试')
+        setWebPending([])
+        return
+      }
+      const data = response.data
+      setWebPending(data.pending ?? [])
+      if (data.pair?.category) {
+        setSelectedCategory(data.pair.category)
+        setSelectedSubCategory(data.pair.subCategory ?? '')
+        setCategoryTouched(false)
+        setCategoryHint(
+          `已自动填写：${data.pair.category} / ${data.pair.subCategory || '未设赛道'} · 联网补充${data.pair.matchedKeyword ? `（${data.pair.matchedKeyword}）` : ''}`,
+        )
+      } else if ((data.pending ?? []).length > 0) {
+        setCategoryHint('联网未直接命中主题树，可从下方待采用建议写入')
+      } else {
+        setCategoryHint('联网未找到可用分类建议，可手选或维护映射规则')
+      }
+    } finally {
+      setWebSuggesting(false)
+      setWebConfirmOpen(false)
+    }
+  }, [selectedStocks])
+
+  const adoptPendingSuggestion = useCallback(async (item: WebPendingSuggestion) => {
+    const response = await window.api.trend.adoptWebCategorySuggestion({
+      category: item.suggestedCategory,
+      subCategory: item.suggestedSubCategory,
+      createMapRule: true,
+      keyword: item.label,
+    })
+    if (!response.ok || !response.data) {
+      setCategoryHint(response.message ?? '采用建议失败')
       return
     }
-    setSelectedCategory(suggested.category)
-    setSelectedSubCategory(suggested.subCategory)
+    await loadCategoryTree()
+    setSelectedCategory(response.data.category)
+    setSelectedSubCategory(response.data.subCategory)
     setCategoryTouched(false)
-    const sourceLabel = suggested.source === 'watchlist' ? '沿用池内登记' : '本地目录'
-    const multi = stocks.size > 1 ? '（批量共用首只建议，可改）' : ''
-    setCategoryHint(`已自动填写：${suggested.category} / ${suggested.subCategory} · ${sourceLabel}${multi}`)
-  }, [categoryTouched, watchRows])
+    setCategoryHint(`已采用到主题树：${response.data.category} / ${response.data.subCategory || '未设赛道'}`)
+    setWebPending((current) => current.filter((row) => row.label !== item.label))
+  }, [loadCategoryTree])
 
   const toggleSearchResult = (result: SearchResult) => {
     setSelectedStocks((current) => {
       const next = new Map(current)
       if (next.has(result.tsCode)) {
         next.delete(result.tsCode)
-        queueMicrotask(() => applyCategorySuggestion(next))
+        queueMicrotask(() => { void applyCategorySuggestion(next) })
         return next
       }
       next.set(result.tsCode, result)
-      queueMicrotask(() => applyCategorySuggestion(next))
+      queueMicrotask(() => { void applyCategorySuggestion(next) })
       return next
     })
     if (isSyntheticWatchlistName(result.name)) {
@@ -277,7 +430,7 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
         const next = new Map(current)
         next.delete(result.tsCode)
         next.set(entry.tsCode, entry)
-        queueMicrotask(() => applyCategorySuggestion(next))
+        queueMicrotask(() => { void applyCategorySuggestion(next) })
         return next
       })
       setSearchResults((rows) =>
@@ -364,14 +517,25 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
         setActionMessage({ tone: 'error', text: '股票代码无效' })
         return
       }
-      const suggested = suggestWatchlistCategory(entry.tsCode, watchRows)
-      const category = suggested?.category ?? selectedCategory
-      const subCategory = suggested?.subCategory ?? (suggested ? '' : selectedSubCategory)
-      if (suggested) {
-        setSelectedCategory(suggested.category)
-        setSelectedSubCategory(suggested.subCategory)
-        setCategoryTouched(false)
-        setCategoryHint(`已自动填写：${suggested.category} / ${suggested.subCategory} · 本地目录`)
+      let category = selectedCategory
+      let subCategory = selectedSubCategory
+      if (!categoryTouched) {
+        const suggested = await window.api.trend.suggestWatchlistCategory(entry.tsCode)
+        if (suggested.ok && suggested.data?.category) {
+          category = suggested.data.category
+          subCategory = suggested.data.subCategory ?? ''
+          setSelectedCategory(category)
+          setSelectedSubCategory(subCategory)
+          setCategoryTouched(false)
+          const sourceLabel = suggested.data.source === 'watchlist'
+            ? '沿用池内登记'
+            : suggested.data.source === 'eastmoney-map'
+              ? `东财映射${suggested.data.matchedKeyword ? `（${suggested.data.matchedKeyword}）` : ''}`
+              : '建议'
+          setCategoryHint(`已自动填写：${category} / ${subCategory || '未设赛道'} · ${sourceLabel}`)
+        } else if (suggested.ok && suggested.data?.eastmoneyIndustry) {
+          setCategoryHint(`东财行业：${suggested.data.eastmoneyIndustry} → 未命中规则，可手选`)
+        }
       }
       setAdding(true)
       try {
@@ -579,13 +743,36 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
           <button
             type="button"
             data-testid="trend-watchlist-resuggest-category"
-            disabled={selectedStocks.size === 0}
-            onClick={() => applyCategorySuggestion(selectedStocks, true)}
+            disabled={selectedStocks.size === 0 || categorySuggesting}
+            onClick={() => { void applyCategorySuggestion(selectedStocks, true) }}
             className="rounded-md border border-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-cyan-400 hover:text-cyan-700 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300"
           >
-            重新识别分类
+            {categorySuggesting ? '识别中…' : '重新识别分类'}
+          </button>
+          <button
+            type="button"
+            data-testid="trend-watchlist-web-suggest-category"
+            disabled={selectedStocks.size === 0 || webSuggesting}
+            onClick={() => setWebConfirmOpen(true)}
+            className="rounded-md border border-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-cyan-400 hover:text-cyan-700 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300"
+          >
+            {webSuggesting ? '联网中…' : '联网补充分类'}
           </button>
         </div>
+        {webPending.length > 0 && (
+          <div data-testid="trend-watchlist-web-pending" className="mt-2 flex flex-wrap gap-2">
+            {webPending.map((item) => (
+              <button
+                key={`${item.label}-${item.suggestedCategory}-${item.suggestedSubCategory}`}
+                type="button"
+                onClick={() => { void adoptPendingSuggestion(item) }}
+                className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] text-amber-900 hover:border-amber-400 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100"
+              >
+                采用：{item.label} → {item.suggestedCategory}/{item.suggestedSubCategory || '未设赛道'}
+              </button>
+            ))}
+          </div>
+        )}
         {actionMessage && <div role="status" className={`mt-2 text-xs ${actionMessage.tone === 'error' ? 'text-rose-700 dark:text-rose-300' : actionMessage.tone === 'success' ? 'text-cyan-700 dark:text-cyan-300' : 'text-amber-700 dark:text-amber-300'}`}>{actionMessage.text}</div>}
       </section>
 
@@ -605,6 +792,388 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
         {syncMessage && (
           <div data-testid="trend-watchlist-sync-error" role="status" className={syncMessage.tone === 'error' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-500'}>
             {syncMessage.text}
+          </div>
+        )}
+      </div>
+
+      <div data-testid="trend-watchlist-map-rules" className="border-b border-slate-200 bg-white px-4 py-2 text-xs dark:border-slate-800 dark:bg-slate-950 sm:px-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-slate-700 dark:text-slate-200">分类维护</span>
+          <span className="text-slate-500 dark:text-slate-400">主题树入库可编辑；映射规则 → 树内节点；联网补充需显式授权</span>
+          <button
+            type="button"
+            data-testid="trend-watchlist-map-rules-toggle"
+            onClick={() => setMaintainOpen((open) => !open)}
+            className="ml-auto min-h-10 rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:border-cyan-400 hover:text-cyan-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            {maintainOpen ? '收起维护' : '打开分类维护'}
+          </button>
+        </div>
+        {maintainOpen && (
+          <div className="mt-3 space-y-3">
+            <div className="flex gap-2" role="tablist" aria-label="分类维护页签">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={maintainTab === 'rules'}
+                data-testid="trend-watchlist-maintain-tab-rules"
+                onClick={() => setMaintainTab('rules')}
+                className={`min-h-9 rounded-md px-3 font-medium ${maintainTab === 'rules' ? 'bg-slate-900 text-white dark:bg-cyan-500 dark:text-slate-950' : 'border border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}
+              >
+                映射规则
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={maintainTab === 'tree'}
+                data-testid="trend-watchlist-maintain-tab-tree"
+                onClick={() => setMaintainTab('tree')}
+                className={`min-h-9 rounded-md px-3 font-medium ${maintainTab === 'tree' ? 'bg-slate-900 text-white dark:bg-cyan-500 dark:text-slate-950' : 'border border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}
+              >
+                主题树
+              </button>
+            </div>
+
+            {maintainTab === 'rules' && (
+              <div className="space-y-3">
+                <form
+                  className="flex flex-wrap items-end gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void (async () => {
+                      setMapRuleMessage(null)
+                      const response = await window.api.trend.upsertCategoryMapRule({
+                        keyword: mapRuleDraft.keyword.trim(),
+                        matchField: mapRuleDraft.matchField,
+                        category: mapRuleDraft.category,
+                        subCategory: mapRuleDraft.subCategory,
+                        priority: mapRuleDraft.priority,
+                        enabled: true,
+                      })
+                      if (!response.ok) {
+                        setMapRuleMessage(response.message ?? response.error ?? '保存失败')
+                        return
+                      }
+                      setMapRuleDraft({ keyword: '', matchField: 'concept', category: '', subCategory: '', priority: 80 })
+                      setMapRuleMessage('已保存规则')
+                      await loadMapRules()
+                    })()
+                  }}
+                >
+                  <label className="w-36">
+                    <span className="mb-1 block text-[11px] text-slate-500">关键词</span>
+                    <input
+                      data-testid="trend-map-rule-keyword"
+                      value={mapRuleDraft.keyword}
+                      onChange={(event) => setMapRuleDraft((draft) => ({ ...draft, keyword: event.target.value }))}
+                      className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                      required
+                    />
+                  </label>
+                  <label className="w-28">
+                    <span className="mb-1 block text-[11px] text-slate-500">匹配字段</span>
+                    <select
+                      data-testid="trend-map-rule-field"
+                      value={mapRuleDraft.matchField}
+                      onChange={(event) => setMapRuleDraft((draft) => ({
+                        ...draft,
+                        matchField: event.target.value as 'industry' | 'concept' | 'name',
+                      }))}
+                      className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                    >
+                      <option value="industry">行业</option>
+                      <option value="concept">概念</option>
+                      <option value="name">名称</option>
+                    </select>
+                  </label>
+                  <label className="w-40">
+                    <span className="mb-1 block text-[11px] text-slate-500">分类</span>
+                    <select
+                      data-testid="trend-map-rule-category"
+                      value={mapRuleDraft.category}
+                      onChange={(event) => setMapRuleDraft((draft) => ({ ...draft, category: event.target.value, subCategory: '' }))}
+                      className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                      required
+                    >
+                      <option value="">选择分类</option>
+                      {Object.keys(categoryTree).map((value) => (
+                        <option key={value} value={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="w-48">
+                    <span className="mb-1 block text-[11px] text-slate-500">细分赛道</span>
+                    <select
+                      data-testid="trend-map-rule-subcategory"
+                      value={mapRuleDraft.subCategory}
+                      onChange={(event) => setMapRuleDraft((draft) => ({ ...draft, subCategory: event.target.value }))}
+                      className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                      disabled={!mapRuleDraft.category}
+                      required
+                    >
+                      <option value="">选择赛道</option>
+                      {(categoryTree[mapRuleDraft.category] ?? []).map((value) => (
+                        <option key={value} value={value}>{value}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="w-24">
+                    <span className="mb-1 block text-[11px] text-slate-500">优先级</span>
+                    <input
+                      type="number"
+                      data-testid="trend-map-rule-priority"
+                      value={mapRuleDraft.priority}
+                      onChange={(event) => setMapRuleDraft((draft) => ({ ...draft, priority: Number(event.target.value) || 0 }))}
+                      className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    data-testid="trend-map-rule-save"
+                    className="min-h-10 rounded-md bg-slate-900 px-3 font-medium text-white dark:bg-cyan-500 dark:text-slate-950"
+                  >
+                    新增规则
+                  </button>
+                </form>
+                {mapRuleMessage && <div role="status" className="text-slate-500">{mapRuleMessage}</div>}
+                <div className="max-h-56 overflow-auto rounded-md border border-slate-200 dark:border-slate-800">
+                  {mapRulesLoading ? (
+                    <div className="px-3 py-4 text-slate-400">加载规则中…</div>
+                  ) : mapRules.length === 0 ? (
+                    <div className="px-3 py-4 text-slate-400">暂无规则</div>
+                  ) : (
+                    <table className="w-full min-w-[720px] border-collapse text-left">
+                      <thead className="sticky top-0 bg-slate-100 text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                        <tr>
+                          <th className="px-3 py-2 font-medium">关键词</th>
+                          <th className="px-3 py-2 font-medium">字段</th>
+                          <th className="px-3 py-2 font-medium">映射</th>
+                          <th className="px-3 py-2 font-medium">优先级</th>
+                          <th className="px-3 py-2 font-medium">状态</th>
+                          <th className="px-3 py-2 text-right font-medium">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mapRules.map((rule) => (
+                          <tr key={rule.id} className="border-t border-slate-100 dark:border-slate-900">
+                            <td className="px-3 py-2 font-medium text-slate-800 dark:text-slate-100">{rule.keyword}</td>
+                            <td className="px-3 py-2 text-slate-500">{matchFieldLabel(rule.matchField)}</td>
+                            <td className="px-3 py-2 text-slate-700 dark:text-slate-200">{rule.category} / {rule.subCategory}</td>
+                            <td className="px-3 py-2 tabular-nums text-slate-500">{rule.priority}</td>
+                            <td className="px-3 py-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void (async () => {
+                                    await window.api.trend.upsertCategoryMapRule({
+                                      id: rule.id,
+                                      keyword: rule.keyword,
+                                      matchField: rule.matchField,
+                                      category: rule.category,
+                                      subCategory: rule.subCategory,
+                                      priority: rule.priority,
+                                      enabled: !rule.enabled,
+                                    })
+                                    await loadMapRules()
+                                  })()
+                                }}
+                                className={rule.enabled ? 'text-cyan-700 dark:text-cyan-300' : 'text-slate-400'}
+                              >
+                                {rule.enabled ? '启用' : '停用'}
+                              </button>
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                type="button"
+                                data-testid={`trend-map-rule-delete-${rule.id}`}
+                                onClick={() => {
+                                  void (async () => {
+                                    await window.api.trend.deleteCategoryMapRule(rule.id)
+                                    await loadMapRules()
+                                  })()
+                                }}
+                                className="text-rose-700 hover:underline dark:text-rose-300"
+                              >
+                                删除
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {maintainTab === 'tree' && (
+              <div className="space-y-3" data-testid="trend-watchlist-category-tree">
+                <form
+                  className="flex flex-wrap items-end gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void (async () => {
+                      setTreeMessage(null)
+                      const response = await window.api.trend.upsertCategoryNode({
+                        category: treeDraft.category.trim(),
+                        subCategory: treeDraft.subCategory.trim(),
+                        enabled: true,
+                      })
+                      if (!response.ok) {
+                        setTreeMessage(response.message ?? response.error ?? '保存失败')
+                        return
+                      }
+                      setTreeDraft({ category: '', subCategory: '' })
+                      setTreeMessage('已保存主题树节点')
+                      await loadCategoryTree()
+                    })()
+                  }}
+                >
+                  <label className="w-40">
+                    <span className="mb-1 block text-[11px] text-slate-500">分类</span>
+                    <input
+                      data-testid="trend-category-tree-category"
+                      value={treeDraft.category}
+                      onChange={(event) => setTreeDraft((draft) => ({ ...draft, category: event.target.value }))}
+                      className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                      required
+                    />
+                  </label>
+                  <label className="w-48">
+                    <span className="mb-1 block text-[11px] text-slate-500">细分赛道（可空）</span>
+                    <input
+                      data-testid="trend-category-tree-subcategory"
+                      value={treeDraft.subCategory}
+                      onChange={(event) => setTreeDraft((draft) => ({ ...draft, subCategory: event.target.value }))}
+                      className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    data-testid="trend-category-tree-add"
+                    className="min-h-10 rounded-md bg-slate-900 px-3 font-medium text-white dark:bg-cyan-500 dark:text-slate-950"
+                  >
+                    新增节点
+                  </button>
+                </form>
+                {treeMessage && <div role="status" className="text-slate-500">{treeMessage}</div>}
+                {renameDraft && (
+                  <form
+                    className="flex flex-wrap items-end gap-2 rounded-md border border-slate-200 p-2 dark:border-slate-800"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void (async () => {
+                        const response = await window.api.trend.renameCategoryNode({
+                          from: {
+                            category: renameDraft.fromCategory,
+                            subCategory: renameDraft.fromSubCategory,
+                          },
+                          to: {
+                            category: renameDraft.toCategory.trim(),
+                            subCategory: renameDraft.toSubCategory.trim(),
+                          },
+                        })
+                        if (!response.ok) {
+                          setTreeMessage(response.message ?? response.error ?? '重命名失败')
+                          return
+                        }
+                        setRenameDraft(null)
+                        setTreeMessage('已重命名并级联更新观察池/规则')
+                        await loadCategoryTree()
+                        await loadMapRules()
+                        await loadWatchRows()
+                      })()
+                    }}
+                  >
+                    <label className="w-40">
+                      <span className="mb-1 block text-[11px] text-slate-500">新分类名</span>
+                      <input
+                        value={renameDraft.toCategory}
+                        onChange={(event) => setRenameDraft((draft) => draft ? { ...draft, toCategory: event.target.value } : draft)}
+                        className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                        required
+                      />
+                    </label>
+                    <label className="w-48">
+                      <span className="mb-1 block text-[11px] text-slate-500">新赛道名</span>
+                      <input
+                        value={renameDraft.toSubCategory}
+                        onChange={(event) => setRenameDraft((draft) => draft ? { ...draft, toSubCategory: event.target.value } : draft)}
+                        className="min-h-10 w-full rounded-md border border-slate-300 bg-white px-2 dark:border-slate-700 dark:bg-slate-900"
+                      />
+                    </label>
+                    <button type="submit" className="min-h-10 rounded-md bg-slate-900 px-3 font-medium text-white dark:bg-cyan-500 dark:text-slate-950">确认重命名</button>
+                    <button type="button" onClick={() => setRenameDraft(null)} className="min-h-10 rounded-md border border-slate-300 px-3 dark:border-slate-700">取消</button>
+                  </form>
+                )}
+                <div className="max-h-56 overflow-auto rounded-md border border-slate-200 dark:border-slate-800">
+                  {categoryNodes.length === 0 ? (
+                    <div className="px-3 py-4 text-slate-400">暂无主题树节点</div>
+                  ) : (
+                    <table className="w-full min-w-[640px] border-collapse text-left">
+                      <thead className="sticky top-0 bg-slate-100 text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                        <tr>
+                          <th className="px-3 py-2 font-medium">分类</th>
+                          <th className="px-3 py-2 font-medium">赛道</th>
+                          <th className="px-3 py-2 text-right font-medium">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {categoryNodes.map((node) => (
+                          <tr key={node.id} className="border-t border-slate-100 dark:border-slate-900">
+                            <td className="px-3 py-2 font-medium text-slate-800 dark:text-slate-100">{node.category}</td>
+                            <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{node.subCategory || '（仅分类）'}</td>
+                            <td className="px-3 py-2 text-right space-x-2">
+                              <button
+                                type="button"
+                                onClick={() => setRenameDraft({
+                                  fromCategory: node.category,
+                                  fromSubCategory: node.subCategory,
+                                  toCategory: node.category,
+                                  toSubCategory: node.subCategory,
+                                })}
+                                className="text-cyan-700 hover:underline dark:text-cyan-300"
+                              >
+                                重命名
+                              </button>
+                              <button
+                                type="button"
+                                data-testid={`trend-category-tree-delete-${node.id}`}
+                                onClick={() => {
+                                  void (async () => {
+                                    const response = await window.api.trend.deleteCategoryNode({
+                                      category: node.category,
+                                      subCategory: node.subCategory,
+                                    })
+                                    if (response.ok) {
+                                      setTreeMessage('已删除节点')
+                                      await loadCategoryTree()
+                                      return
+                                    }
+                                    if (response.error === 'IN_USE') {
+                                      setTreeDeleteTarget({
+                                        category: node.category,
+                                        subCategory: node.subCategory,
+                                        refs: response.refs,
+                                      })
+                                      return
+                                    }
+                                    setTreeMessage(response.message ?? '删除失败')
+                                  })()
+                                }}
+                                className="text-rose-700 hover:underline dark:text-rose-300"
+                              >
+                                删除
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -657,6 +1226,48 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
           busy={clearing}
           onCancel={() => setClearConfirmOpen(false)}
           onConfirm={() => { void confirmClearAll() }}
+        />
+      )}
+      {webConfirmOpen && (
+        <TrendConfirmDialog
+          title="联网补充分类"
+          description="将发起一次受控联网检索（复用研究侧搜索配置；未配置时可能走内置检索）。结果仅作建议，不会把网页原文行业名直接写入观察池。"
+          subject="本次点击视为授权这一次联网"
+          busy={webSuggesting}
+          onCancel={() => setWebConfirmOpen(false)}
+          onConfirm={() => { void runWebCategorySuggest() }}
+        />
+      )}
+      {treeDeleteTarget && (
+        <TrendConfirmDialog
+          title="清空引用后删除"
+          description={`将清空相关观察池分类并删除映射规则，再删除节点，不可自动恢复。引用：观察池 ${treeDeleteTarget.refs?.inUseWatchlist ?? 0} / 规则 ${treeDeleteTarget.refs?.inUseRules ?? 0}。`}
+          subject={`${treeDeleteTarget.category} / ${treeDeleteTarget.subCategory || '仅分类'}`}
+          busy={treeDeleting}
+          onCancel={() => setTreeDeleteTarget(null)}
+          onConfirm={() => {
+            void (async () => {
+              setTreeDeleting(true)
+              try {
+                const response = await window.api.trend.deleteCategoryNode({
+                  category: treeDeleteTarget.category,
+                  subCategory: treeDeleteTarget.subCategory,
+                  clearReferences: true,
+                })
+                if (!response.ok) {
+                  setTreeMessage(response.message ?? '删除失败')
+                  return
+                }
+                setTreeDeleteTarget(null)
+                setTreeMessage('已清空引用并删除节点')
+                await loadCategoryTree()
+                await loadMapRules()
+                await loadWatchRows()
+              } finally {
+                setTreeDeleting(false)
+              }
+            })()
+          }}
         />
       )}
       {selectedDetail && <StockKlineChipDrawer tsCode={selectedDetail.tsCode} stockName={selectedDetail.stockName} onClose={() => setSelectedDetail(null)} onNavigate={() => { navigateToStock(selectedDetail.stockCode, selectedDetail.stockName); setSelectedDetail(null) }} />}
@@ -721,4 +1332,10 @@ function normalizeCode(value: string): string {
 
 function stripCode(value: string): string {
   return value.replace(/\.(SH|SZ|BJ)$/i, '')
+}
+
+function matchFieldLabel(field: 'industry' | 'concept' | 'name'): string {
+  if (field === 'industry') return '行业'
+  if (field === 'name') return '名称'
+  return '概念'
 }

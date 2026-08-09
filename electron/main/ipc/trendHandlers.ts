@@ -23,6 +23,25 @@ import {
   updateTrendWatchNotes,
 } from '../database/trendWatchlistRepository'
 import {
+  deleteWatchlistCategoryMapRule,
+  listWatchlistCategoryMapRules,
+  upsertWatchlistCategoryMapRule,
+  type UpsertWatchlistCategoryMapRuleInput,
+} from '../database/watchlistCategoryMapRepository'
+import {
+  deleteWatchlistCategoryNode,
+  listWatchlistCategoryNodes,
+  listWatchlistCategoryTree,
+  renameWatchlistCategoryNode,
+  upsertWatchlistCategoryNode,
+} from '../database/watchlistCategoryTreeRepository'
+import { suggestWatchlistCategoryFromDb } from '../services/watchlistCategorySuggestService'
+import {
+  adoptWebCategorySuggestion,
+  webSuggestWatchlistCategory,
+} from '../services/watchlistCategoryWebSuggestService'
+import type { WatchlistCategoryMatchField } from '../services/watchlistCategoryMap'
+import {
   getTrendScoreSnapshot,
   getTrendAlerts,
   computeTrendScoresOnDemand,
@@ -566,4 +585,199 @@ export function registerTrendHandlers(): void {
       }
     }
   })
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 观察池分类：东财映射 suggest + 规则维护（一期）
+  // ──────────────────────────────────────────────────────────────────────
+  ipcMain.handle('trend:suggestWatchlistCategory', async (_event, payload: { tsCode?: string } = {}) => {
+    try {
+      const tsCode = typeof payload.tsCode === 'string' ? payload.tsCode.trim() : ''
+      if (!tsCode) return { ok: false, error: 'INVALID_PARAM', message: 'tsCode required' }
+      const data = await suggestWatchlistCategoryFromDb(getDb(), tsCode)
+      return { ok: true, data }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'SUGGEST_FAILED', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:listCategoryMapRules', () => {
+    try {
+      return { ok: true, data: listWatchlistCategoryMapRules(getDb()) }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:upsertCategoryMapRule', (_event, payload: UpsertWatchlistCategoryMapRuleInput) => {
+    try {
+      const matchField = payload?.matchField as WatchlistCategoryMatchField
+      const result = upsertWatchlistCategoryMapRule(getDb(), {
+        id: payload?.id,
+        keyword: payload?.keyword,
+        matchField,
+        category: payload?.category,
+        subCategory: payload?.subCategory ?? '',
+        priority: payload?.priority,
+        enabled: payload?.enabled,
+      })
+      if (!result.ok) return { ok: false, error: result.code, message: result.message }
+      return { ok: true, data: result.rule }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:deleteCategoryMapRule', (_event, payload: { id?: number } = {}) => {
+    try {
+      const result = deleteWatchlistCategoryMapRule(getDb(), Number(payload.id))
+      if (!result.ok) return { ok: false, error: result.code, message: result.message }
+      return { ok: true }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 观察池分类：主题树维护 + 联网补充（二期）
+  // ──────────────────────────────────────────────────────────────────────
+  ipcMain.handle('trend:listCategoryTree', () => {
+    try {
+      const db = getDb()
+      return {
+        ok: true,
+        data: {
+          tree: listWatchlistCategoryTree(db, { enabledOnly: true }),
+          nodes: listWatchlistCategoryNodes(db),
+        },
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle(
+    'trend:upsertCategoryNode',
+    (_event, payload: { category?: string; subCategory?: string; sortOrder?: number; enabled?: boolean } = {}) => {
+      try {
+        const result = upsertWatchlistCategoryNode(getDb(), {
+          category: payload.category ?? '',
+          subCategory: payload.subCategory ?? '',
+          sortOrder: payload.sortOrder,
+          enabled: payload.enabled,
+        })
+        if (!result.ok) return { ok: false, error: result.code, message: result.message }
+        return { ok: true, data: result.node }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:deleteCategoryNode',
+    (_event, payload: { category?: string; subCategory?: string; clearReferences?: boolean } = {}) => {
+      try {
+        const result = deleteWatchlistCategoryNode(getDb(), {
+          category: payload.category ?? '',
+          subCategory: payload.subCategory,
+          clearReferences: payload.clearReferences === true,
+        })
+        if (!result.ok) {
+          return {
+            ok: false,
+            error: result.code,
+            message: result.message,
+            refs: result.refs,
+          }
+        }
+        return { ok: true }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:renameCategoryNode',
+    (
+      _event,
+      payload: {
+        from?: { category?: string; subCategory?: string }
+        to?: { category?: string; subCategory?: string }
+      } = {},
+    ) => {
+      try {
+        const fromCategory = payload.from?.category ?? ''
+        const toCategory = payload.to?.category ?? ''
+        const fromHasSub = payload.from != null && 'subCategory' in payload.from
+        const toHasSub = payload.to != null && 'subCategory' in payload.to
+        const result = renameWatchlistCategoryNode(getDb(), {
+          from: fromHasSub
+            ? { category: fromCategory, subCategory: payload.from?.subCategory }
+            : { category: fromCategory },
+          to: toHasSub
+            ? { category: toCategory, subCategory: payload.to?.subCategory }
+            : { category: toCategory },
+        })
+        if (!result.ok) return { ok: false, error: result.code, message: result.message }
+        return { ok: true }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:webSuggestWatchlistCategory',
+    async (_event, payload: { tsCode?: string; name?: string } = {}) => {
+      try {
+        const data = await webSuggestWatchlistCategory(getDb(), {
+          tsCode: payload.tsCode ?? '',
+          name: payload.name,
+        })
+        if (data.status === 'error') {
+          return { ok: false, error: 'WEB_SUGGEST_FAILED', message: data.error ?? '联网补充失败', data }
+        }
+        return { ok: true, data }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'WEB_SUGGEST_FAILED', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:adoptWebCategorySuggestion',
+    (
+      _event,
+      payload: {
+        category?: string
+        subCategory?: string
+        createMapRule?: boolean
+        keyword?: string
+      } = {},
+    ) => {
+      try {
+        const result = adoptWebCategorySuggestion(getDb(), {
+          category: payload.category ?? '',
+          subCategory: payload.subCategory ?? '',
+          createMapRule: payload.createMapRule === true,
+          keyword: payload.keyword,
+        })
+        if (!result.ok) return { ok: false, error: result.code, message: result.message }
+        return { ok: true, data: { category: result.category, subCategory: result.subCategory } }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
 }

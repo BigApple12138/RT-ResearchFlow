@@ -3,7 +3,10 @@ export interface WatchlistCategorySuggestion {
   subCategory: string
 }
 
-/** 观察池分类树（与 TrendManager 下拉一致） */
+/**
+ * 观察池分类树种子 / 测试夹具。
+ * 生产下拉与校验以 DB `watchlist_category_nodes`（`trend:listCategoryTree`）为准。
+ */
 export const WATCHLIST_CATEGORY_TREE: Record<string, string[]> = {
   AI算力: ['AI服务器'],
   半导体设备: ['刻蚀设备', '薄膜沉积设备', '清洗设备', '离子注入'],

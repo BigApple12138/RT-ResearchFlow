@@ -3230,6 +3230,152 @@ const api = {
         error?: string
         message?: string
       }>,
+    suggestWatchlistCategory: (tsCode: string) =>
+      ipcRenderer.invoke('trend:suggestWatchlistCategory', { tsCode }) as Promise<{
+        ok: boolean
+        data?: {
+          category: string | null
+          subCategory: string | null
+          source: 'watchlist' | 'eastmoney-map' | null
+          eastmoneyIndustry: string | null
+          eastmoneyConcepts: string[]
+          matchedKeyword: string | null
+          stockName: string | null
+        }
+        error?: string
+        message?: string
+      }>,
+    listCategoryMapRules: () =>
+      ipcRenderer.invoke('trend:listCategoryMapRules') as Promise<{
+        ok: boolean
+        data?: Array<{
+          id: number
+          keyword: string
+          matchField: 'industry' | 'concept' | 'name'
+          category: string
+          subCategory: string
+          priority: number
+          enabled: boolean
+          createdAt: number
+          updatedAt: number
+        }>
+        error?: string
+        message?: string
+      }>,
+    upsertCategoryMapRule: (rule: {
+      id?: number
+      keyword: string
+      matchField: 'industry' | 'concept' | 'name'
+      category: string
+      subCategory: string
+      priority?: number
+      enabled?: boolean
+    }) =>
+      ipcRenderer.invoke('trend:upsertCategoryMapRule', rule) as Promise<{
+        ok: boolean
+        data?: {
+          id: number
+          keyword: string
+          matchField: 'industry' | 'concept' | 'name'
+          category: string
+          subCategory: string
+          priority: number
+          enabled: boolean
+          createdAt: number
+          updatedAt: number
+        }
+        error?: string
+        message?: string
+      }>,
+    deleteCategoryMapRule: (id: number) =>
+      ipcRenderer.invoke('trend:deleteCategoryMapRule', { id }) as Promise<{
+        ok: boolean
+        error?: string
+        message?: string
+      }>,
+    listCategoryTree: () =>
+      ipcRenderer.invoke('trend:listCategoryTree') as Promise<{
+        ok: boolean
+        data?: {
+          tree: Record<string, string[]>
+          nodes: Array<{
+            id: number
+            category: string
+            subCategory: string
+            sortOrder: number
+            enabled: boolean
+            createdAt: number
+            updatedAt: number
+          }>
+        }
+        error?: string
+        message?: string
+      }>,
+    upsertCategoryNode: (node: {
+      category: string
+      subCategory?: string
+      sortOrder?: number
+      enabled?: boolean
+    }) =>
+      ipcRenderer.invoke('trend:upsertCategoryNode', node) as Promise<{
+        ok: boolean
+        data?: {
+          id: number
+          category: string
+          subCategory: string
+          sortOrder: number
+          enabled: boolean
+          createdAt: number
+          updatedAt: number
+        }
+        error?: string
+        message?: string
+      }>,
+    deleteCategoryNode: (payload: {
+      category: string
+      subCategory?: string
+      clearReferences?: boolean
+    }) =>
+      ipcRenderer.invoke('trend:deleteCategoryNode', payload) as Promise<{
+        ok: boolean
+        error?: string
+        message?: string
+        refs?: { inUseWatchlist: number; inUseRules: number }
+      }>,
+    renameCategoryNode: (payload: {
+      from: { category: string; subCategory?: string }
+      to: { category: string; subCategory?: string }
+    }) =>
+      ipcRenderer.invoke('trend:renameCategoryNode', payload) as Promise<{
+        ok: boolean
+        error?: string
+        message?: string
+      }>,
+    webSuggestWatchlistCategory: (payload: { tsCode: string; name?: string }) =>
+      ipcRenderer.invoke('trend:webSuggestWatchlistCategory', payload) as Promise<{
+        ok: boolean
+        data?: {
+          status: 'ok' | 'error'
+          pair: { category: string; subCategory: string; matchedKeyword: string | null } | null
+          pending: Array<{ label: string; suggestedCategory: string; suggestedSubCategory: string }>
+          rawTags: string[]
+          error: string | null
+        }
+        error?: string
+        message?: string
+      }>,
+    adoptWebCategorySuggestion: (payload: {
+      category: string
+      subCategory?: string
+      createMapRule?: boolean
+      keyword?: string
+    }) =>
+      ipcRenderer.invoke('trend:adoptWebCategorySuggestion', payload) as Promise<{
+        ok: boolean
+        data?: { category: string; subCategory: string }
+        error?: string
+        message?: string
+      }>,
     updateGroupTag: (tsCode: string, groupTag: string) =>
       ipcRenderer.invoke('trend:updateGroupTag', { tsCode, groupTag }) as Promise<{ ok: boolean; error?: string }>,
     updateNotes: (tsCode: string, subCategory: string, notes: string) =>
