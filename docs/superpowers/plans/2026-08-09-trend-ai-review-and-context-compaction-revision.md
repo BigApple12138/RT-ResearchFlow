@@ -4,7 +4,7 @@
 
 **Goal:** 在已有趋势复核骨架上完成契约收敛、不可变 revision、sequence 归档、累计摘要、并发锁、幂等 IPC、UI 与全量验证。
 
-**状态：** 执行中（实现、定向/全量验证与设计初衷检核已完成，待最终 whole-branch review）
+**状态：** 已完成（实现、全量验证、whole-branch review 与 scoped re-review 均通过）
 
 **Architecture:** 主进程以 `discussionSessionLock` 串行化所有会话级 AI 写入；`discussionContextCompactionService` 负责热消息规范化、累计摘要、归档和模型上下文；趋势复核 Repository 把不可变 revisions 与最新 projection 分离。Renderer 只提交身份和展示 DTO，所有事实、sequence、busy 判断与词表校验均由主进程负责。
 
@@ -157,12 +157,12 @@
 - Modify: `docs/superpowers/plans/2026-08-09-trend-ai-review-and-context-compaction-revision.md`
 - Modify: `docs/superpowers/specs/2026-08-09-trend-ai-review-and-context-compaction-revision-design.md`
 
-- [x] **Step 1: Run targeted unit tests** — `pnpm run test:unit -- tests/unit/trendStructureReview.service.test.ts tests/unit/trendStructureReview.repository.test.ts tests/unit/discussionContextCompaction.service.test.ts tests/unit/discussionContextCompaction.repository.test.ts tests/unit/researchDiscussionArchive.repository.test.ts tests/unit/researchDiscussionContext.service.test.ts tests/unit/aiDiscussionFollowUp.concurrency.test.ts tests/unit/industryResearchChangeGeneration.service.test.ts tests/unit/portfolioBrief.service.test.ts`；9 files / 52 tests passed。
+- [x] **Step 1: Run targeted unit tests** — 初次定向回归 9 files / 52 tests passed；final review fix wave 扩展到 10 files / 73 tests passed，覆盖全量 busy 查询、session-lock 竞态、归档 fail-closed、requestId 绑定与 portfolio brief 串行化。
 - [x] **Step 2: Run typecheck/lint/build** — `pnpm run verify` 已包含并通过 typecheck、lint、unit、build；lint 仅有既有 warnings。
 - [x] **Step 3: Rebuild Electron native ABI and run verify** — 本轮没有原生依赖变更；Electron unit 与 E2E 均实际加载 `better-sqlite3`，ABI 可用；随后 `pnpm run verify` 通过。
 - [x] **Step 4: Run boundary/E2E** — `./.github/scripts/Test-PublicBoundary.ps1` 通过（912 个文件）；两组目标 E2E 通过（2/2）。
-- [x] **Step 5: Audit every requirement** — 已在本 plan 末尾填写设计初衷检核；当前状态暂保持“执行中”，待最终 whole-branch review 完成后改为“已完成”。
-- [x] **Step 6: Commit documentation only if changed** — 本轮文档更新将在最终 review 前统一提交。
+- [x] **Step 5: Audit every requirement** — 已填写设计初衷检核；whole-branch review 的 4 个 Important 与 1 个 Minor finding 由 `cf35d88` 修复，scoped re-review 判定 5/5 ADDRESSED，未发现新 Critical/Important。
+- [x] **Step 6: Commit documentation only if changed** — 初次验收归档为 `a1cac8c`、`59f4e13`；最终 review/验证状态在本次文档提交归档。
 
 ## 设计初衷检核（完成后填写）
 
@@ -170,16 +170,16 @@
 |---|---|---|
 | 五枚举、rationale/focusPoints 有界 | 符合 | `trendStructureReviewTypes.ts`、`trendStructureReview.service.test.ts`、`trendStructureReview.repository.test.ts` 覆盖词表与长度边界。 |
 | 白名单事实不含易变行情和持仓字段 | 符合 | `trendStructureReviewService.ts` 白名单构造；趋势复核服务/Workbench 单测验证不带行情、持仓和 Renderer 字段。 |
-| 复核 revision 不可覆盖、latest projection 正确 | 符合 | Migration 140–142 与 `trendStructureReview.repository.test.ts` 验证 legacy 保留、同 hash 重放和新 hash 追加 revision。 |
+| 复核 revision 不可覆盖、latest projection 正确 | 符合 | Migration 140–143 与 `trendStructureReview.repository.test.ts` 验证 legacy 保留、同 hash 重放、新 hash 追加 revision，以及每个成功 requestId 的不可变身份绑定。 |
 | AI 不改本地 trendState | 符合 | `trendWorkbench.review.test.ts` 与 `trend-ai-review.spec.ts` 验证本地徽章状态在 AI 复核前后不变。 |
 | 批量 ≤20、串行、逐条进度 | 符合 | `trendReview.handlers.test.ts` 验证并发/进度；E2E 验证批量确认和完成结果。 |
 | stale 与带事实去讨论 | 符合 | Workbench stale 回归与 `trend-ai-review.spec.ts` 验证身份化入口、最新事实重建和 return target。 |
 | sequence 由主进程生成并可恢复 | 符合 | 会话/归档/上下文 Repository 单测与 `researchDiscussionContext.service.test.ts` 验证 sequence 生成、恢复和旧 index 兼容。 |
 | 累计摘要、归档、热尾部、失败原子性 | 符合 | `discussionContextCompaction.service.test.ts`、follow-up 并发回归和 `ai-discussion-compaction.spec.ts` 验证 12 对阈值、6 条热尾部、归档及失败不改写。 |
 | FR-239 不受 compaction 游标污染 | 符合 | `researchDiscussionArchive.repository.test.ts` 与 `industryResearchChangeGeneration.service.test.ts` 验证 through sequence 读取和独立游标推进。 |
-| busy、session lock、requestId 幂等 | 符合 | `discussionSessionLock.test.ts`、`aiDiscussionFollowUp.concurrency.test.ts` 与 compaction E2E 验证 busy 拒绝、串行写回和 requestId 重放。 |
+| busy、session lock、requestId 幂等 | 符合 | all-row busy 查询、研究启动/follow-up/compact/portfolio session lock 回归、`aiDiscussionFollowUp.concurrency.test.ts` 与 compaction E2E 验证 busy 拒绝、串行写回和 requestId 重放。 |
 | 自动/手动 compact 与配置开关 | 符合 | AI IPC/Follow-up 单测、AI 配置与分析 UI 改动，以及 compaction E2E 覆盖自动失败继续追问、手动整理和开关。 |
-| 三份组件 README、单测、E2E、verify | 符合 | `AIAnalysis/README.md`、`ResearchDiscussion/README.md`、`TrendWatcher/README.md` 已更新；定向 9 files/52 tests、目标 E2E 2/2、`pnpm run verify`、Public Boundary 全部通过。 |
+| 三份组件 README、单测、E2E、verify | 符合 | 三份 README 已更新；final fix 定向 10 files/73 tests、最终 `pnpm run verify`、Public Boundary（912 文件）、目标 E2E 2/2 全部通过。 |
 
-**总评：** 设计约束已落地，代码、迁移、IPC、并发、UI 与审计证据闭环；没有发现产品范围外的荐股、自动交易或跨会话长期记忆扩张。最终状态待 whole-branch review 再确认。
+**总评：** 设计约束已落地，代码、Migration 140–143、IPC、并发、UI 与审计证据闭环；whole-branch review 的全部 finding 已修复并通过 scoped re-review，最终全量门禁通过。没有引入荐股、自动交易或跨会话长期记忆扩张。
 **检核人 / 日期：** Codex / 2026-08-09
