@@ -1319,6 +1319,9 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       if (!origin || typeof origin.type !== 'string' || !originTypes.has(origin.type as ResearchDiscussionOriginType)) {
         throw new ResearchDiscussionError('INVALID_PARAM', 'origin.type 格式无效')
       }
+      if (origin.type === 'manual' && origin.id != null) {
+        throw new ResearchDiscussionError('INVALID_PARAM', '普通主动讨论不能指定来源 ID')
+      }
       const returnTarget = data.returnTarget && typeof data.returnTarget === 'object'
         ? data.returnTarget as Record<string, unknown>
         : null

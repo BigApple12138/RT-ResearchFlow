@@ -32,6 +32,8 @@
 
 趋势雷达的 AI 结构复核必须由用户显式点击。行内「AI复核结构」调用主进程 `trend:reviewStructure`，成功后刷新 workbench；复核失败只显示 Toast，不改变本地趋势状态。勾选按 `tsCode` 保存，最多20只，批量入口调用串行的 `trend:reviewStructureBatch` 并展示逐条成功/失败结果。趋势雷达向 `StockKlineChipDrawer` 传入可选的复核 action；未传入时，其他调用方不显示该按钮。
 
+复核成功且未过期时，行内和 K 线抽屉提供「带着复核去讨论」。Renderer 只调用 `trend:openStructureReviewDiscussion` 提交复核身份；主进程重新校验 `scoreDate/factsHash`，恢复或创建带 `trend_review` 快照的研究讨论，并固定返回趋势雷达。首条问题只预填，不自动触发 followUp；事实变化后必须先重新复核。
+
 ## 边界
 
 - 不接入券商，不计算仓位市值，不产生交易指令。

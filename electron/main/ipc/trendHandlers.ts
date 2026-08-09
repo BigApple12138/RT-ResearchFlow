@@ -42,6 +42,11 @@ import {
   normalizeTrendTsCode,
   type AiTrendVerdict,
 } from '../services/trendStructureReviewTypes'
+import {
+  startTrendReviewDiscussion,
+  type StartTrendReviewDiscussionInput,
+} from '../services/trendReviewDiscussionBridge'
+import { ResearchDiscussionError, type ResearchDiscussionReturnTarget } from '../services/researchDiscussionContextService'
 import { getDataSourceConfig } from '../database/dataSourceRepository'
 import { decryptApiKey } from '../utils/apiKeyEncryption'
 import { getLastNTradingDays } from '../database/tradeCalRepository'
@@ -159,6 +164,44 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function validateTrendReviewDiscussionPayload(payload: unknown): StartTrendReviewDiscussionInput {
+  if (!isRecord(payload)
+    || typeof payload.requestId !== 'string'
+    || !UUID_PATTERN.test(payload.requestId)
+    || typeof payload.tsCode !== 'string'
+    || !TS_CODE_PATTERN.test(payload.tsCode.trim())
+    || typeof payload.scoreDate !== 'string'
+    || !/^\d{8}$/.test(payload.scoreDate)
+    || typeof payload.factsHash !== 'string'
+    || !/^[a-f0-9]{64}$/i.test(payload.factsHash)
+    || !isRecord(payload.returnTarget)
+    || typeof payload.returnTarget.tab !== 'string'
+    || !payload.returnTarget.tab.trim()
+    || payload.returnTarget.tab.length > 80) {
+    throw new Error('INVALID_PARAM')
+  }
+  return {
+    requestId: payload.requestId,
+    tsCode: payload.tsCode.trim().toUpperCase(),
+    scoreDate: payload.scoreDate,
+    factsHash: payload.factsHash.toLowerCase(),
+    initialQuestion: typeof payload.initialQuestion === 'string' ? payload.initialQuestion.slice(0, 4_000) : undefined,
+    returnTarget: sanitizeReturnTarget(payload.returnTarget),
+  }
+}
+
+function sanitizeReturnTarget(value: Record<string, unknown>): ResearchDiscussionReturnTarget {
+  return {
+    tab: String(value.tab).trim().slice(0, 80),
+    subTab: typeof value.subTab === 'string' ? value.subTab.slice(0, 80) : undefined,
+    entityId: typeof value.entityId === 'string' ? value.entityId.slice(0, 128) : undefined,
+    stateKey: typeof value.stateKey === 'string' ? value.stateKey.slice(0, 128) : undefined,
+    scrollTop: typeof value.scrollTop === 'number' && Number.isFinite(value.scrollTop) && value.scrollTop >= 0
+      ? Math.min(10_000_000, Math.trunc(value.scrollTop))
+      : undefined,
+  }
 }
 
 export function registerTrendHandlers(): void {
@@ -341,6 +384,36 @@ export function registerTrendHandlers(): void {
     } catch (error) {
       const message = errorMessage(error)
       return { ok: false, error: message === 'INVALID_PARAM' ? 'INVALID_PARAM' : 'DB_ERROR', message }
+    }
+  })
+
+  ipcMain.handle('trend:openStructureReviewDiscussion', (_event, payload: unknown) => {
+    try {
+      const result = startTrendReviewDiscussion(getDb(), validateTrendReviewDiscussionPayload(payload))
+      const row = result.session
+      return {
+        ok: true,
+        data: {
+          ...result,
+          session: {
+            id: row.id,
+            createdAt: new Date(row.createdAt).toISOString(),
+            provider: row.provider,
+            model: row.model,
+            articleUrls: JSON.parse(row.articleUrls) as string[],
+            promptSent: row.promptSent,
+            response: row.response,
+            responseRound2: row.responseRound2 ?? null,
+            messages: row.messages ? JSON.parse(row.messages) : [],
+            isError: row.isError === 1,
+            scanRunId: row.scanRunId,
+          },
+        },
+      }
+    } catch (error) {
+      if (error instanceof ResearchDiscussionError) return { ok: false, code: error.code, message: error.message }
+      const message = errorMessage(error)
+      return { ok: false, code: message === 'INVALID_PARAM' ? 'INVALID_PARAM' : 'DB_ERROR', message }
     }
   })
 

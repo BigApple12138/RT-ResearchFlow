@@ -88,6 +88,10 @@ test('趋势雷达支持单只与批量 AI 结构复核，并保留本地状态'
     await expect(window.getByTestId('trend-ai-review-batch-progress')).toContainText('批量复核完成', { timeout: 30_000 })
     await expect(window.getByTestId('trend-ai-review-batch-progress')).toContainText('1 成功')
 
+    await row.getByTestId('trend-ai-review-discussion-600004').click()
+    await expect(window.getByTestId('ai-analysis-page')).toBeVisible({ timeout: 30_000 })
+    await expect(window.getByText('待补样本 · 趋势结构复核', { exact: true })).toBeVisible({ timeout: 30_000 })
+
     await window.setViewportSize({ width: 1024, height: 768 })
     await window.emulateMedia({ reducedMotion: 'reduce' })
     await window.evaluate(() => document.documentElement.classList.add('dark'))

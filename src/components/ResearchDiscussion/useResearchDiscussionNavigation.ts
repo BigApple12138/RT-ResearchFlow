@@ -4,6 +4,7 @@ import type {
   ResearchApiResponse,
   ResearchDiscussionOriginType,
   ResearchDiscussionSummary,
+  TrendReviewDiscussionRequest,
 } from './researchDiscussionTypes'
 
 export interface StartDiscussionRequest {
@@ -72,6 +73,40 @@ export function useResearchDiscussionNavigation() {
     }
   }, [navigateToResearchDiscussion])
 
+  const startFromTrendReview = useCallback(async (request: TrendReviewDiscussionRequest) => {
+    setStarting(true)
+    setError(null)
+    try {
+      const returnTarget = {
+        ...request.returnTarget,
+        scrollTop: request.returnTarget.scrollTop ?? sourceScrollTop(request.returnTarget.stateKey),
+      }
+      const response = await window.api.trend.openStructureReviewDiscussion({
+        requestId: crypto.randomUUID(),
+        ...request,
+        returnTarget,
+      }) as ResearchApiResponse<{
+        discussion: ResearchDiscussionSummary
+        resumed: boolean
+        initialQuestion?: string | null
+      }>
+      if (!response.ok || !response.data) {
+        throw new Error(response.message || response.error || '打开趋势复核讨论失败')
+      }
+      navigateToResearchDiscussion(
+        response.data.discussion.sessionId,
+        response.data.resumed ? null : (response.data.initialQuestion ?? request.initialQuestion ?? null),
+      )
+      return response.data
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught)
+      setError(message)
+      return null
+    } finally {
+      setStarting(false)
+    }
+  }, [navigateToResearchDiscussion])
+
   const startFromEvidence = useCallback(async (request: StartEvidenceDiscussionRequest) => {
     setStarting(true)
     setError(null)
@@ -106,5 +141,5 @@ export function useResearchDiscussionNavigation() {
     }
   }, [navigateToResearchDiscussion])
 
-  return { start, startFromEvidence, starting, error, clearError: () => setError(null) }
+  return { start, startFromTrendReview, startFromEvidence, starting, error, clearError: () => setError(null) }
 }

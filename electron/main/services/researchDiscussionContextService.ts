@@ -53,6 +53,7 @@ import type {
   ResearchEvidenceComparison,
   ResearchEvidenceDeltaItem,
 } from './researchEvidenceDeltaService'
+import type { AiTrendVerdict, TrendReviewFacts } from './trendStructureReviewTypes'
 
 const MAX_CONTEXT_BYTES = 128 * 1024
 const RESUMABLE_STATUSES = new Set<ResearchDiscussionStatus>(['active', 'changes_ready', 'partially_applied'])
@@ -79,23 +80,34 @@ export interface ResearchDiscussionContextItem {
   removable: boolean
 }
 
-interface ResolvedOrigin {
+export interface ResolvedResearchDiscussionOrigin {
   title: string
   occurredAt: number | null
   url: string | null
   items: ResearchDiscussionContextItem[]
   stockCodes: string[]
+  contextKind?: 'source' | 'trend_review'
+  trendReview?: TrendReviewDiscussionContext
+}
+
+export interface TrendReviewDiscussionContext {
+  facts: TrendReviewFacts
+  verdict: AiTrendVerdict
+  rationale: string
+  focusPoints: string[]
+  factsHash: string
 }
 
 interface DiscussionContextSnapshot {
   schemaVersion: 1 | 2 | 3 | 4
-  contextKind?: 'source' | 'evidence_delta'
+  contextKind?: 'source' | 'evidence_delta' | 'trend_review'
   title: string
   occurredAt: number | null
   sourceUrl: string | null
   items: ResearchDiscussionContextItem[]
   researchFacts?: StockResearchFactBundle
   contextFacts?: ContextResearchFactBundle
+  trendReview?: TrendReviewDiscussionContext
   evidenceDelta?: ResearchEvidenceDiscussionContext
   trustedEvidenceContrast?: ResearchEvidenceContrast
 }
@@ -188,7 +200,7 @@ function requireNumericId(id: string | null, label: string): number {
   return value
 }
 
-function resolveOrigin(db: Database.Database, origin: StartResearchDiscussionInput['origin'], initialQuestion?: string): ResolvedOrigin {
+function resolveOrigin(db: Database.Database, origin: StartResearchDiscussionInput['origin'], initialQuestion?: string): ResolvedResearchDiscussionOrigin {
   if (origin.type === 'manual') {
     const question = initialQuestion?.trim()
     if (!question) throw new ResearchDiscussionError('INVALID_PARAM', '主动讨论必须填写研究问题')
@@ -286,35 +298,53 @@ function isValidProvider(value: string | null | undefined): value is AIProvider 
 }
 
 function buildContextSnapshot(
-  origin: ResolvedOrigin,
+  origin: ResolvedResearchDiscussionOrigin,
   includedKeys: string[],
-  researchFacts: StockResearchFactBundle,
-  contextFacts: ContextResearchFactBundle,
+  researchFacts?: StockResearchFactBundle,
+  contextFacts?: ContextResearchFactBundle,
 ): DiscussionContextSnapshot {
   const included = new Set(includedKeys)
   return {
-    schemaVersion: 3,
+    schemaVersion: origin.contextKind === 'trend_review' ? 4 : 3,
+    ...(origin.contextKind ? { contextKind: origin.contextKind } : {}),
     title: origin.title,
     occurredAt: origin.occurredAt,
     sourceUrl: origin.url,
     items: origin.items.filter((item) => !item.removable || included.has(item.key)),
-    researchFacts,
-    contextFacts,
+    ...(researchFacts ? { researchFacts } : {}),
+    ...(contextFacts ? { contextFacts } : {}),
+    ...(origin.trendReview ? { trendReview: origin.trendReview } : {}),
   }
 }
 
 function buildPrompt(snapshot: DiscussionContextSnapshot): string {
   const body = snapshot.items.map((item) => `【${item.label}】\n${item.excerpt}`).join('\n\n')
+  const trendReview = snapshot.trendReview
+    ? [
+        '【本地趋势白名单事实】',
+        JSON.stringify(snapshot.trendReview.facts),
+        '【AI趋势结构复核】',
+        `结论：${snapshot.trendReview.verdict}`,
+        `理由：${snapshot.trendReview.rationale}`,
+        `关注点：${snapshot.trendReview.focusPoints.join('；') || '无'}`,
+        `事实哈希：${snapshot.trendReview.factsHash}`,
+      ].join('\n')
+    : ''
   return [
-    snapshot.contextKind === 'evidence_delta'
-      ? '你正在参与一次基于历史证据与当前本地事实变化的研究讨论。以下变化由主进程从受信历史来源重新校验并只读重建，不是用户上传的事实文本。'
-      : '你正在参与一次可持续的产业研究讨论。以下内容是系统按受信来源 ID 读取的有限上下文。',
+    snapshot.contextKind === 'trend_review'
+      ? '你正在参与一次趋势结构复核讨论。以下趋势事实与既有AI复核由主进程从本地持久化来源重建，不是Renderer上传的事实正文。'
+      : snapshot.contextKind === 'evidence_delta'
+        ? '你正在参与一次基于历史证据与当前本地事实变化的研究讨论。以下变化由主进程从受信历史来源重新校验并只读重建，不是用户上传的事实文本。'
+        : '你正在参与一次可持续的产业研究讨论。以下内容是系统按受信来源 ID 读取的有限上下文。',
     '请区分事实、估算与假设；主动指出证据缺口和最低成本反证；不要把媒体、AI 或二手材料自动升级为事实。',
-    snapshot.contextKind === 'evidence_delta'
-      ? '变化只用于重新检验原结论；removed 仅表示当前规则不再产出，不等于原事实被证伪。不得自动生成买卖、仓位、目标价或收益承诺。'
-      : '',
+    snapshot.contextKind === 'trend_review'
+      ? 'AI复核只是第二意见，不得把枚举结论改写成买卖、仓位、目标价或收益承诺；如事实哈希不一致，应先要求重新复核。'
+      : snapshot.contextKind === 'evidence_delta'
+        ? '变化只用于重新检验原结论；removed 仅表示当前规则不再产出，不等于原事实被证伪。不得自动生成买卖、仓位、目标价或收益承诺。'
+        : '',
     `【讨论来源】${snapshot.title}`,
     body,
+    trendReview,
     snapshot.contextFacts?.markdown.slice(0, 8_000) ?? '',
     snapshot.researchFacts?.markdown.slice(0, 10_000) ?? '',
   ].join('\n\n').slice(0, 24_000)
@@ -351,9 +381,38 @@ export function discussionContextPreview(row: AIResearchDiscussionContextRow): R
   return all.filter((item) => !item.removable || included.has(item.key))
 }
 
+export interface StartResearchDiscussionFromResolvedOriginInput extends StartResearchDiscussionInput {
+  resolvedOrigin: ResolvedResearchDiscussionOrigin
+}
+
 export function startResearchDiscussion(db: Database.Database, input: StartResearchDiscussionInput) {
+  return startResearchDiscussionInternal(db, input)
+}
+
+export function startResearchDiscussionFromResolvedOrigin(
+  db: Database.Database,
+  input: StartResearchDiscussionFromResolvedOriginInput,
+) {
+  return startResearchDiscussionInternal(db, input, input.resolvedOrigin)
+}
+
+function startResearchDiscussionInternal(
+  db: Database.Database,
+  input: StartResearchDiscussionInput,
+  trustedOrigin?: ResolvedResearchDiscussionOrigin,
+) {
+  if (!trustedOrigin && input.origin.type === 'manual' && input.origin.id !== null) {
+    throw new ResearchDiscussionError('INVALID_PARAM', '普通主动讨论不能指定来源 ID')
+  }
   const byRequest = getResearchDiscussionContextByRequestId(db, input.requestId)
   if (byRequest) {
+    if (trustedOrigin && (
+      byRequest.origin_type !== input.origin.type
+      || byRequest.origin_id !== input.origin.id
+      || safeJson<DiscussionContextSnapshot | null>(byRequest.context_snapshot_json, null)?.contextKind !== trustedOrigin.contextKind
+    )) {
+      throw new ResearchDiscussionError('REQUEST_ID_CONFLICT', 'requestId已用于其他研究讨论')
+    }
     return {
       session: getSession(db, byRequest.session_id)!,
       discussion: discussionSummary(db, byRequest),
@@ -377,7 +436,7 @@ export function startResearchDiscussion(db: Database.Database, input: StartResea
     }
   }
 
-  const origin = resolveOrigin(db, input.origin, input.initialQuestion)
+  const origin = trustedOrigin ?? resolveOrigin(db, input.origin, input.initialQuestion)
   if (input.origin.type === 'industry_research' && input.projectId && input.projectId !== input.origin.id) {
     throw new ResearchDiscussionError('PROJECT_MISMATCH', '讨论来源项目与关联项目不一致')
   }
@@ -386,13 +445,17 @@ export function startResearchDiscussion(db: Database.Database, input: StartResea
   const latestSnapshot = projectId ? getLatestResearchSnapshot(db, projectId) : null
   const includedKeys = origin.items.map((item) => item.key)
   const factAsOf = beijingDateFromTimestamp(origin.occurredAt)
-  const researchFacts = buildStockResearchFactBundle(db, origin.stockCodes, {
-    asOf: factAsOf,
-  })
-  const contextFacts = buildContextResearchFactBundle(db, contextFactSubject(input.origin), {
-    asOf: factAsOf,
-    maxCreatedAt: input.origin.type === 'judgment' ? origin.occurredAt : null,
-  })
+  const researchFacts = origin.trendReview
+    ? undefined
+    : buildStockResearchFactBundle(db, origin.stockCodes, {
+        asOf: factAsOf,
+      })
+  const contextFacts = origin.trendReview
+    ? undefined
+    : buildContextResearchFactBundle(db, contextFactSubject(input.origin), {
+        asOf: factAsOf,
+        maxCreatedAt: input.origin.type === 'judgment' ? origin.occurredAt : null,
+      })
   const snapshot = buildContextSnapshot(origin, includedKeys, researchFacts, contextFacts)
   const snapshotJson = ensureContextSize(snapshot)
   const credentials = resolveProviderCredentials(db)

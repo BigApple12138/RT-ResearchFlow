@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { StockKlineChipDrawer } from '../shared/StockMiniChart'
 import { useAppStore } from '../../store/appStore'
+import { useResearchDiscussionNavigation } from '../ResearchDiscussion/useResearchDiscussionNavigation'
 import { AiTrendReviewBadge } from './AiTrendReviewBadge'
 import {
   ScoreSparkline,
@@ -55,6 +56,7 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
   const [batchConfirmCodes, setBatchConfirmCodes] = useState<string[] | null>(null)
   const [toast, setToast] = useState<ReviewToast | null>(null)
   const navigateToStock = useAppStore((state) => state.navigateToStock)
+  const { startFromTrendReview, starting: startingDiscussion } = useResearchDiscussionNavigation()
 
   useEffect(() => {
     if (!snapshot) return
@@ -197,6 +199,30 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
       setBatchReview(null)
       showToast('error', '批量复核失败，请稍后重试。')
     }
+  }
+
+  const discussReview = async (item: TrendWorkbenchItem) => {
+    const review = item.structureReview
+    if (!review) {
+      showToast('info', '请先完成一次 AI 结构复核，再带着复核去讨论。')
+      return
+    }
+    if (review.stale) {
+      showToast('info', '当前复核已过期，请先重新复核。')
+      return
+    }
+    const started = await startFromTrendReview({
+      tsCode: item.tsCode,
+      scoreDate: review.scoreDate,
+      factsHash: review.factsHash,
+      returnTarget: {
+        tab: 'trend-watcher',
+        subTab: 'dashboard',
+        entityId: item.tsCode,
+        stateKey: 'trend-radar',
+      },
+    })
+    if (!started) showToast('error', `${item.stockName} 复核讨论打开失败，请先刷新后重试。`)
   }
 
   return (
@@ -423,15 +449,26 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
                     </div>
                   </td>
                   <td className="px-3 py-2.5" onClick={(event) => event.stopPropagation()}>
-                    <button
-                      type="button"
-                      data-testid={`trend-ai-review-${item.stockCode}`}
-                      onClick={() => { void reviewOne(item) }}
-                      disabled={reviewingCodes.has(item.tsCode) || batchRunning}
-                      className="min-h-9 whitespace-nowrap rounded-md border border-violet-200 bg-violet-50 px-2.5 text-[11px] font-semibold text-violet-800 transition-colors hover:border-violet-300 hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:cursor-wait disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/45 dark:text-violet-200 dark:hover:bg-violet-900/55"
-                    >
-                      {reviewingCodes.has(item.tsCode) ? '复核中…' : item.structureReview?.stale ? '重新复核' : 'AI复核结构'}
-                    </button>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        data-testid={`trend-ai-review-${item.stockCode}`}
+                        onClick={() => { void reviewOne(item) }}
+                        disabled={reviewingCodes.has(item.tsCode) || batchRunning || startingDiscussion}
+                        className="min-h-9 whitespace-nowrap rounded-md border border-violet-200 bg-violet-50 px-2.5 text-[11px] font-semibold text-violet-800 transition-colors hover:border-violet-300 hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:cursor-wait disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/45 dark:text-violet-200 dark:hover:bg-violet-900/55"
+                      >
+                        {reviewingCodes.has(item.tsCode) ? '复核中…' : item.structureReview?.stale ? '重新复核' : 'AI复核结构'}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`trend-ai-review-discussion-${item.stockCode}`}
+                        onClick={() => { void discussReview(item) }}
+                        disabled={!item.structureReview || item.structureReview.stale || batchRunning || startingDiscussion}
+                        className="min-h-9 whitespace-nowrap rounded-md border border-indigo-200 bg-indigo-50 px-2.5 text-[11px] font-semibold text-indigo-800 transition-colors hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-indigo-800 dark:bg-indigo-950/45 dark:text-indigo-200 dark:hover:bg-indigo-900/55"
+                      >
+                        {startingDiscussion ? '打开讨论中…' : '带着复核去讨论'}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -450,6 +487,7 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
             setSelected(null)
           }}
           onReview={() => { void reviewOne(selected) }}
+          onDiscuss={() => { void discussReview(selected) }}
         />
       )}
     </div>

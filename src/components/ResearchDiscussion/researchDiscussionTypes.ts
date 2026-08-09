@@ -3,6 +3,14 @@ import type { ResearchDiscussionReturnTarget } from '../../store/appStore'
 export type ResearchDiscussionOriginType = 'daily_review' | 'weekly_review' | 'decision_signal' | 'judgment' | 'industry_research' | 'briefing' | 'manual'
 export type ResearchDiscussionStatus = 'active' | 'changes_ready' | 'partially_applied' | 'applied' | 'archived'
 
+export interface TrendReviewDiscussionRequest {
+  tsCode: string
+  scoreDate: string
+  factsHash: string
+  initialQuestion?: string
+  returnTarget: ResearchDiscussionReturnTarget
+}
+
 export interface ResearchDiscussionContextItem {
   key: string
   type: string

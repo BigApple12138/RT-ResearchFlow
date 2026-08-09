@@ -3247,6 +3247,26 @@ const api = {
         error?: string
         message?: string
       }>,
+    openStructureReviewDiscussion: (payload: {
+      requestId: string
+      tsCode: string
+      scoreDate: string
+      factsHash: string
+      initialQuestion?: string
+      returnTarget: { tab: string; subTab?: string; entityId?: string; stateKey?: string; scrollTop?: number }
+    }) => ipcRenderer.invoke('trend:openStructureReviewDiscussion', payload) as Promise<{
+      ok: boolean
+      data?: {
+        session: { id: number; createdAt: string; provider: string; model: string; promptSent: string; response: string | null; messages: unknown[] }
+        discussion: unknown
+        contextPreview: unknown[]
+        resumed: boolean
+        initialQuestion?: string | null
+      }
+      code?: string
+      error?: string
+      message?: string
+    }>,
     getAlerts: (days?: number) =>
       ipcRenderer.invoke('trend:getAlerts', { days }) as Promise<{
         ok: boolean

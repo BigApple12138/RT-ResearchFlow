@@ -7,6 +7,7 @@
 ## 事件流
 
 - 来源页调用 `useResearchDiscussionNavigation.start`，主进程按来源 ID 构造有限上下文并创建或恢复会话。
+- 趋势雷达调用 `startFromTrendReview` 时只提交 `tsCode + scoreDate + factsHash` 身份；主进程从当前 workbench 与趋势复核表重建 `contextKind: 'trend_review'` 快照，使用 `trend-review:{code}:{date}:{factsHash}` 隔离会话。持仓成本、浮盈亏和处置建议不进入该事实包，首条问题只预填、不自动发送。
 - 审计事实对比存在真实变化时调用 `useResearchDiscussionNavigation.startFromEvidence`。renderer只提交原消息或产业运行身份；主进程重新校验并重建差异，按内容指纹创建或恢复schema v4专项讨论，界面只预填问题而不自动发送。
 - Zustand 只保存待打开 session、返回目标和未发送草稿；返回目标包含当前局部视图与受限滚动位置，恢复已有讨论时刷新为本次进入位置。来源事实、消息、候选和研究版本均在主进程持久化。
 - `ResearchDiscussionContextBar` 在首条消息前允许移除可选上下文，并始终提供可预测的返回来源动作。
