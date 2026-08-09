@@ -1180,6 +1180,16 @@ interface TrendBenchmarkHealth {
   message: string
 }
 
+interface TrendStructureReviewDto {
+  verdict: 'trend_intact' | 'trend_improving' | 'trend_deteriorating' | 'trend_broken' | 'need_more_data'
+  rationale: string
+  focusPoints: string[]
+  stale: boolean
+  scoreDate: string
+  factsHash: string
+  createdAt: number
+}
+
 interface TrendWorkbenchItem {
   tsCode: string
   stockCode: string
@@ -1239,6 +1249,7 @@ interface TrendWorkbenchItem {
     turnoverRatio: number | null
   } | null
   benchmarkHealth: TrendBenchmarkHealth
+  structureReview: TrendStructureReviewDto | null
 }
 
 interface TrendWorkbenchSnapshot {
@@ -3214,6 +3225,25 @@ const api = {
       ipcRenderer.invoke('trend:getWorkbench') as Promise<{
         ok: boolean
         data?: TrendWorkbenchSnapshot
+        error?: string
+        message?: string
+      }>,
+    reviewStructure: (payload: { requestId: string; tsCode: string }) =>
+      ipcRenderer.invoke('trend:reviewStructure', payload) as Promise<{
+        ok: boolean
+        data?: TrendStructureReviewDto
+        error?: string
+        message?: string
+      }>,
+    reviewStructureBatch: (payload: { requestId: string; tsCodes: string[] }) =>
+      ipcRenderer.invoke('trend:reviewStructureBatch', payload) as Promise<{
+        ok: boolean
+        data?: Array<{
+          tsCode: string
+          ok: boolean
+          review?: TrendStructureReviewDto
+          error?: string
+        }>
         error?: string
         message?: string
       }>,

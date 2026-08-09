@@ -12,6 +12,7 @@
  */
 
 import { ipcMain, BrowserWindow } from 'electron'
+import type Database from 'better-sqlite3'
 import { getDb } from '../database/db'
 import {
   batchAddTrendWatchStocks,
@@ -31,11 +32,134 @@ import {
   isTrendSyncRunning,
   syncTrendDailyData,
 } from '../services/trendSyncService'
-import { getTrendWorkbench } from '../services/trendWorkbenchService'
+import { getTrendWorkbench, type TrendWorkbenchSnapshot } from '../services/trendWorkbenchService'
+import {
+  reviewStructure,
+  type TrendStructureReviewDependencies,
+  type TrendStructureReviewResult,
+} from '../services/trendStructureReviewService'
+import {
+  normalizeTrendTsCode,
+  type AiTrendVerdict,
+} from '../services/trendStructureReviewTypes'
 import { getDataSourceConfig } from '../database/dataSourceRepository'
 import { decryptApiKey } from '../utils/apiKeyEncryption'
 import { getLastNTradingDays } from '../database/tradeCalRepository'
 import { searchStockBasicByKeyword } from '../database/stockBasicCacheRepository'
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const TS_CODE_PATTERN = /^\d{6}(?:\.(?:SH|SZ|BJ))?$/i
+
+export interface TrendReviewDto {
+  verdict: AiTrendVerdict
+  rationale: string
+  focusPoints: string[]
+  stale: boolean
+  scoreDate: string
+  factsHash: string
+  createdAt: number
+}
+
+export interface TrendReviewBatchResult {
+  tsCode: string
+  ok: boolean
+  review?: TrendReviewDto
+  error?: string
+}
+
+export interface TrendReviewBatchPayload {
+  requestId: string
+  tsCodes: string[]
+}
+
+interface TrendReviewBatchDependencies {
+  getWorkbench?: (db: Database.Database) => TrendWorkbenchSnapshot
+  reviewStructure?: typeof reviewStructure
+  reviewDependencies?: Omit<TrendStructureReviewDependencies, 'getWorkbench'>
+}
+
+export async function runTrendReviewStructureBatch(
+  db: Database.Database,
+  payload: unknown,
+  dependencies: TrendReviewBatchDependencies = {},
+): Promise<TrendReviewBatchResult[]> {
+  const { requestId, tsCodes } = validateBatchPayload(payload)
+  const snapshot = (dependencies.getWorkbench ?? getTrendWorkbench)(db)
+  const workbenchCodes = new Set(snapshot.items.map((item) => normalizeTrendTsCode(item.tsCode)))
+  const runReview = dependencies.reviewStructure ?? reviewStructure
+  const results: TrendReviewBatchResult[] = []
+
+  for (const rawCode of tsCodes) {
+    const tsCode = normalizeTrendTsCode(rawCode)
+    if (!workbenchCodes.has(tsCode)) {
+      results.push({ tsCode, ok: false, error: 'NOT_IN_WORKBENCH' })
+      continue
+    }
+
+    try {
+      const result = await runReview(
+        db,
+        { requestId: `${requestId}:${tsCode}`, tsCode },
+        {
+          ...(dependencies.reviewDependencies ?? {}),
+          getWorkbench: () => snapshot,
+        },
+      )
+      results.push({ tsCode, ok: true, review: toTrendReviewDto(result) })
+    } catch (error) {
+      results.push({ tsCode, ok: false, error: errorMessage(error) })
+    }
+  }
+
+  return results
+}
+
+function validateBatchPayload(payload: unknown): TrendReviewBatchPayload {
+  if (!isRecord(payload)
+    || typeof payload.requestId !== 'string'
+    || !UUID_PATTERN.test(payload.requestId)
+    || !Array.isArray(payload.tsCodes)
+    || payload.tsCodes.length < 1
+    || payload.tsCodes.length > 20
+    || payload.tsCodes.some((value) => typeof value !== 'string' || !TS_CODE_PATTERN.test(value.trim()))) {
+    throw new Error('INVALID_PARAM')
+  }
+  return {
+    requestId: payload.requestId,
+    tsCodes: payload.tsCodes.map((value) => value.trim().toUpperCase()),
+  }
+}
+
+function validateSinglePayload(payload: unknown): { requestId: string; tsCode: string } {
+  if (!isRecord(payload)
+    || typeof payload.requestId !== 'string'
+    || !UUID_PATTERN.test(payload.requestId)
+    || typeof payload.tsCode !== 'string'
+    || !TS_CODE_PATTERN.test(payload.tsCode.trim())) {
+    throw new Error('INVALID_PARAM')
+  }
+  return { requestId: payload.requestId, tsCode: normalizeTrendTsCode(payload.tsCode) }
+}
+
+function toTrendReviewDto(result: TrendStructureReviewResult): TrendReviewDto {
+  return {
+    verdict: result.review.verdict,
+    rationale: result.review.rationale,
+    focusPoints: [...result.review.focusPoints],
+    stale: result.stale,
+    scoreDate: result.review.scoreDate,
+    factsHash: result.review.factsHash,
+    createdAt: result.review.createdAt,
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
 export function registerTrendHandlers(): void {
   // 启动时清理 trend_watchlist 中的脏 tsCode（含非 ASCII 字符如 U+2019 右单引号）
@@ -186,6 +310,37 @@ export function registerTrendHandlers(): void {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:reviewStructure', async (_event, payload: unknown) => {
+    try {
+      const input = validateSinglePayload(payload)
+      const db = getDb()
+      const snapshot = getTrendWorkbench(db)
+      const belongsToWorkbench = snapshot.items.some((item) => normalizeTrendTsCode(item.tsCode) === input.tsCode)
+      if (!belongsToWorkbench) return { ok: false, error: 'NOT_IN_WORKBENCH' }
+      const result = await reviewStructure(db, input, { getWorkbench: () => snapshot })
+      return { ok: true, data: toTrendReviewDto(result) }
+    } catch (error) {
+      const message = errorMessage(error)
+      return {
+        ok: false,
+        error: message === 'INVALID_PARAM' ? 'INVALID_PARAM' : 'AI_ERROR',
+        message,
+      }
+    }
+  })
+
+  ipcMain.handle('trend:reviewStructureBatch', async (_event, payload: unknown) => {
+    try {
+      return {
+        ok: true,
+        data: await runTrendReviewStructureBatch(getDb(), payload),
+      }
+    } catch (error) {
+      const message = errorMessage(error)
+      return { ok: false, error: message === 'INVALID_PARAM' ? 'INVALID_PARAM' : 'DB_ERROR', message }
     }
   })
 
