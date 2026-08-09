@@ -1,18 +1,26 @@
 ---
-description: Superpowers workflow gate — read AGENTS.md; no business code before approved spec/plan
+description: SDD hard gate — core is Spec-Driven Development; superpowers skills are optional tools
 alwaysApply: true
 ---
 
-# Superpowers workflow
+# Spec-Driven Development (SDD) — hard gate
 
-Before non-trivial feature work, read root [`AGENTS.md`](AGENTS.md) and [`docs/README.md`](docs/README.md). Do not duplicate those docs here.
+Canonical process: root [`AGENTS.md`](AGENTS.md) §「功能开发流程 — Spec-Driven Development（SDD）」. Also [`docs/superpowers/README.md`](docs/superpowers/README.md). Do not weaken that section.
+
+## Core vs tools (explicit)
+
+- **Core = SDD (required):** Specify → Plan → Implement → Validate against archived spec. Specs/plans under `docs/superpowers/` are first-class git artifacts.
+- **Tools = superpowers skills (optional, borrowable):** brainstorming, writing-plans, executing-plans, etc. Help run SDD stages. **Not using a skill does not waive SDD.** Running a skill does not replace writing/approving/archiving spec + plan + 设计初衷检核.
+- Folder name `superpowers` is a path convention only — the methodology name is **SDD**.
 
 ## Hard gate
 
-- New features or behavior changes: brainstorm → write `docs/superpowers/specs/YYYY-MM-DD-*-design.md` → user approves → write `docs/superpowers/plans/YYYY-MM-DD-*.md` → only then change product code.
-- Do not invent process docs under `docs/community/` or `docs/releases/`.
-- Before editing a module, read its `src/components/*/README.md` (FR rules). Update that README when behavior changes.
-- Small fixes (typo, test green, clear bugfix) may skip a full spec; keep changes verifiable.
+- **Default:** Behavior/UI/IPC/data-model/research/copy changes MUST: write spec → **user approves** → write plan → **user says execute** → then edit `src/` / `electron/` (etc.).
+- **Archive:** Spec and plan committed under `docs/superpowers/` (not chat-only). After ship, fill plan 「设计初衷检核」.
+- **Forbidden:** Code-first then backfill docs; skip because "small"/"urgent"/"no skill available"; rewrite old design to hide drift.
+- Never put process docs in `docs/community/` or `docs/releases/`.
+- Before editing a module, read `src/components/*/README.md` (FR); update when behavior changes.
+- Narrow exemptions only as listed in `AGENTS.md`.
 
 ## Product invariants (summary)
 

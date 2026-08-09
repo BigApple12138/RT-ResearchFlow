@@ -649,6 +649,7 @@ export interface AIResearchDiscussionContextRow {
   base_snapshot_id: string | null
   base_selection_reason: ResearchBaseSelectionReason
   summarized_through_message_index: number | null
+  summarized_through_message_sequence: number | null
   latest_batch_id: string | null
   degraded_reason: string | null
   created_at: number
@@ -665,6 +666,8 @@ export interface IndustryResearchCandidateBatchRow {
   base_snapshot_id: string | null
   message_start_index: number | null
   message_end_index: number | null
+  message_start_sequence: number | null
+  message_end_sequence: number | null
   context_hash: string
   provider: string | null
   model: string | null
@@ -696,6 +699,8 @@ export interface IndustryResearchChangeSetRow {
   source_session_id: number | null
   message_start_index: number | null
   message_end_index: number | null
+  message_start_sequence: number | null
+  message_end_sequence: number | null
   user_edits_json: string | null
   resolution_action: 'accept' | 'reject' | 'defer' | null
   resolution_reason: string | null
@@ -718,6 +723,8 @@ export interface IndustryResearchChangeCandidateRow {
   source_locator: string
   message_start_index: number | null
   message_end_index: number | null
+  message_start_sequence: number | null
+  message_end_sequence: number | null
   target_entity_id: string | null
   statement_type: ResearchCandidateStatementType
   primary_source: number
@@ -1250,13 +1257,14 @@ export interface AIConfigRow {
 }
 
 export interface TrendStructureReviewRow {
+  revision_id: string
   ts_code: string
   score_trade_date: string
   facts_hash: string
   request_id: string
   local_trend_state: 'strengthening' | 'strong' | 'stable' | 'weakening' | 'broken' | 'insufficient'
   local_total_score: number | null
-  ai_verdict: 'trend_intact' | 'trend_improving' | 'trend_deteriorating' | 'trend_broken' | 'need_more_data'
+  ai_verdict: 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
   rationale: string
   focus_points_json: string
   provider: string | null
@@ -1264,6 +1272,23 @@ export interface TrendStructureReviewRow {
   audit_json: string
   created_at: number
   updated_at: number
+}
+
+export interface TrendStructureReviewRevisionRow {
+  id: string
+  ts_code: string
+  score_trade_date: string
+  facts_hash: string
+  request_id: string
+  local_trend_state: 'strengthening' | 'strong' | 'stable' | 'weakening' | 'broken' | 'insufficient'
+  local_total_score: number | null
+  ai_verdict: 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
+  rationale: string
+  focus_points_json: string
+  provider: string | null
+  model: string | null
+  audit_json: string
+  created_at: number
 }
 
 export interface DiscussionCompactionRow {
@@ -1323,6 +1348,7 @@ export interface AIAnalysisSessionRow {
   response: string | null
   responseRound2: string | null
   messages: string | null // JSON array of {role, content}
+  next_message_sequence: number
   scanRunId: number | null
   briefingId: number | null
   isError: number // 0 or 1

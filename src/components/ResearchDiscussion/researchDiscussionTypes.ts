@@ -35,6 +35,16 @@ export interface ResearchDiscussionSummary {
   baseSelectionReason: 'latest_compatible' | 'empty_project' | 'unassigned'
   returnTarget: ResearchDiscussionReturnTarget
   summarizedThroughMessageIndex: number | null
+  summarizedThroughMessageSequence: number | null
+  contextCompaction?: {
+    id: string
+    sourceStartSequence: number
+    coveredThroughSequence: number
+    summary: string
+    provider: string
+    model: string
+    createdAt: number
+  } | null
   latestBatchId: string | null
   degradedReason?: string | null
   createdAt: number
@@ -50,6 +60,8 @@ export interface ResearchCandidateBatchSummary {
   baseSnapshotId: string | null
   messageStartIndex: number | null
   messageEndIndex: number | null
+  messageStartSequence: number | null
+  messageEndSequence: number | null
   status: 'draft' | 'ready' | 'partially_resolved' | 'resolved' | 'failed' | 'cancelled'
   changeSetCount: number
   candidateCount: number
@@ -77,6 +89,8 @@ export interface ResearchChangeSetSummary {
   sourceSessionId: number | null
   messageStartIndex: number | null
   messageEndIndex: number | null
+  messageStartSequence: number | null
+  messageEndSequence: number | null
 }
 
 export interface ResearchChangeCandidate {

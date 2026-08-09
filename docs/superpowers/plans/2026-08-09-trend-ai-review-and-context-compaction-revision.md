@@ -4,6 +4,8 @@
 
 **Goal:** 在已有趋势复核骨架上完成契约收敛、不可变 revision、sequence 归档、累计摘要、并发锁、幂等 IPC、UI 与全量验证。
 
+**状态：** 执行中（实现与基础验证已完成，待独立分支 review、最终验证与设计初衷检核）
+
 **Architecture:** 主进程以 `discussionSessionLock` 串行化所有会话级 AI 写入；`discussionContextCompactionService` 负责热消息规范化、累计摘要、归档和模型上下文；趋势复核 Repository 把不可变 revisions 与最新 projection 分离。Renderer 只提交身份和展示 DTO，所有事实、sequence、busy 判断与词表校验均由主进程负责。
 
 **Tech Stack:** Electron 主进程、better-sqlite3 migration、React 18、TypeScript、Vitest、Playwright。

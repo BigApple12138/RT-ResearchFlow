@@ -1,9 +1,9 @@
 import type Database from 'better-sqlite3'
+import type { ConversationMessage } from './aiAnalysisSessionRepository'
 import type { DiscussionMessageArchiveRow } from './types'
 
-export interface DiscussionMessageForArchive {
+export type DiscussionMessageForArchive = ConversationMessage & {
   sequence: number
-  [key: string]: unknown
 }
 
 export interface ArchiveDiscussionMessagesInput {
@@ -17,26 +17,35 @@ export function archiveDiscussionMessages(
   db: Database.Database,
   input: ArchiveDiscussionMessagesInput,
 ): number {
+  return db.transaction(() => archiveDiscussionMessagesInTransaction(db, input))()
+}
+
+/**
+ * Writes archive rows without opening a transaction. Callers that need to
+ * atomically insert a compaction and replace the hot tail use this helper
+ * inside their own transaction.
+ */
+export function archiveDiscussionMessagesInTransaction(
+  db: Database.Database,
+  input: ArchiveDiscussionMessagesInput,
+): number {
   const archivedAt = input.archivedAt ?? Date.now()
   const insert = db.prepare(`
     INSERT OR IGNORE INTO ai_discussion_message_archives (
       session_id, message_sequence, message_json, compaction_id, archived_at
     ) VALUES (?, ?, ?, ?, ?)
   `)
-  const archive = db.transaction(() => {
-    let changes = 0
-    for (const message of input.messages) {
-      changes += insert.run(
-        input.sessionId,
-        message.sequence,
-        JSON.stringify(message),
-        input.compactionId,
-        archivedAt,
-      ).changes
-    }
-    return changes
-  })
-  return archive()
+  let changes = 0
+  for (const message of input.messages) {
+    changes += insert.run(
+      input.sessionId,
+      message.sequence,
+      JSON.stringify(message),
+      input.compactionId,
+      archivedAt,
+    ).changes
+  }
+  return changes
 }
 
 export function listArchivedDiscussionMessages(
@@ -56,4 +65,47 @@ export function listArchivedDiscussionMessages(
         ORDER BY message_sequence ASC
       `).all(sessionId, throughSequence)
   return rows as DiscussionMessageArchiveRow[]
+}
+
+function parseArchivedMessage(
+  row: DiscussionMessageArchiveRow,
+): DiscussionMessageForArchive | null {
+  try {
+    const value: unknown = JSON.parse(row.message_json)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+    const message = value as Record<string, unknown>
+    if ((message.role !== 'user' && message.role !== 'assistant') || typeof message.content !== 'string') {
+      return null
+    }
+    return {
+      ...(message as unknown as ConversationMessage),
+      sequence: row.message_sequence,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Rebuilds the complete discussion from immutable archived messages and the
+ * current hot tail. Hot messages win for a duplicate sequence so a caller can
+ * safely pass a just-written session snapshot while an archive is being read.
+ */
+export function loadFullDiscussionMessages(
+  db: Database.Database,
+  sessionId: number,
+  hotMessages: DiscussionMessageForArchive[],
+  throughSequence?: number,
+): DiscussionMessageForArchive[] {
+  const messages = new Map<number, DiscussionMessageForArchive>()
+  for (const row of listArchivedDiscussionMessages(db, sessionId, throughSequence)) {
+    const message = parseArchivedMessage(row)
+    if (message) messages.set(row.message_sequence, message)
+  }
+  for (const message of hotMessages) {
+    if (!Number.isInteger(message.sequence)) continue
+    if (throughSequence != null && message.sequence > throughSequence) continue
+    messages.set(message.sequence, { ...message })
+  }
+  return [...messages.values()].sort((left, right) => left.sequence - right.sequence)
 }

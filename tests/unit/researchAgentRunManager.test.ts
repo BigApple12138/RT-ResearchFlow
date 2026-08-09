@@ -34,6 +34,7 @@ import { RESEARCH_AGENT_TOOL_REGISTRY_VERSION } from '../../electron/main/servic
 import { RESEARCH_AGENT_PROMPT_RULE_VERSION } from '../../electron/main/services/researchAgentProtocol'
 import { RESEARCH_AGENT_EVIDENCE_GATE_RULE_VERSION } from '../../electron/main/services/researchAgentEvidenceGate'
 import { startResearchDiscussion } from '../../electron/main/services/researchDiscussionContextService'
+import { withDiscussionSessionLock } from '../../electron/main/services/discussionSessionLock'
 import {
   getResearchEvidenceReferenceId,
   hashResearchEvidenceContrast,
@@ -344,17 +345,17 @@ describe('FR-256 research agent run manager', () => {
       confirmedBudgetVersion: 'single-agent-unrestricted-v3',
     }
     const discussionCountBeforeInvalidStart = (db.prepare('SELECT COUNT(*) AS count FROM ai_research_discussion_contexts').get() as { count: number }).count
-    expect(() => runtime.startDirect({
+    await expect(runtime.startDirect({
       ...request,
       requestId: '00000000-0000-4000-8000-000000002599',
       confirmedBudgetVersion: 'untrusted-budget',
-    })).toThrow('必须确认当前固定研究预算版本')
+    })).rejects.toThrow('必须确认当前固定研究预算版本')
     expect((db.prepare('SELECT COUNT(*) AS count FROM ai_research_discussion_contexts').get() as { count: number }).count).toBe(discussionCountBeforeInvalidStart)
 
-    const first = runtime.startDirect(request)
+    const first = await runtime.startDirect(request)
     db.prepare('UPDATE stock_info SET stockName = ?, fetchedAt = ? WHERE stockCode = ?')
       .run('贵州茅台股份', NOW + 1, '600519')
-    const replay = runtime.startDirect(request)
+    const replay = await runtime.startDirect(request)
     await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
 
     expect(first.replayed).toBe(false)
@@ -371,8 +372,8 @@ describe('FR-256 research agent run manager', () => {
       stateKey: 'deep-research',
     })
     expect(JSON.parse(getSession(db, first.discussionSessionId)!.messages!)).toEqual([])
-    expect(() => runtime.startDirect({ ...request, question: '同一请求标识不能改成另一个研究问题。' }))
-      .toThrowError(expect.objectContaining({ code: 'REQUEST_ID_CONFLICT' }))
+    await expect(runtime.startDirect({ ...request, question: '同一请求标识不能改成另一个研究问题。' }))
+      .rejects.toThrowError(expect.objectContaining({ code: 'REQUEST_ID_CONFLICT' }))
 
     const orphanRequestId = '00000000-0000-4000-8000-000000002597'
     startResearchDiscussion(db, {
@@ -383,13 +384,35 @@ describe('FR-256 research agent run manager', () => {
       mode: 'new',
       returnTarget: { tab: 'ai-analysis', subTab: 'deepResearch', stateKey: 'deep-research' },
     })
-    expect(() => runtime.startDirect({
+    await expect(runtime.startDirect({
       ...request,
       requestId: orphanRequestId,
       question: '同一请求标识不得把新问题绑定到中断前的旧讨论。',
-    })).toThrowError(expect.objectContaining({ code: 'REQUEST_ID_CONFLICT' }))
+    })).rejects.toThrowError(expect.objectContaining({ code: 'REQUEST_ID_CONFLICT' }))
     expect(db.prepare('SELECT COUNT(*) AS count FROM research_agent_runs WHERE request_id = ?').get(orphanRequestId))
       .toEqual({ count: 0 })
+  })
+
+  it('direct start failure cleans up its newly-created discussion through an async lifecycle boundary', async () => {
+    db.prepare('INSERT INTO stock_info (stockCode, stockName, fetchedAt) VALUES (?, ?, ?)')
+      .run('600519', '贵州茅台', NOW)
+    const runtime = manager(vi.fn(async () => { throw new Error('not executed') }))
+    vi.spyOn(runtime, 'start').mockImplementation(() => {
+      throw new Error('forced start failure')
+    })
+    const request = {
+      requestId: '00000000-0000-4000-8000-000000002611',
+      question: '直接核验贵州茅台趋势事实。',
+      subjects: [{ kind: 'stock', tsCode: '600519.SH' }],
+      includePortfolio: false,
+      projectId: null,
+      confirmedBudgetVersion: 'single-agent-unrestricted-v3',
+    }
+    const discussionsBefore = (db.prepare('SELECT COUNT(*) AS count FROM ai_research_discussion_contexts').get() as { count: number }).count
+
+    await expect(runtime.startDirect(request)).rejects.toThrow('forced start failure')
+    expect((db.prepare('SELECT COUNT(*) AS count FROM ai_research_discussion_contexts').get() as { count: number }).count)
+      .toBe(discussionsBefore)
   })
 
   it('starts explicitly, remains UUID-idempotent and sends only the stored run identity to the runner', async () => {
@@ -825,9 +848,9 @@ describe('FR-256 research agent run manager', () => {
     await vi.waitFor(() => expect(run).toHaveBeenCalledOnce())
   })
 
-  it('deletes only the selected retry, keeps the remaining retry chain and removes only its messages', () => {
+  it('deletes only the selected retry, keeps the remaining retry chain and removes only its messages', async () => {
     const source = createEligibleSourceRun()
-    persistResearchAgentReport(db, {
+    await persistResearchAgentReport(db, {
       run: source.run,
       reportMarkdown: source.run.report_markdown!,
       evidenceContrast: source.evidence,
@@ -907,6 +930,26 @@ describe('FR-256 research agent run manager', () => {
     expect(() => runtime.delete(source.run.id)).toThrowError(expect.objectContaining({ code: 'RUN_NOT_DELETABLE' }))
     expect(runtime.delete(review.id).deletedRunIds).toEqual([review.id])
     expect(runtime.get(source.run.id).deleteEligibility).toEqual({ eligible: true, reason: null })
+  })
+
+  it('deletes a discussion-backed run only after the session lock is released', async () => {
+    const source = createEligibleSourceRun()
+    let release!: () => void
+    const blocker = new Promise<void>((resolve) => { release = resolve })
+    const held = withDiscussionSessionLock(sessionId, () => blocker)
+    const runtime = manager(vi.fn(async () => source.run))
+
+    const pending = runtime.deleteWithSessionLock(source.run.id)
+    await Promise.resolve()
+    expect(getResearchAgentRun(db, source.run.id)).not.toBeNull()
+
+    release()
+    await held
+    await expect(pending).resolves.toMatchObject({
+      deletedRunIds: [source.run.id],
+      discussionDeleted: false,
+    })
+    expect(getResearchAgentRun(db, source.run.id)).toBeNull()
   })
 
   it('projects bounded network evidence and failures without exposing raw envelopes or secret URL values', () => {
@@ -1031,7 +1074,7 @@ describe('FR-256 research agent run manager', () => {
     expect(rendererProjection).not.toContain('"modelProjection":')
   })
 
-  it('appends the question and audited report exactly once by runId', () => {
+  it('appends the question and audited report exactly once by runId', async () => {
     const run = startResearchAgentRun(db, {
       requestId: '00000000-0000-4000-8000-000000002564',
       discussionSessionId: sessionId,
@@ -1064,12 +1107,12 @@ describe('FR-256 research agent run manager', () => {
       },
       outcome: 'complete',
     } as ResearchAgentPersistInput
-    persistResearchAgentReport(db, persistInput)
-    persistResearchAgentReport(db, persistInput)
+    await persistResearchAgentReport(db, persistInput)
+    await persistResearchAgentReport(db, persistInput)
 
     const messages = JSON.parse(getSession(db, sessionId)!.messages!) as Array<{ role: string; researchAgentRunId?: string }>
     expect(messages.filter((message) => message.researchAgentRunId === run.id)).toEqual([
-      { role: 'user', content: run.question, researchAgentRunId: run.id },
+      expect.objectContaining({ role: 'user', content: run.question, researchAgentRunId: run.id }),
       expect.objectContaining({ role: 'assistant', researchAgentRunId: run.id }),
     ])
   })

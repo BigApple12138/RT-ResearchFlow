@@ -70,19 +70,19 @@ describe('趋势结构复核服务', () => {
 
   it('只接受固定五态和有界的结构化字段', () => {
     expect(parseAiTrendReviewPayload(JSON.stringify({
-      verdict: 'trend_intact', rationale: '结构仍完整', focusPoints: ['观察量价背离'],
+      verdict: 'agree', rationale: '结构仍完整', focusPoints: ['观察量价背离'],
     }))).toEqual({
-      verdict: 'trend_intact', rationale: '结构仍完整', focusPoints: ['观察量价背离'],
+      verdict: 'agree', rationale: '结构仍完整', focusPoints: ['观察量价背离'],
     })
     expect(() => parseAiTrendReviewPayload('{bad json')).toThrow()
     expect(() => parseAiTrendReviewPayload(JSON.stringify({
       verdict: 'buy', rationale: '结构仍完整', focusPoints: [],
     }))).toThrow()
     expect(() => parseAiTrendReviewPayload(JSON.stringify({
-      verdict: 'trend_intact', rationale: 'x'.repeat(2_001), focusPoints: [],
+      verdict: 'agree', rationale: 'x'.repeat(121), focusPoints: [],
     }))).toThrow()
     expect(() => parseAiTrendReviewPayload(JSON.stringify({
-      verdict: 'trend_intact', rationale: '结构仍完整', focusPoints: ['x'.repeat(241)],
+      verdict: 'agree', rationale: '结构仍完整', focusPoints: Array.from({ length: 4 }, () => '关注'),
     }))).toThrow()
   })
 
@@ -99,13 +99,18 @@ describe('趋势结构复核服务', () => {
     expect(facts).not.toHaveProperty('positionAdvice')
     expect(serialized).not.toContain('本地规则')
     expect(serialized).not.toContain('8.5')
+    expect(facts).not.toHaveProperty('price')
+    expect(facts).not.toHaveProperty('change')
+    expect(facts).not.toHaveProperty('quoteTime')
+    expect(facts).not.toHaveProperty('benchmark')
+    expect(facts).not.toHaveProperty('dimensions')
   })
 
   it('ready 事实调用模型、审计并按 factsHash 幂等保存', async () => {
     const callAI = vi.fn(async () => ({
       provider: 'qwen' as const,
       model: 'test-model',
-      text: JSON.stringify({ verdict: 'trend_intact', rationale: '结构仍完整。', focusPoints: ['关注量价背离'] }),
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构仍完整。', focusPoints: ['关注量价背离'] }),
     }))
     const auditText = vi.fn(() => createAudit())
     const requestId = randomUUID()
@@ -118,7 +123,7 @@ describe('趋势结构复核服务', () => {
     const first = await reviewStructure(db, { requestId, tsCode: '600000.SH' }, dependencies)
     const replay = await reviewStructure(db, { requestId, tsCode: '600000.SH' }, dependencies)
 
-    expect(first.review.verdict).toBe('trend_intact')
+    expect(first.review.verdict).toBe('agree')
     expect(first.factsHash).toMatch(/^[a-f0-9]{64}$/)
     expect(first.review.provider).toBe('qwen')
     expect(first.review.model).toBe('test-model')
@@ -150,7 +155,7 @@ describe('趋势结构复核服务', () => {
     const callAI = vi.fn(async () => ({
       provider: 'qwen' as const,
       model: 'test-model',
-      text: JSON.stringify({ verdict: 'trend_intact', rationale: '建议买入并设置目标价。', focusPoints: [] }),
+      text: JSON.stringify({ verdict: 'agree', rationale: '建议买入并设置目标价。', focusPoints: [] }),
     }))
     await expect(reviewStructure(db, {
       requestId: randomUUID(), tsCode: '600000.SH',

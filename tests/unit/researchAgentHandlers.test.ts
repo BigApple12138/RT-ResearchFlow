@@ -50,7 +50,7 @@ vi.mock('../../electron/main/services/researchAgentRunManager', async (importOri
       cancel = cancelMock
       resume = resumeMock
       retry = retryMock
-      delete = deleteMock
+      deleteWithSessionLock = deleteMock
     },
   }
 })
@@ -146,7 +146,7 @@ describe('FR-256 research agent IPC', () => {
     expect(JSON.stringify(startMock.mock.calls[0][0])).not.toContain('toolInput')
   })
 
-  it('starts direct research through one bounded command without accepting context or tool overrides', () => {
+  it('starts direct research through one bounded command without accepting context or tool overrides', async () => {
     const payload = {
       requestId: '00000000-0000-4000-8000-000000002591',
       question: '直接核验贵州茅台趋势、基本面和最新正式披露是否相互印证。',
@@ -157,14 +157,14 @@ describe('FR-256 research agent IPC', () => {
     }
     expect(handler('researchAgent:preflightDirect')({ sender }, { projectId: null })).toMatchObject({ ok: true })
     expect(preflightDirectMock).toHaveBeenCalledWith(null)
-    expect(handler('researchAgent:startDirect')({ sender }, payload)).toMatchObject({ ok: true })
+    await expect(handler('researchAgent:startDirect')({ sender }, payload)).resolves.toMatchObject({ ok: true })
     expect(startDirectMock).toHaveBeenCalledWith(payload)
-    expect(handler('researchAgent:startDirect')({ sender }, { ...payload, toolInput: { url: 'https://example.com' } }))
-      .toMatchObject({ ok: false, code: 'INVALID_PARAM' })
+    await expect(handler('researchAgent:startDirect')({ sender }, { ...payload, toolInput: { url: 'https://example.com' } }))
+      .resolves.toMatchObject({ ok: false, code: 'INVALID_PARAM' })
     expect(startDirectMock).toHaveBeenCalledTimes(1)
   })
 
-  it('requires the fixed budget confirmation and UUIDs for lifecycle mutations', () => {
+  it('requires the fixed budget confirmation and UUIDs for lifecycle mutations', async () => {
     expect(handler('researchAgent:startRun')({ sender }, {
       requestId: '00000000-0000-4000-8000-000000002567',
       sessionId: 12,
@@ -197,10 +197,10 @@ describe('FR-256 research agent IPC', () => {
       confirmedBudgetVersion: 'single-agent-unrestricted-v3',
     })
 
-    expect(handler('researchAgent:deleteRun')({ sender }, {
+    await expect(handler('researchAgent:deleteRun')({ sender }, {
       requestId: '00000000-0000-4000-8000-000000002573',
       runId: '00000000-0000-4000-8000-000000002569',
-    })).toMatchObject({ ok: true })
+    })).resolves.toMatchObject({ ok: true })
     expect(deleteMock).toHaveBeenCalledWith('00000000-0000-4000-8000-000000002569')
   })
 

@@ -68,6 +68,7 @@ export async function callWithFallback(
   params: {
     prompt?: string
     messages?: ConversationTurn[]
+    maxTokens?: number | null
     webSearch?: { enabled: boolean; searchContextSize?: 'low' | 'medium' | 'high'; excludedUrls?: string[] }
     nativeWebSearchOnly?: boolean
   },

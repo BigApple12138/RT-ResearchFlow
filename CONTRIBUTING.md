@@ -10,7 +10,7 @@
 
 较大的功能或架构调整，请先在 Ideas 中说明用户问题、建议范围和替代方案，达成方向共识后再提交代码。不要用公开 Issue 或 Discussion 上传数据库、日志、API Key、Token、真实持仓及个人路径。
 
-较大功能在写业务代码前，请按仓库根目录 [`AGENTS.md`](AGENTS.md) 的流程：先把设计落到 [`docs/superpowers/specs/`](docs/superpowers/specs/)，再写 [`docs/superpowers/plans/`](docs/superpowers/plans/) 中的实现计划。文档目录分工见 [`docs/README.md`](docs/README.md)。
+**开发流程（含 Agent）：** 核心是 **Spec-Driven Development（SDD）**——Specify → Plan → Implement → Validate（含 plan 文末「设计初衷检核」）。**spec 与 plan 必须提交进仓库归档**。Cursor **superpowers skills 只是可选工具**，可借鉴，不能代替 SDD。详见 [`AGENTS.md`](AGENTS.md) 与 [`docs/superpowers/README.md`](docs/superpowers/README.md)。豁免情形以 `AGENTS.md` 窄名单为准。
 
 ## 本地开发
 

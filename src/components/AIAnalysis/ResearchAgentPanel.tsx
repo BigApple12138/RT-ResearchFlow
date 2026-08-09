@@ -206,55 +206,70 @@ export function ResearchAgentPanel({
     window.setTimeout(() => openButtonRef.current?.focus(), 0)
   }, [busy])
 
+  const showLedger = runs.length > 0 || Boolean(error)
+
   return (
-    <section data-testid="research-agent-panel" className="max-h-[40vh] flex-shrink-0 overflow-y-auto border-t border-slate-200 bg-slate-50/70 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/35">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">深度研究</div>
-          <div className="mt-0.5 text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
-            {runs.length > 0 ? `${runs.length} 次运行 · ${researchRunStatusMeta(runs[0]).label}${runs[0].status === 'succeeded' ? ` · ${researchConclusionMeta(runs[0]).label}` : ''}` : '尚无运行'}
-          </div>
-        </div>
-        <button ref={openButtonRef} type="button" data-testid="research-agent-open" className={PRIMARY} onClick={() => { void openDialog() }}>
-          新建深度研究
-        </button>
-      </div>
+    <>
+      {/* E2E / 程序化预检：不对用户展示「新建」入口；主路径为聊天 suggest→确认 */}
+      <button
+        ref={openButtonRef}
+        type="button"
+        data-testid="research-agent-open"
+        className="sr-only"
+        tabIndex={-1}
+        onClick={() => { void openDialog() }}
+      >
+        打开深度研究预检
+      </button>
 
-      {error && <div role="alert" className="mt-3 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{error}</div>}
+      {showLedger && (
+        <section data-testid="research-agent-panel" className="max-h-[40vh] flex-shrink-0 overflow-y-auto border-t border-slate-200 bg-slate-50/70 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/35">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">深度研究</div>
+            <div className="mt-0.5 text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
+              {runs.length > 0
+                ? `${runs.length} 次运行 · ${researchRunStatusMeta(runs[0]).label}${runs[0].status === 'succeeded' ? ` · ${researchConclusionMeta(runs[0]).label}` : ''}`
+                : '在输入框说「深挖…」可启动'}
+            </div>
+          </div>
 
-      {runs.length > 0 && (
-        <div className="mt-3 grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <div className="max-h-72 space-y-1 overflow-y-auto pr-1" aria-label="深度研究运行列表">
-            {runs.map((run) => {
-              const meta = researchRunStatusMeta(run)
-              const conclusion = researchConclusionMeta(run)
-              return (
-                <button
-                  key={run.id}
-                  type="button"
-                  data-testid={`research-agent-run-${run.id}`}
-                  onClick={() => { void selectRun(run.id) }}
-                  className={`min-h-11 w-full border-l-2 px-3 py-2 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/40 motion-reduce:transition-none ${selectedRunId === run.id ? 'border-cyan-600 bg-white dark:bg-slate-900' : 'border-transparent hover:bg-white dark:hover:bg-slate-900'}`}
-                >
-                  <div className="flex items-center justify-between gap-2"><span className={`font-semibold ${meta.tone}`}>{meta.label}</span><span className="text-slate-400">{phaseLabel(run.runKind, run.phase)}</span></div>
-                  {run.status === 'succeeded' && <div className={`mt-0.5 text-[11px] ${conclusion.tone}`}>{conclusion.label} · {run.runKind === 'multi_perspective' ? '多视角' : '单 Agent'}</div>}
-                  <div className="mt-1 truncate text-slate-600 dark:text-slate-300">{run.question}</div>
-                </button>
-              )
-            })}
-          </div>
-          <div className="min-w-0 border-l border-slate-200 pl-3 dark:border-slate-800">
-            {detail ? (
-              <ResearchAgentRunDetail
-                detail={detail}
-                busy={busy}
-                onResume={() => { void mutate(detail.run.id, 'resume') }}
-                onCancel={() => setPendingCancelRunId(detail.run.id)}
-                onStartReview={() => setPendingReviewRunId(detail.run.id)}
-              />
-            ) : <div className="flex min-h-24 items-center justify-center text-xs text-slate-400">选择一次运行查看账本</div>}
-          </div>
-        </div>
+          {error && <div role="alert" className="mt-3 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{error}</div>}
+
+          {runs.length > 0 && (
+            <div className="mt-3 grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
+              <div className="max-h-72 space-y-1 overflow-y-auto pr-1" aria-label="深度研究运行列表">
+                {runs.map((run) => {
+                  const meta = researchRunStatusMeta(run)
+                  const conclusion = researchConclusionMeta(run)
+                  return (
+                    <button
+                      key={run.id}
+                      type="button"
+                      data-testid={`research-agent-run-${run.id}`}
+                      onClick={() => { void selectRun(run.id) }}
+                      className={`min-h-11 w-full border-l-2 px-3 py-2 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/40 motion-reduce:transition-none ${selectedRunId === run.id ? 'border-cyan-600 bg-white dark:bg-slate-900' : 'border-transparent hover:bg-white dark:hover:bg-slate-900'}`}
+                    >
+                      <div className="flex items-center justify-between gap-2"><span className={`font-semibold ${meta.tone}`}>{meta.label}</span><span className="text-slate-400">{phaseLabel(run.runKind, run.phase)}</span></div>
+                      {run.status === 'succeeded' && <div className={`mt-0.5 text-[11px] ${conclusion.tone}`}>{conclusion.label} · {run.runKind === 'multi_perspective' ? '多视角' : '单 Agent'}</div>}
+                      <div className="mt-1 truncate text-slate-600 dark:text-slate-300">{run.question}</div>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="min-w-0 border-l border-slate-200 pl-3 dark:border-slate-800">
+                {detail ? (
+                  <ResearchAgentRunDetail
+                    detail={detail}
+                    busy={busy}
+                    onResume={() => { void mutate(detail.run.id, 'resume') }}
+                    onCancel={() => setPendingCancelRunId(detail.run.id)}
+                    onStartReview={() => setPendingReviewRunId(detail.run.id)}
+                  />
+                ) : <div className="flex min-h-24 items-center justify-center text-xs text-slate-400">选择一次运行查看账本</div>}
+              </div>
+            </div>
+          )}
+        </section>
       )}
 
       {dialogOpen && (
@@ -306,7 +321,7 @@ export function ResearchAgentPanel({
           void startReview(pendingReviewRunId)
         }}
       />
-    </section>
+    </>
   )
 }
 

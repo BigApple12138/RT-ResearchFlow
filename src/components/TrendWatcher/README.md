@@ -34,6 +34,8 @@
 
 复核成功且未过期时，行内和 K 线抽屉提供「带着复核去讨论」。Renderer 只调用 `trend:openStructureReviewDiscussion` 提交复核身份；主进程重新校验 `scoreDate/factsHash`，恢复或创建带 `trend_review` 快照的研究讨论，并固定返回趋势雷达。首条问题只预填，不自动触发 followUp；事实变化后必须先重新复核。
 
+AI 复核只允许 `agree`、`possible_false_break`、`possible_false_hold`、`evidence_weak`、`need_more_data` 五个第二意见词。每次成功复核写入不可变 revision，列表只展示按代码/评分日的最新 projection；140 迁移保留旧词表原文到 legacy 表，不把旧结论伪装成新词表。AI 复核不修改本地 `trendState`，评分日或白名单事实 `factsHash` 变化时必须显示「需重核」。
+
 ## 边界
 
 - 不接入券商，不计算仓位市值，不产生交易指令。

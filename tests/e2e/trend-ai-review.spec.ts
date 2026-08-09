@@ -74,11 +74,15 @@ test('趋势雷达支持单只与批量 AI 结构复核，并保留本地状态'
 
     const row = window.locator('[data-testid="trend-radar"] tbody tr').filter({ hasText: '待补样本' })
     await expect(row).toBeVisible()
-    await expect(row.getByText('数据不足', { exact: true })).toBeVisible()
+    const localTrendBadge = row.locator('td').nth(2).locator('span').first()
+    await expect(localTrendBadge).toBeVisible()
+    const localTrendStateBefore = await localTrendBadge.innerText()
+    expect(localTrendStateBefore).toBeTruthy()
+    await expect(row.getByText(/^\d+\/60根$/)).toBeVisible()
     await row.getByTestId('trend-ai-review-600004').click()
     await expect(window.getByTestId('trend-ai-review-toast')).toContainText('AI复核已保存', { timeout: 30_000 })
     await expect(row.getByTestId('trend-ai-review-badge-600004')).toContainText('需补数据', { timeout: 30_000 })
-    await expect(row.getByText('数据不足', { exact: true })).toBeVisible()
+    await expect(localTrendBadge).toHaveText(localTrendStateBefore)
 
     await row.getByRole('checkbox', { name: '选择待补样本' }).check()
     await expect(window.getByTestId('trend-ai-review-batch')).toBeEnabled()
@@ -90,7 +94,7 @@ test('趋势雷达支持单只与批量 AI 结构复核，并保留本地状态'
 
     await row.getByTestId('trend-ai-review-discussion-600004').click()
     await expect(window.getByTestId('ai-analysis-page')).toBeVisible({ timeout: 30_000 })
-    await expect(window.getByText('待补样本 · 趋势结构复核', { exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect(window.getByTestId('research-discussion-context').getByRole('heading', { name: '待补样本 · 趋势结构复核', exact: true })).toBeVisible({ timeout: 30_000 })
 
     await window.setViewportSize({ width: 1024, height: 768 })
     await window.emulateMedia({ reducedMotion: 'reduce' })

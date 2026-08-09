@@ -61,7 +61,7 @@ function seedReview(db: Database.Database, snapshot: TrendWorkbenchSnapshot, req
     requestId,
     localTrendState: facts.trendState,
     localTotalScore: facts.totalScore,
-    verdict: 'trend_intact',
+    verdict: 'agree',
     rationale: '结构仍完整。',
     focusPoints: ['观察量价背离'],
     provider: 'qwen',
@@ -121,7 +121,7 @@ describe('趋势复核讨论桥接', () => {
       contextKind: 'trend_review',
       trendReview: {
         factsHash,
-        verdict: 'trend_intact',
+        verdict: 'agree',
         rationale: '结构仍完整。',
         focusPoints: ['观察量价背离'],
       },
@@ -131,7 +131,7 @@ describe('趋势复核讨论桥接', () => {
     expect(storedSnapshot.trendReview.facts).not.toHaveProperty('positionAdvice')
     expect(context.origin_content_hash).toMatch(/^[a-f0-9]{64}$/)
     expect(session.messages).toBe('[]')
-    expect(session.promptSent).toContain('trend_intact')
+    expect(session.promptSent).toContain('agree')
     expect(session.promptSent).toContain(factsHash)
     expect(session.promptSent).not.toContain('costPrice')
     expect(session.promptSent).not.toContain('positionAdvice')

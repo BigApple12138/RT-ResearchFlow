@@ -41,7 +41,7 @@ describe('Trend Workbench AI 复核附加字段', () => {
       requestId: '00000000-0000-4000-8000-000000000201',
       localTrendState: item.trendState,
       localTotalScore: item.totalScore,
-      verdict: 'trend_intact',
+      verdict: 'agree',
       rationale: '结构仍完整。',
       focusPoints: ['观察量价背离'],
       provider: 'qwen',
@@ -52,7 +52,7 @@ describe('Trend Workbench AI 复核附加字段', () => {
 
     const next = getTrendWorkbench(db).items[0]
     expect(next.structureReview).toMatchObject({
-      verdict: 'trend_intact',
+      verdict: 'agree',
       scoreDate: item.scoreDate,
       factsHash: hashTrendReviewFacts(facts),
       stale: false,
@@ -70,7 +70,7 @@ describe('Trend Workbench AI 复核附加字段', () => {
       requestId: '00000000-0000-4000-8000-000000000202',
       localTrendState: item.trendState,
       localTotalScore: item.totalScore,
-      verdict: 'trend_broken',
+      verdict: 'possible_false_hold',
       rationale: '复核结果。',
       focusPoints: [],
       provider: 'qwen',

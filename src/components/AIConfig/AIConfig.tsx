@@ -51,6 +51,7 @@ interface AIConfigData {
   customSkillPaths: string[]
   skillsForTrend: boolean
   maxSkillChars: number
+  autoCompactDiscussion: boolean
   providerModels: Record<AIProvider, string[]>
   providerLabels: Record<AIProvider, string>
   providerDefaultBaseUrls: Record<AIProvider, string>
@@ -86,7 +87,8 @@ export function AIConfig() {
     maxArticleAgeDays: '90' as string,
     autoCleanupDays: '' as string,
     maxForecastsPerStock: 50,
-    maxForecastComparison: 5
+    maxForecastComparison: 5,
+    autoCompactDiscussion: true,
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -129,7 +131,8 @@ export function AIConfig() {
       maxArticleAgeDays: data.maxArticleAgeDays != null ? String(data.maxArticleAgeDays) : '90',
       autoCleanupDays: data.autoCleanupDays != null ? String(data.autoCleanupDays) : '',
       maxForecastsPerStock: data.maxForecastsPerStock ?? 50,
-      maxForecastComparison: data.maxForecastComparison ?? 5
+      maxForecastComparison: data.maxForecastComparison ?? 5,
+      autoCompactDiscussion: data.autoCompactDiscussion !== false,
     })
     setPriority(data.providerPriority ?? [])
     setMultiModel(data.multiModelProviders ?? [])
@@ -245,7 +248,8 @@ export function AIConfig() {
         multiModelProviders: multiModel,
         selectedSkills,
         skillsForTrend,
-        maxSkillChars
+        maxSkillChars,
+        autoCompactDiscussion: form.autoCompactDiscussion,
       })
       await loadConfig()
       loadAIConfig()
@@ -472,6 +476,22 @@ export function AIConfig() {
             </button>
           ))}
         </div>
+      </section>
+
+      {/* Discussion context compaction */}
+      <section className="mb-5 rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-900 dark:bg-violet-950/20">
+        <label className="flex cursor-pointer items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={form.autoCompactDiscussion}
+            onChange={(e) => setForm((current) => ({ ...current, autoCompactDiscussion: e.target.checked }))}
+            className="mt-0.5 rounded border-gray-300"
+          />
+          <span>
+            <span className="font-medium">自动整理聊天上下文</span>
+            <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">讨论达到 12 个完整问答后，在下一次追问前保留累计摘要和最近对话；默认开启，可随时关闭。</span>
+          </span>
+        </label>
       </section>
 
       {/* Max articles per batch */}

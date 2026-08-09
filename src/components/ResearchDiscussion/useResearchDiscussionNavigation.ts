@@ -16,6 +16,7 @@ export interface StartDiscussionRequest {
 }
 
 export type ResearchEvidenceSourceIdentity =
+  | { sourceKind: 'discussion_message'; sessionId: number; messageSequence: number }
   | { sourceKind: 'discussion_message'; sessionId: number; messageIndex: number }
   | { sourceKind: 'industry_report'; projectId: string; runId: string }
 

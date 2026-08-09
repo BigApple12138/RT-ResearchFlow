@@ -1,7 +1,7 @@
 import type { ChipConclusionData } from '../../utils/chipColors'
 
 export type TrendState = 'strengthening' | 'strong' | 'stable' | 'weakening' | 'broken' | 'insufficient'
-export type AiTrendVerdict = 'trend_intact' | 'trend_improving' | 'trend_deteriorating' | 'trend_broken' | 'need_more_data'
+export type AiTrendVerdict = 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
 export type PositionAdvice = 'HOLD' | 'WATCH' | 'TAKE_PROFIT' | 'STOP_LOSS'
 
 export interface TrendBenchmarkHealth {

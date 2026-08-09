@@ -1181,7 +1181,7 @@ interface TrendBenchmarkHealth {
 }
 
 interface TrendStructureReviewDto {
-  verdict: 'trend_intact' | 'trend_improving' | 'trend_deteriorating' | 'trend_broken' | 'need_more_data'
+  verdict: 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
   rationale: string
   focusPoints: string[]
   stale: boolean
@@ -1730,6 +1730,7 @@ const api = {
       customSkillPaths?: string[]
       skillsForTrend?: boolean
       maxSkillChars?: number
+      autoCompactDiscussion?: boolean
       providerConfig?: {
         provider: string
         model?: string
@@ -1767,8 +1768,41 @@ const api = {
     cleanupOldSessions: (olderThanDays: number, dryRun: boolean) =>
       ipcRenderer.invoke('ai:cleanupOldSessions', { olderThanDays, dryRun }),
     triggerRound2: (sessionId: number) => ipcRenderer.invoke('ai:triggerRound2', { sessionId }),
-    followUp: (sessionId: number, message: string) =>
-      ipcRenderer.invoke('ai:followUp', { sessionId, message }),
+    followUp: (payload: { requestId: string; sessionId: number; message: string }) =>
+      ipcRenderer.invoke('ai:followUp', payload) as Promise<{
+        text?: string
+        messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
+        error?: string
+        code?: string
+        warning?: string
+      }>,
+    compactDiscussionContext: (payload: {
+      requestId: string
+      sessionId: number
+      mode: 'auto' | 'manual'
+    }) => ipcRenderer.invoke('ai:compactDiscussionContext', payload) as Promise<{
+      ok: boolean
+      sessionId?: number
+      archivedCount?: number
+      skippedReason?: string
+      compaction?: {
+        id: string
+        sessionId: number
+        requestId: string
+        sourceStartSequence: number
+        coveredThroughSequence: number
+        sourceMessagesHash: string
+        summary: string
+        summaryHash: string
+        provider: string
+        model: string
+        createdAt: number
+      } | null
+      messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
+      code?: string
+      message?: string
+      error?: string
+    }>,
     runPortfolioBrief: (payload: {
       requestId: string
       sessionId?: number | null
@@ -1778,7 +1812,6 @@ const api = {
         ok: boolean
         sessionId?: number
         text?: string
-        messages?: Array<{ role: 'user' | 'assistant'; content: string }>
         code?: string
         message?: string
       }>,
@@ -3247,6 +3280,19 @@ const api = {
         error?: string
         message?: string
       }>,
+    onReviewProgress: (cb: (progress: {
+      batchRequestId: string
+      tsCode: string
+      index: number
+      total: number
+      status: 'running' | 'succeeded' | 'failed'
+      review?: TrendStructureReviewDto
+      error?: string
+    }) => void) => {
+      const listener = (_event: IpcRendererEvent, data: Parameters<typeof cb>[0]) => cb(data)
+      ipcRenderer.on('trend:reviewProgress', listener)
+      return () => { ipcRenderer.removeListener('trend:reviewProgress', listener) }
+    },
     openStructureReviewDiscussion: (payload: {
       requestId: string
       tsCode: string
@@ -3719,7 +3765,9 @@ const api = {
     prepareDiscussionChanges: (payload: {
       requestId: string
       sessionId: number
-      throughMessageIndex: number
+      throughMessageSequence: number
+      /** Compatibility-only field for legacy callers; new UI must use sequence. */
+      throughMessageIndex?: number
       projectId?: string | null
       baseSnapshotId?: string | null
     }) => ipcRenderer.invoke('industryResearch:prepareDiscussionChanges', payload),

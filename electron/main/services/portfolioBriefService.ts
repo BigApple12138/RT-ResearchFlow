@@ -9,6 +9,7 @@ import { listPortfolioStocks } from '../database/portfolioRepository'
 import { callWithFallback, resolveProviderCredentials } from './aiFallbackService'
 import { getPortfolioDashboard } from './portfolioDashboardService'
 import { startResearchDiscussion } from './researchDiscussionContextService'
+import { withDiscussionSessionLock } from './discussionSessionLock'
 
 export type PortfolioBriefMode = 'analyze' | 'list' | 'checkConfig'
 
@@ -113,12 +114,12 @@ function appendExchange(
   return messages
 }
 
-export async function runPortfolioBrief(
+async function runPortfolioBriefUnlocked(
   db: Database.Database,
   input: { requestId: string; sessionId?: number | null; mode?: PortfolioBriefMode },
 ): Promise<
-  | { ok: true; sessionId: number; text: string; messages: ConversationMessage[] }
-  | { ok: false; code: string; message: string }
+  | { ok: true; sessionId: number; text: string }
+  | { ok: false; code: string; message: string; sessionId?: number }
 > {
   const mode: PortfolioBriefMode = input.mode ?? 'analyze'
 
@@ -137,8 +138,8 @@ export async function runPortfolioBrief(
       initialQuestion: '检查 AI 配置',
     })
     if (!ensured.ok) return ensured
-    const messages = appendExchange(db, ensured.sessionId, '检查 AI 配置', text)
-    return { ok: true, sessionId: ensured.sessionId, text, messages }
+    appendExchange(db, ensured.sessionId, '检查 AI 配置', text)
+    return { ok: true, sessionId: ensured.sessionId, text }
   }
 
   const holdings = listPortfolioStocks(db)
@@ -151,8 +152,8 @@ export async function runPortfolioBrief(
       initialQuestion: '我有哪些持仓',
     })
     if (!ensured.ok) return ensured
-    const messages = appendExchange(db, ensured.sessionId, '我有哪些持仓', text)
-    return { ok: true, sessionId: ensured.sessionId, text, messages }
+    appendExchange(db, ensured.sessionId, '我有哪些持仓', text)
+    return { ok: true, sessionId: ensured.sessionId, text }
   }
 
   const ensured = await ensureBriefSession(db, {
@@ -165,11 +166,18 @@ export async function runPortfolioBrief(
 
   if (holdings.length === 0) {
     const text = formatEmptyPortfolioMessage()
-    const messages = appendExchange(db, sessionId, '分析我的持仓', text)
-    return { ok: true, sessionId, text, messages }
+    appendExchange(db, sessionId, '分析我的持仓', text)
+    return { ok: true, sessionId, text }
   }
   if (!resolveProviderCredentials(db)) {
-    return { ok: false, code: 'AI_NOT_CONFIGURED', message: 'AI not configured' }
+    const text = formatAiConfigCheckMessage({
+      hasApiKey: false,
+      provider: null,
+      model: null,
+      configuredProviders: [],
+    })
+    appendExchange(db, sessionId, '分析我的持仓', text)
+    return { ok: false, code: 'AI_NOT_CONFIGURED', message: text, sessionId }
   }
 
   const dashboard = await getPortfolioDashboard(db, { limit: 200, offset: 0 })
@@ -184,7 +192,9 @@ export async function runPortfolioBrief(
   const facts = buildPortfolioBriefFacts(holdings, dashboardByCode)
   const serialized = JSON.stringify(facts)
   if (/"costPrice"/i.test(serialized)) {
-    return { ok: false, code: 'PRIVACY_GUARD', message: '持仓简报不得包含成本价' }
+    const text = '持仓简报不得包含成本价，已中止本次分析。'
+    appendExchange(db, sessionId, '分析我的持仓', text)
+    return { ok: false, code: 'PRIVACY_GUARD', message: text, sessionId }
   }
 
   const session = getSession(db, sessionId)!
@@ -198,12 +208,38 @@ export async function runPortfolioBrief(
     })
     messages.push({ role: 'assistant', content: result.text, webSearchTrace: result.webSearchTrace })
     updateSessionMessages(db, sessionId, messages)
-    return { ok: true, sessionId, text: result.text, messages }
+    return { ok: true, sessionId, text: result.text }
   } catch (error) {
-    return {
-      ok: false,
-      code: 'AI_CALL_FAILED',
-      message: error instanceof Error ? error.message : String(error),
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    const text = `持仓分析失败：${message}`
+    messages.push({ role: 'assistant', content: text })
+    updateSessionMessages(db, sessionId, messages)
+    return { ok: false, code: 'AI_CALL_FAILED', message: text, sessionId }
   }
+}
+
+export async function runPortfolioBrief(
+  db: Database.Database,
+  input: { requestId: string; sessionId?: number | null; mode?: PortfolioBriefMode },
+): Promise<Awaited<ReturnType<typeof runPortfolioBriefUnlocked>>> {
+  if (input.sessionId != null) {
+    return withDiscussionSessionLock(input.sessionId, () => runPortfolioBriefUnlocked(db, input))
+  }
+
+  const mode = input.mode ?? 'analyze'
+  const initialQuestion = mode === 'list'
+    ? '我有哪些持仓'
+    : mode === 'checkConfig'
+      ? '检查 AI 配置'
+      : PORTFOLIO_BRIEF_USER_PROMPT
+  const ensured = await ensureBriefSession(db, {
+    requestId: input.requestId,
+    sessionId: null,
+    initialQuestion,
+  })
+  if (!ensured.ok) return ensured
+  return withDiscussionSessionLock(ensured.sessionId, () => runPortfolioBriefUnlocked(db, {
+    ...input,
+    sessionId: ensured.sessionId,
+  }))
 }

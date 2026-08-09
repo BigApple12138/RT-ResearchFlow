@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import {
   getTrendStructureReviewByCodeDate,
   getTrendStructureReviewByRequestId,
-  upsertTrendStructureReview,
+  saveTrendStructureReview,
   type TrendStructureReview,
 } from '../database/trendStructureReviewRepository'
 import { auditResearchText, type ResearchTextAudit } from './researchEvidenceAuditService'
@@ -107,7 +107,7 @@ export async function reviewStructure(
   })
   if (audit.status === 'blocked') throw new Error('AUDIT_BLOCKED')
 
-  const review = upsertTrendStructureReview(db, {
+  const review = saveTrendStructureReview(db, {
     tsCode: normalizedCode,
     scoreDate: facts.scoreDate,
     factsHash,
@@ -129,7 +129,8 @@ export function buildTrendReviewPrompt(facts: TrendReviewFacts): string {
   return [
     '你是本地投研应用中的趋势结构复核助手。',
     '只能基于下列白名单事实判断趋势结构，不得补造事实。',
-    '只返回 JSON：{"verdict":"trend_intact|trend_improving|trend_deteriorating|trend_broken|need_more_data","rationale":"...","focusPoints":["..."]}。',
+    '只返回 JSON：{"verdict":"agree|possible_false_break|possible_false_hold|evidence_weak|need_more_data","rationale":"...","focusPoints":["..."]}。',
+    'rationale 不超过120字；focusPoints最多3条且每条不超过80字。',
     '不得给出买入、卖出、目标价、止盈、止损、仓位或收益承诺。',
     `白名单事实：${stableStringify(facts)}`,
   ].join('\n')

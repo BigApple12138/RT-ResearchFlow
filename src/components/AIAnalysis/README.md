@@ -6,7 +6,7 @@
 
 本地投研 Agent Phase 1 起，研判记录默认常驻「新对话」composer（不再空态弹窗门槛，也不盲选历史第一条会话）；首条消息 create-and-send；快捷芯片「分析我的持仓 / 我有哪些持仓 / 检查 AI 配置」经 `ai:runPortfolioBrief` 写入讨论，持仓事实默认不含成本价。
 
-Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片，确认后打开 `ResearchAgentPanel` 预检并 `startRun`；会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。
+Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片，确认后打开 `ResearchAgentPanel` 预检并 `startRun`；会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。面板不再展示「新建深度研究」按钮，无运行时不占 UI；有运行时只展示进度账本。
 
 ## 实现思路
 
@@ -20,10 +20,14 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - `prepareRound2MarketMarkdown/Round2InlineMarketVisual`: 按候选代码或名称定位第二轮Markdown中的股票章节，在该股原支撑/压力参考位置读取既有 `shortTerm:getStockMiniKline` 并嵌入单股K线。纯模型按会话北京时间发生日过滤未来数据，复算30日以内的MA5/MA20、近5/20日收益和高低区间；图表可用时移除重复价位行，少于10个有效交易日或读取失败时恢复该股原始文字参考。
 - `normalizeAIResponseMarkdown`: 在ReactMarkdown解析前修复模型常见的 `**标签：**正文`/`__标签：__正文` 闭合歧义。只调整展示投影，跳过代码围栏、行内代码和转义内容；首轮、第二轮和assistant追问共用，数据库原文不变。
 - `followUpInput/sendingFollowUp`: 控制追问/新对话输入与发送状态；无选中会话时走 create-and-send。
+- 讨论消息由主进程分配稳定 `sequence`；Renderer 不计算或用数组下标定位消息。`ai:followUp` 必须携带 UUID `requestId`，同一请求重放返回已有 turn，不重复追加 user/assistant。
+- 研究讨论的消息热区只保留未归档原文；历史原文进入归档账本，累计摘要独立保存并在模型调用时与 `promptSent` 硬事实、热消息一起组装。摘要不是一条伪造的 chat message，也不进入 FR-239 变更游标。
+- 讨论达到未归档的 12 个完整问答后，下一次追问前默认自动调用上下文整理；AI 配置可关闭。讨论页的“整理聊天上下文”是显式手动入口，与“整理本次讨论”研究变更动作严格区分，最近 6 条原文作为热尾部保留。
 - 快捷芯片：`chip-analyze-portfolio` / `chip-list-portfolio` / `chip-check-ai-config`；`new-conversation` 回到新对话；`research-composer` 为底部输入区。
 - `generatingStructured`: 控制手动重建结构化研判结果的按钮状态。
 - `showIndustryAnalysis/industryAnalysisText/industryChainId`: 控制产业分析抽屉及自动匹配的产业链。
 - 选择记录时调用 `ai:getSession`; 触发行情复核时调用 `ai:triggerRound2`; 发送追问时调用 `ai:followUp`, 成功后重新读取当前会话, 以接收后台刷新后的结构化结果。
+- 追问、自动/手动上下文整理、持仓简报和深度研究报告写回由主进程按 session 串行；深度研究处于 `queued/running/paused` 时，主进程拒绝追问和上下文整理，Renderer 的 busy 状态只负责展示/禁用。
 - 点击“生成/重建结构化研判”时调用 `ai:generateStructuredResult`, 完成后刷新详情与左侧会话状态。
 - 研究讨论由 `ai:startResearchDiscussion` 创建或恢复，顶部 `ResearchDiscussionContextBar` 展示受限来源上下文、关联项目、基线和“返回来源”。首条真实消息发送前可移除可选上下文，隐藏上下文只在模型调用时注入，不写入 `messages`。
 - 绑定产业研究项目的讨论在每轮 `ai:followUp` 中强制使用 ChatGPT 原生网页搜索；普通文章追问和未绑定项目的讨论保持既有 Provider 行为。

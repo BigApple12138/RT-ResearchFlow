@@ -7,6 +7,7 @@ import {
   getSession,
   type ConversationMessage,
 } from '../database/aiAnalysisSessionRepository'
+import { getLatestDiscussionCompaction } from '../database/discussionCompactionRepository'
 import { getBriefingById } from '../database/briefingRepository'
 import { getDecisionJudgment } from '../database/decisionJudgmentRepository'
 import { getReviewReport } from '../database/decisionReviewReportRepository'
@@ -54,6 +55,7 @@ import type {
   ResearchEvidenceDeltaItem,
 } from './researchEvidenceDeltaService'
 import type { AiTrendVerdict, TrendReviewFacts } from './trendStructureReviewTypes'
+import { withDiscussionSessionLock } from './discussionSessionLock'
 
 const MAX_CONTEXT_BYTES = 128 * 1024
 const RESUMABLE_STATUSES = new Set<ResearchDiscussionStatus>(['active', 'changes_ready', 'partially_applied'])
@@ -113,6 +115,7 @@ interface DiscussionContextSnapshot {
 }
 
 export type ResearchEvidenceDiscussionSource =
+  | { sourceKind: 'discussion_message'; sessionId: number; messageSequence: number }
   | { sourceKind: 'discussion_message'; sessionId: number; messageIndex: number }
   | { sourceKind: 'industry_report'; projectId: string; runId: string }
 
@@ -368,6 +371,21 @@ export function discussionSummary(db: Database.Database, row: AIResearchDiscussi
     baseSelectionReason: row.base_selection_reason,
     returnTarget: safeJson<ResearchDiscussionReturnTarget>(row.return_target_json, { tab: 'ai-analysis', subTab: 'records' }),
     summarizedThroughMessageIndex: row.summarized_through_message_index,
+    summarizedThroughMessageSequence: row.summarized_through_message_sequence,
+    contextCompaction: (() => {
+      const compaction = getLatestDiscussionCompaction(db, row.session_id)
+      return compaction
+        ? {
+            id: compaction.id,
+            sourceStartSequence: compaction.source_start_sequence,
+            coveredThroughSequence: compaction.covered_through_sequence,
+            summary: compaction.summary_text,
+            provider: compaction.provider,
+            model: compaction.model,
+            createdAt: compaction.created_at,
+          }
+        : null
+    })(),
     latestBatchId: row.latest_batch_id,
     degradedReason: row.degraded_reason,
     createdAt: row.created_at,
@@ -794,7 +812,8 @@ export function buildDiscussionModelMessages(
   if (!context) return messages
   const session = getSession(db, sessionId)
   const contextPrompt = session?.promptSent?.trim()
-  if (!contextPrompt) return messages
+  const latestCompaction = getLatestDiscussionCompaction(db, sessionId)
+  if (!contextPrompt && !latestCompaction) return messages
   const webSearchPolicy = getDiscussionWebSearchPolicy(db, sessionId)
   const webSearchPrompt = webSearchPolicy.enabled
     ? [
@@ -808,10 +827,18 @@ export function buildDiscussionModelMessages(
           : []),
       ].join('\n')
     : ''
+  const summaryPrompt = latestCompaction
+    ? `【累计讨论摘要（覆盖至消息序号 ${latestCompaction.covered_through_sequence}）】\n${latestCompaction.summary_text}`
+    : ''
+  const hotMessages = latestCompaction
+    ? messages.filter((message) => (
+        message.sequence == null || message.sequence > latestCompaction.covered_through_sequence
+      ))
+    : messages
   return [{
     role: 'user',
-    content: [contextPrompt, webSearchPrompt].filter(Boolean).join('\n\n'),
-  }, ...messages]
+    content: [contextPrompt, summaryPrompt, webSearchPrompt].filter(Boolean).join('\n\n'),
+  }, ...hotMessages]
 }
 
 export interface DiscussionWebSearchPolicy {
@@ -913,6 +940,18 @@ export function deleteResearchDiscussion(db: Database.Database, sessionId: numbe
     deleteSession(db, sessionId)
   })
   remove()
+}
+
+/**
+ * Deletes a research discussion only after all in-flight session writes have
+ * completed. Callers that already own the session lock must use the sync
+ * deleteResearchDiscussion function to avoid recursively waiting on the lock.
+ */
+export async function deleteResearchDiscussionWithSessionLock(
+  db: Database.Database,
+  sessionId: number,
+): Promise<void> {
+  await withDiscussionSessionLock(sessionId, () => deleteResearchDiscussion(db, sessionId))
 }
 
 export function deleteAllResearchDiscussions(db: Database.Database): number {

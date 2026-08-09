@@ -7,7 +7,9 @@ import {
   compareResearchEvidenceRequest,
   startResearchEvidenceDiscussionRequest,
 } from '../../electron/main/ipc/researchEvidenceHandlers'
-import { createSession, getSession } from '../../electron/main/database/aiAnalysisSessionRepository'
+import { createSession, getSession, getSessionMessages, updateSessionMessages } from '../../electron/main/database/aiAnalysisSessionRepository'
+import { insertDiscussionCompaction } from '../../electron/main/database/discussionCompactionRepository'
+import { archiveDiscussionMessages } from '../../electron/main/database/discussionMessageArchiveRepository'
 import {
   createResearchDiscussionContext,
   getResearchDiscussionContext,
@@ -182,6 +184,83 @@ describe('research evidence delta', () => {
     } catch (error) {
       expect(error).toMatchObject({ code: 'INVALID_PARAM' })
     }
+  })
+
+  it('以稳定 messageSequence 解析已归档的讨论审计消息，而不是依赖热消息数组下标', () => {
+    const historical = contrast(stockSubject({
+      supporting: [item('trend_state_positive', '趋势状态=strong；评分=72')],
+    }))
+    const referenceId = historical.subjects[0].supporting[0].referenceId!
+    const text = `历史趋势结论。[${referenceId}]`
+    const audit = auditResearchText({
+      text,
+      documentKind: 'discussion',
+      evidenceContrast: historical,
+      now: NOW,
+    })
+    const sourceSessionId = createSession(db, {
+      provider: 'qwen',
+      model: 'test-model',
+      articleUrls: [],
+      promptSent: '受信历史讨论上下文',
+      response: null,
+      scanRunId: null,
+      isError: false,
+      messages: [
+        { role: 'assistant', content: text, sequence: 1, researchAudit: audit },
+        { role: 'user', content: '热尾部消息', sequence: 2 },
+      ],
+    })
+    createResearchDiscussionContext(db, {
+      sessionId: sourceSessionId,
+      requestId: '00000000-0000-4000-8000-000000000107',
+      originType: 'manual',
+      originId: null,
+      originTitle: '历史趋势讨论',
+      originOccurredAt: NOW,
+      originContentHash: 'source-hash',
+      contextSnapshotJson: JSON.stringify({
+        schemaVersion: 3,
+        title: '历史趋势讨论',
+        occurredAt: NOW,
+        sourceUrl: null,
+        items: [],
+        researchFacts: { asOf: historical.asOf, evidenceContrast: historical },
+      }),
+      contextKeysJson: '[]',
+      includedContextKeysJson: '[]',
+      returnTargetJson: JSON.stringify({ tab: 'ai-analysis', subTab: 'records' }),
+      projectId: null,
+      baseSnapshotId: null,
+      baseSelectionReason: 'unassigned',
+    })
+    const compaction = insertDiscussionCompaction(db, {
+      sessionId: sourceSessionId,
+      requestId: '00000000-0000-4000-8000-000000000108',
+      sourceStartSequence: 1,
+      coveredThroughSequence: 1,
+      sourceMessagesHash: 'a'.repeat(64),
+      summary: '历史累计摘要',
+      summaryHash: 'b'.repeat(64),
+      provider: 'qwen',
+      model: 'summary-model',
+    })
+    const stored = getSessionMessages(db, sourceSessionId)
+    archiveDiscussionMessages(db, {
+      sessionId: sourceSessionId,
+      compactionId: compaction.id,
+      messages: [stored[0]],
+    })
+    updateSessionMessages(db, sourceSessionId, [stored[1]])
+
+    const delta = compareResearchEvidenceRequest(db, {
+      sourceKind: 'discussion_message',
+      sessionId: sourceSessionId,
+      messageSequence: 1,
+    }, { now: NOW })
+
+    expect(delta.status).toBe('partial')
+    expect(delta.summary.added).toBeGreaterThan(0)
   })
 
   it('产业报告运行不属于请求项目时按不存在阻断', () => {

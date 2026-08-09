@@ -39,6 +39,7 @@ type ReviewToast = { tone: 'success' | 'error' | 'info'; message: string }
 type BatchReviewResult = { tsCode: string; ok: boolean; error?: string }
 type BatchReviewState = {
   status: 'running' | 'done'
+  batchRequestId: string
   requested: number
   completed: number
   succeeded: number
@@ -72,6 +73,25 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
     const timer = window.setTimeout(() => setToast(null), 5_000)
     return () => window.clearTimeout(timer)
   }, [toast])
+
+  useEffect(() => window.api.trend.onReviewProgress((progress) => {
+    setBatchReview((current) => {
+      if (!current || current.status !== 'running' || current.batchRequestId !== progress.batchRequestId) return current
+      if (progress.status === 'running') return current
+      const result: BatchReviewResult = {
+        tsCode: progress.tsCode,
+        ok: progress.status === 'succeeded',
+        error: progress.error,
+      }
+      return {
+        ...current,
+        completed: Math.min(current.requested, current.completed + 1),
+        succeeded: current.succeeded + (result.ok ? 1 : 0),
+        failed: current.failed + (result.ok ? 0 : 1),
+        results: [...current.results, result],
+      }
+    })
+  }), [])
 
   const showToast = (tone: ReviewToast['tone'], message: string) => setToast({ tone, message })
 
@@ -175,9 +195,10 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
   }
 
   const runBatchReview = async (tsCodes: string[]) => {
-    setBatchReview({ status: 'running', requested: tsCodes.length, completed: 0, succeeded: 0, failed: 0, results: [] })
+    const batchRequestId = crypto.randomUUID()
+    setBatchReview({ batchRequestId, status: 'running', requested: tsCodes.length, completed: 0, succeeded: 0, failed: 0, results: [] })
     try {
-      const response = await window.api.trend.reviewStructureBatch({ requestId: crypto.randomUUID(), tsCodes })
+      const response = await window.api.trend.reviewStructureBatch({ requestId: batchRequestId, tsCodes })
       if (!response.ok || !response.data) {
         setBatchReview(null)
         showToast('error', `批量复核失败：${response.message ?? response.error ?? '未知错误'}`)
@@ -186,6 +207,7 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
       const succeeded = response.data.filter((item) => item.ok).length
       const failed = response.data.length - succeeded
       setBatchReview({
+        batchRequestId,
         status: 'done',
         requested: tsCodes.length,
         completed: response.data.length,

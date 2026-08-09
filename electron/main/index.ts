@@ -44,7 +44,7 @@ import {
 } from './services/researchAccessTransport'
 import { initDefaultEdgesIfEmpty } from './database/supplyChainRepository'
 import { getAIConfig } from './database/aiConfigRepository'
-import { deleteSessionsOlderThan } from './database/aiAnalysisSessionRepository'
+import { deleteSessionsOlderThanWithSessionLocks } from './services/discussionSessionLifecycleService'
 import { getDataSourceConfig } from './database/dataSourceRepository'
 import { setEventHandlers } from './services/scanEngine'
 import { decryptApiKey } from './utils/apiKeyEncryption'
@@ -359,7 +359,7 @@ async function bootstrap(): Promise<void> {
   const aiConfig = getAIConfig(db)
   if (aiConfig.autoCleanupDays && aiConfig.autoCleanupDays > 0) {
     const olderThanMs = aiConfig.autoCleanupDays * 24 * 60 * 60 * 1000
-    const { deleted } = deleteSessionsOlderThan(db, olderThanMs, false)
+    const { deleted } = await deleteSessionsOlderThanWithSessionLocks(db, olderThanMs, false)
     if (deleted > 0) {
       console.log(`[AI] Auto-cleaned ${deleted} old analysis session(s)`)
     }

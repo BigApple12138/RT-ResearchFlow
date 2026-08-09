@@ -77,10 +77,23 @@ export interface TrendReviewBatchPayload {
   tsCodes: string[]
 }
 
+export type TrendReviewProgressStatus = 'running' | 'succeeded' | 'failed'
+
+export interface TrendReviewProgress {
+  batchRequestId: string
+  tsCode: string
+  index: number
+  total: number
+  status: TrendReviewProgressStatus
+  review?: TrendReviewDto
+  error?: string
+}
+
 interface TrendReviewBatchDependencies {
   getWorkbench?: (db: Database.Database) => TrendWorkbenchSnapshot
   reviewStructure?: typeof reviewStructure
   reviewDependencies?: Omit<TrendStructureReviewDependencies, 'getWorkbench'>
+  onProgress?: (progress: TrendReviewProgress) => void
 }
 
 export async function runTrendReviewStructureBatch(
@@ -94,10 +107,26 @@ export async function runTrendReviewStructureBatch(
   const runReview = dependencies.reviewStructure ?? reviewStructure
   const results: TrendReviewBatchResult[] = []
 
-  for (const rawCode of tsCodes) {
+  for (const [index, rawCode] of tsCodes.entries()) {
     const tsCode = normalizeTrendTsCode(rawCode)
+    dependencies.onProgress?.({
+      batchRequestId: requestId,
+      tsCode,
+      index,
+      total: tsCodes.length,
+      status: 'running',
+    })
     if (!workbenchCodes.has(tsCode)) {
-      results.push({ tsCode, ok: false, error: 'NOT_IN_WORKBENCH' })
+      const error = 'NOT_IN_WORKBENCH'
+      results.push({ tsCode, ok: false, error })
+      dependencies.onProgress?.({
+        batchRequestId: requestId,
+        tsCode,
+        index,
+        total: tsCodes.length,
+        status: 'failed',
+        error,
+      })
       continue
     }
 
@@ -110,9 +139,27 @@ export async function runTrendReviewStructureBatch(
           getWorkbench: () => snapshot,
         },
       )
-      results.push({ tsCode, ok: true, review: toTrendReviewDto(result) })
+      const review = toTrendReviewDto(result)
+      results.push({ tsCode, ok: true, review })
+      dependencies.onProgress?.({
+        batchRequestId: requestId,
+        tsCode,
+        index,
+        total: tsCodes.length,
+        status: 'succeeded',
+        review,
+      })
     } catch (error) {
-      results.push({ tsCode, ok: false, error: errorMessage(error) })
+      const message = errorMessage(error)
+      results.push({ tsCode, ok: false, error: message })
+      dependencies.onProgress?.({
+        batchRequestId: requestId,
+        tsCode,
+        index,
+        total: tsCodes.length,
+        status: 'failed',
+        error: message,
+      })
     }
   }
 
@@ -377,9 +424,14 @@ export function registerTrendHandlers(): void {
 
   ipcMain.handle('trend:reviewStructureBatch', async (_event, payload: unknown) => {
     try {
+      const sender = _event.sender
       return {
         ok: true,
-        data: await runTrendReviewStructureBatch(getDb(), payload),
+        data: await runTrendReviewStructureBatch(getDb(), payload, {
+          onProgress: (progress) => {
+            if (!sender.isDestroyed()) sender.send('trend:reviewProgress', progress)
+          },
+        }),
       }
     } catch (error) {
       const message = errorMessage(error)

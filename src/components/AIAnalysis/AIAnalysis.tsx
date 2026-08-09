@@ -87,6 +87,8 @@ function MarkdownComponents() {
 interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
+  sequence?: number
+  requestId?: string
   researchAgentRunId?: string
   webSearchTrace?: ConversationWebSearchTrace
   researchTrace?: ResearchAuditTraceView | null
@@ -444,6 +446,7 @@ export function AIAnalysis() {
   const [sessionQuery, setSessionQuery] = useState('')
   const [newDiscussionOpen, setNewDiscussionOpen] = useState(false)
   const [updatingContext, setUpdatingContext] = useState(false)
+  const [compactingContext, setCompactingContext] = useState(false)
   const [agentSuggest, setAgentSuggest] = useState<null | { intent: 'deep_research' | 'industry_research'; question: string }>(null)
   const [agentOpenSignal, setAgentOpenSignal] = useState(0)
   const [preferredAgentQuestion, setPreferredAgentQuestion] = useState<string | null>(null)
@@ -494,18 +497,32 @@ export function AIAnalysis() {
   }, [])
 
   useEffect(() => {
-    if (pendingDiscussionSessionId != null) {
-      if (!sessionsReady) return
-      if (aiSessions.some((session) => session.id === pendingDiscussionSessionId)) {
-        void handleSelectSession(pendingDiscussionSessionId)
+    if (pendingDiscussionSessionId == null || !sessionsReady) return
+    let cancelled = false
+    const selectIfPresent = () => {
+      const pending = useAppStore.getState().pendingResearchDiscussionSessionId
+      if (pending == null || cancelled) return true
+      if (useAppStore.getState().aiSessions.some((session) => session.id === pending)) {
+        void handleSelectSession(pending)
         clearPendingDiscussion()
-        return
+        return true
       }
-      clearPendingDiscussion()
-      showToast('来源讨论已删除，已接受的研究版本仍然保留。')
+      return false
     }
-    // 默认停留在新对话 composer，不盲选历史第一条会话。
-  }, [aiSessions, pendingDiscussionSessionId, sessionsReady])
+    if (selectIfPresent()) return
+    // 新建会话可能尚未进入列表：刷新后再选；仍没有才视为已删除。
+    void loadAISessions().then(() => {
+      if (cancelled || selectIfPresent()) return
+      window.setTimeout(() => {
+        if (cancelled || selectIfPresent()) return
+        if (useAppStore.getState().pendingResearchDiscussionSessionId != null) {
+          clearPendingDiscussion()
+          showToast('来源讨论已删除，已接受的研究版本仍然保留。')
+        }
+      }, 250)
+    })
+    return () => { cancelled = true }
+  }, [pendingDiscussionSessionId, sessionsReady, loadAISessions, clearPendingDiscussion])
 
   useEffect(() => {
     if (!isAnalyzing) {
@@ -662,20 +679,22 @@ export function AIAnalysis() {
     setSendingFollowUp(true)
     setFollowUpInput('')
     setActiveTab('chat')
+    const requestId = crypto.randomUUID()
 
     const optimisticMessages: ConversationMessage[] = [
       ...(detail.messages ?? []),
-      { role: 'user', content: message }
+      { role: 'user', content: message, requestId }
     ]
     setDetail((prev) => prev ? { ...prev, messages: optimisticMessages } : prev)
     setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 50)
 
     try {
-      const result = await window.api.ai.followUp(detail.id, message)
+      const result = await window.api.ai.followUp({ requestId, sessionId: detail.id, message })
       if (result?.messages) {
         const latest = await window.api.ai.getSession(detail.id)
         setDetail(latest ?? ((prev) => prev ? { ...prev, messages: result.messages } : prev))
         await loadAISessions()
+        if (result.warning) showToast(result.warning)
         if (detail.discussion) clearResearchDiscussionDraft(detail.id)
       } else if (result?.error) {
         showToast(`追问失败：${result.error}`)
@@ -685,6 +704,32 @@ export function AIAnalysis() {
     } finally {
       setSendingFollowUp(false)
       setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 100)
+    }
+  }
+
+  async function handleCompactDiscussionContext() {
+    if (!detail?.discussion || compactingContext || sendingFollowUp) return
+    setCompactingContext(true)
+    try {
+      const response = await window.api.ai.compactDiscussionContext({
+        requestId: crypto.randomUUID(),
+        sessionId: detail.id,
+        mode: 'manual',
+      })
+      if (!response.ok) {
+        showToast(response.message || response.error || '整理聊天上下文失败')
+        return
+      }
+      const latest = await window.api.ai.getSession(detail.id)
+      if (latest) setDetail(latest)
+      await loadAISessions()
+      showToast(response.skippedReason
+        ? '当前没有足够的完整对话可整理。'
+        : `已整理 ${response.archivedCount ?? 0} 条聊天消息，保留最近对话。`)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '整理聊天上下文失败')
+    } finally {
+      setCompactingContext(false)
     }
   }
 
@@ -719,11 +764,14 @@ export function AIAnalysis() {
     if (value.question.trim()) {
       setSendingFollowUp(true)
       try {
-        const follow = await window.api.ai.followUp(sessionId, value.question.trim())
+        const follow = await window.api.ai.followUp({
+          requestId: crypto.randomUUID(), sessionId, message: value.question.trim(),
+        })
         if (follow?.messages) {
           const latest = await window.api.ai.getSession(sessionId)
           setDetail(latest)
           await loadAISessions()
+          if (follow.warning) showToast(follow.warning)
         } else if (follow?.error) {
           showToast(`发送失败：${follow.error}`)
           setFollowUpInput(value.question)
@@ -742,21 +790,48 @@ export function AIAnalysis() {
   }
 
   async function runQuickChip(mode: 'analyze' | 'list' | 'checkConfig') {
-    if (sendingFollowUp || startingDiscussion) return
+    if (sendingFollowUp || startingDiscussion || sessionAgentBusy) return
     setSendingFollowUp(true)
     try {
+      const initialQuestion = mode === 'list'
+        ? '我有哪些持仓'
+        : mode === 'checkConfig'
+          ? '检查 AI 配置'
+          : '请基于下列持仓事实简要研判'
+      let sessionId = detail?.discussion ? detail.id : null
+      // 先建会话并立刻跳转，避免等 AI 返回期间仍停在「新对话」空态。
+      if (sessionId == null) {
+        const created = await startDiscussion({
+          origin: { type: 'manual', id: null },
+          initialQuestion,
+          mode: 'new',
+          returnTarget: { tab: 'ai-analysis', subTab: 'records' },
+        })
+        if (!created) {
+          showToast('无法创建分析会话')
+          return
+        }
+        sessionId = created.discussion.sessionId
+        await loadAISessions()
+        await handleSelectSession(sessionId)
+        clearResearchDiscussionDraft(sessionId)
+        setFollowUpInput('')
+        setActiveTab('chat')
+      }
       const result = await window.api.ai.runPortfolioBrief({
         requestId: crypto.randomUUID(),
-        sessionId: detail?.discussion ? detail.id : null,
+        sessionId,
         mode,
       })
-      if (!result.ok || result.sessionId == null) {
-        showToast(result.message || '操作失败')
-        return
-      }
+      const targetId = result.sessionId ?? sessionId
       await loadAISessions()
-      await handleSelectSession(result.sessionId)
-      setActiveTab('chat')
+      if (targetId != null) {
+        await handleSelectSession(targetId)
+        setActiveTab('chat')
+      }
+      if (!result.ok) {
+        showToast(result.message || '操作失败')
+      }
     } finally {
       setSendingFollowUp(false)
     }
@@ -824,11 +899,14 @@ export function AIAnalysis() {
       await handleSelectSession(sessionId)
       clearResearchDiscussionDraft(sessionId)
       setActiveTab('chat')
-      const result = await window.api.ai.followUp(sessionId, message)
+      const result = await window.api.ai.followUp({
+        requestId: crypto.randomUUID(), sessionId, message,
+      })
       if (result?.messages) {
         const latest = await window.api.ai.getSession(sessionId)
         setDetail(latest)
         await loadAISessions()
+        if (result.warning) showToast(result.warning)
       } else if (result?.error) {
         showToast(`发送失败：${result.error}`)
         setFollowUpInput(message)
@@ -893,11 +971,14 @@ export function AIAnalysis() {
                   if (!detail) return
                   setSendingFollowUp(true)
                   try {
-                    const result = await window.api.ai.followUp(detail.id, question)
+                    const result = await window.api.ai.followUp({
+                      requestId: crypto.randomUUID(), sessionId: detail.id, message: question,
+                    })
                     if (result?.messages) {
                       const latest = await window.api.ai.getSession(detail.id)
                       setDetail(latest)
                       await loadAISessions()
+                      if (result.warning) showToast(result.warning)
                       setFollowUpInput('')
                     } else if (result?.error) {
                       showToast(`追问失败：${result.error}`)
@@ -1280,7 +1361,27 @@ export function AIAnalysis() {
               {activeTab === 'chat' && (
                 <section className="space-y-4">
                   <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-                    <h3 className="text-sm font-semibold">{detail.discussion ? '讨论记录' : '追问记录'}</h3>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-semibold">{detail.discussion ? '讨论记录' : '追问记录'}</h3>
+                        {detail.discussion?.contextCompaction && (
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            聊天上下文已整理至消息序号 {detail.discussion.contextCompaction.coveredThroughSequence}，历史原文仍可追溯。
+                          </p>
+                        )}
+                      </div>
+                      {detail.discussion && (
+                        <button
+                          type="button"
+                          data-testid="ai-compact-discussion-context"
+                          onClick={() => { void handleCompactDiscussionContext() }}
+                          disabled={compactingContext || sendingFollowUp || sessionAgentBusy}
+                          className="rounded-md border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-[11px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+                        >
+                          {compactingContext ? '正在整理聊天上下文…' : '整理聊天上下文'}
+                        </button>
+                      )}
+                    </div>
                     {detail.messages && detail.messages.length > 0 ? (
                       <div className="mt-4 space-y-3">
                         {detail.messages.map((message, index) => (
@@ -1301,16 +1402,16 @@ export function AIAnalysis() {
                                   <ResearchAuditTrace
                                     trace={message.researchTrace}
                                     variant="compact"
-                                    onCompareCurrent={() => window.api.researchEvidence.compareSnapshot({
+                                    onCompareCurrent={message.sequence == null ? undefined : () => window.api.researchEvidence.compareSnapshot({
                                       sourceKind: 'discussion_message',
                                       sessionId: detail.id,
-                                      messageIndex: index,
+                                      messageSequence: message.sequence!,
                                     })}
-                                    onDiscussChanges={() => startEvidenceDiscussion({
+                                    onDiscussChanges={message.sequence == null ? undefined : () => startEvidenceDiscussion({
                                       source: {
                                         sourceKind: 'discussion_message',
                                         sessionId: detail.id,
-                                        messageIndex: index,
+                                        messageSequence: message.sequence!,
                                       },
                                       returnTarget: {
                                         tab: 'ai-analysis',
@@ -1336,7 +1437,7 @@ export function AIAnalysis() {
                   {detail.discussion && (
                     <ResearchDiscussionChangePanel
                       discussion={detail.discussion}
-                      messageCount={detail.messages?.length ?? 0}
+                      throughMessageSequence={detail.messages?.at(-1)?.sequence ?? null}
                       onChanged={async () => {
                         const latest = await window.api.ai.getSession(detail.id)
                         if (latest) setDetail(latest)

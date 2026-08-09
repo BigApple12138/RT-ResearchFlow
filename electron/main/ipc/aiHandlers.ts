@@ -6,13 +6,9 @@ import {
   createSession,
   updateSessionResponse,
   updateSessionRound2,
-  updateSessionMessages,
-  deleteSession,
   listSessions,
   getSession,
-  deleteAllSessions,
-  deleteSessionsOlderThan,
-  type ConversationMessage
+  getSessionMessages,
 } from '../database/aiAnalysisSessionRepository'
 import { getDataSourceConfig, updateDataSourceConfig } from '../database/dataSourceRepository'
 import { encryptApiKey, decryptApiKey } from '../utils/apiKeyEncryption'
@@ -52,7 +48,7 @@ import { detailContentToText, extractDetailContent } from '../services/detailCon
 import { getStockMinuteByDate, upsertStockMinute } from '../database/stockMinuteCacheRepository'
 import { runStockBasicSyncJob, subscribeStockMinute, unsubscribeStockMinute } from '../services/schedulerService'
 import { searchByNameOrCode, countAll as countStockBasic } from '../database/stockBasicCacheRepository'
-import type { AIProvider, ImpactRating, BriefingRow, SourceRow, StockPriceCacheRow } from '../database/types'
+import type { AIProvider, ImpactRating, BriefingRow, SourceRow, StockPriceCacheRow, DiscussionCompactionRow } from '../database/types'
 // FR-163: 数据增强辅助模块
 import { queryLatestFactor } from '../database/stkFactorCacheRepository'
 import { getStockLimitHistory } from '../database/limitListDailyRepository'
@@ -71,9 +67,6 @@ import {
 } from '../services/aiRound2MarketContextService'
 import { buildArticleRound2ResearchFactContext } from '../services/researchFactPromptService'
 import {
-  buildDiscussionAIRequest,
-  deleteResearchDiscussion,
-  deleteAllResearchDiscussions,
   discussionContextPreview,
   discussionSummary,
   getDiscussionResearchAuditContext,
@@ -84,8 +77,6 @@ import {
   updateDiscussionContextBeforeStart,
 } from '../services/researchDiscussionContextService'
 import {
-  auditResearchText,
-  buildBlockedResearchText,
   buildResearchAuditTraceView,
 } from '../services/researchEvidenceAuditService'
 import { runPortfolioBrief } from '../services/portfolioBriefService'
@@ -94,7 +85,50 @@ import {
   getResearchDiscussionContext,
 } from '../database/researchDiscussionRepository'
 import type { ResearchDiscussionOriginType, ResearchDiscussionStatus } from '../database/types'
-import { getResearchAgentAuditContext } from '../services/researchAgentRunManager'
+import { getResearchAgentAuditContext, isDiscussionSessionBusy } from '../services/researchAgentRunManager'
+import { runDiscussionFollowUp } from '../services/discussionFollowUpService'
+import { compactDiscussionContextWithinLock } from '../services/discussionContextCompactionService'
+import { withDiscussionSessionLock } from '../services/discussionSessionLock'
+import {
+  deleteAllSessionsWithSessionLocks,
+  deleteSessionWithSessionLock,
+  deleteSessionsOlderThanWithSessionLocks,
+} from '../services/discussionSessionLifecycleService'
+import {
+  validateDiscussionCompactionInput,
+  validateDiscussionFollowUpInput,
+} from './discussionIpcContract'
+export { isUuid } from './discussionIpcContract'
+
+export interface DiscussionCompactionDto {
+  id: string
+  sessionId: number
+  requestId: string
+  sourceStartSequence: number
+  coveredThroughSequence: number
+  sourceMessagesHash: string
+  summary: string
+  summaryHash: string
+  provider: string
+  model: string
+  createdAt: number
+}
+
+export function toDiscussionCompactionDto(row: DiscussionCompactionRow): DiscussionCompactionDto {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    requestId: row.request_id,
+    sourceStartSequence: row.source_start_sequence,
+    coveredThroughSequence: row.covered_through_sequence,
+    sourceMessagesHash: row.source_messages_hash,
+    summary: row.summary_text,
+    summaryHash: row.summary_hash,
+    provider: row.provider,
+    model: row.model,
+    createdAt: row.created_at,
+  }
+}
 
 /** FR-055/FR-072: Inject current Beijing date+time prefix into a prompt.
  *  Prepends "今天是XXXX年XX月XX日，现在是XX:XX（北京时间）\n\n" before the prompt text.
@@ -964,6 +998,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       customSkillPaths: (() => { try { return JSON.parse(row.customSkillPaths || '[]') } catch { return [] } })(),
       skillsForTrend: !!row.skillsForTrend,
       maxSkillChars: row.maxSkillChars ?? 30000,
+      autoCompactDiscussion: row.autoCompactDiscussion !== 0,
       providerModels: PROVIDER_MODELS,
       providerLabels: PROVIDER_LABELS,
       providerDefaultBaseUrls: PROVIDER_DEFAULT_BASE_URLS
@@ -991,6 +1026,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     selectedSkills?: string[]
     skillsForTrend?: boolean
     maxSkillChars?: number
+    autoCompactDiscussion?: boolean
     // FR-079: per-provider config update
     providerConfig?: {
       provider: string
@@ -1024,6 +1060,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     if (data.selectedSkills !== undefined) update.selectedSkills = JSON.stringify(data.selectedSkills)
     if (data.skillsForTrend !== undefined) update.skillsForTrend = data.skillsForTrend ? 1 : 0
     if (data.maxSkillChars !== undefined) update.maxSkillChars = Math.min(100000, Math.max(1000, data.maxSkillChars))
+    if (data.autoCompactDiscussion !== undefined) update.autoCompactDiscussion = data.autoCompactDiscussion ? 1 : 0
 
     // Only update API key if a non-empty string was provided (legacy flat path)
     if (data.apiKey) {
@@ -1274,7 +1311,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     const discussion = getResearchDiscussionContext(db, row.id)
     if (discussion) refreshDiscussionOriginAvailability(db, row.id)
     const currentDiscussion = discussion ? getResearchDiscussionContext(db, row.id) ?? discussion : null
-    const messages = row.messages ? (JSON.parse(row.messages) as ConversationMessage[]) : null
+    const messages = row.messages == null ? null : getSessionMessages(db, row.id)
     const auditContext = currentDiscussion ? getDiscussionResearchAuditContext(db, row.id) : null
     return {
       id: row.id,
@@ -1427,35 +1464,32 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // ── ai:deleteAllSessions ───────────────────────────────────────────────────────
-  ipcMain.handle('ai:deleteAllSessions', (_e, data: { includeResearchDiscussions?: boolean } = {}) => {
+  ipcMain.handle('ai:deleteAllSessions', async (_e, data: { includeResearchDiscussions?: boolean } = {}) => {
     const db = getDb()
     const protectedResearchDiscussions = countResearchDiscussionSessions(db)
-    if (data.includeResearchDiscussions) {
-      deleteAllResearchDiscussions(db)
+    const summary = await deleteAllSessionsWithSessionLocks(db, data.includeResearchDiscussions === true)
+    return {
+      deleted: summary.deleted,
+      protectedResearchDiscussions: data.includeResearchDiscussions ? 0 : protectedResearchDiscussions,
     }
-    const deleted = deleteAllSessions(db, false)
-    return { deleted, protectedResearchDiscussions: data.includeResearchDiscussions ? 0 : protectedResearchDiscussions }
   })
 
   // ── ai:cleanupOldSessions ──────────────────────────────────────────────────────
-  ipcMain.handle('ai:cleanupOldSessions', (_e, data: { olderThanDays: number; dryRun: boolean }) => {
+  ipcMain.handle('ai:cleanupOldSessions', async (_e, data: { olderThanDays: number; dryRun: boolean }) => {
     const db = getDb()
     const olderThanMs = data.olderThanDays * 24 * 60 * 60 * 1000
-    return deleteSessionsOlderThan(db, olderThanMs, data.dryRun)
+    return deleteSessionsOlderThanWithSessionLocks(db, olderThanMs, data.dryRun)
   })
 
   // ── ai:deleteSession ──────────────────────────────────────────────────────────
-  ipcMain.handle('ai:deleteSession', (_e, data: { id: number; confirmResearchDiscussion?: boolean }) => {
+  ipcMain.handle('ai:deleteSession', async (_e, data: { id: number; confirmResearchDiscussion?: boolean }) => {
     const db = getDb()
-    const discussion = getResearchDiscussionContext(db, data.id)
-    if (discussion) {
-      if (!data.confirmResearchDiscussion) {
-        return { ok: false, error: 'CONFIRM_REQUIRED', message: '删除研究讨论会使未处理变更包失效，但不会删除已写入研究' }
-      }
-      deleteResearchDiscussion(db, data.id)
-      return { ok: true }
+    const deletion = await deleteSessionWithSessionLock(db, data.id, {
+      allowResearchDiscussion: data.confirmResearchDiscussion === true,
+    })
+    if (deletion.deletedResearchDiscussion && !data.confirmResearchDiscussion) {
+      return { ok: false, error: 'CONFIRM_REQUIRED', message: '删除研究讨论会使未处理变更包失效，但不会删除已写入研究' }
     }
-    deleteSession(db, data.id)
     return { ok: true }
   })
 
@@ -1537,61 +1571,56 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     }
   })
 
+  // ── ai:compactDiscussionContext ──────────────────────────────────────────────
+  ipcMain.handle('ai:compactDiscussionContext', async (_e, data: {
+    requestId?: unknown
+    sessionId?: unknown
+    mode?: unknown
+  }) => {
+    const validation = validateDiscussionCompactionInput(data)
+    if (!validation.ok) return validation
+    const { requestId, sessionId, mode } = validation.data
+    const db = getDb()
+    return withDiscussionSessionLock(sessionId, async () => {
+      if (!getSession(db, sessionId)) return { ok: false, code: 'NOT_FOUND', message: 'Session not found' }
+      if (isDiscussionSessionBusy(db, sessionId)) {
+        return { ok: false, code: 'SESSION_BUSY', message: '当前会话有深度研究进行中，请等待完成或取消后再整理上下文。' }
+      }
+      const result = await compactDiscussionContextWithinLock(db, {
+        sessionId,
+        requestId,
+        mode,
+      })
+      if (!result.ok) return result
+      return {
+        ok: true,
+        sessionId,
+        compaction: result.compaction ? toDiscussionCompactionDto(result.compaction) : null,
+        archivedCount: result.archivedCount,
+        skippedReason: result.skippedReason,
+        messages: result.messages,
+      }
+    })
+  })
+
   // ── ai:followUp ───────────────────────────────────────────────────────────────
   // FR-061: continue conversation within an existing session
-  ipcMain.handle('ai:followUp', async (_e, data: { sessionId: number; message: string }) => {
+  ipcMain.handle('ai:followUp', async (_e, data: {
+    requestId?: unknown
+    sessionId?: unknown
+    message?: unknown
+  }) => {
+    const validation = validateDiscussionFollowUpInput(data)
+    if (!validation.ok) return { error: validation.message, code: validation.code }
+    const { requestId, sessionId, message } = validation.data
     const db = getDb()
-    const session = getSession(db, data.sessionId)
-    if (!session) return { error: 'Session not found' }
-
-    if (!resolveProviderCredentials(db)) return { error: 'AI not configured' }
-
-    // Build or restore conversation history
-    let messages: ConversationMessage[]
-    if (session.messages) {
-      messages = JSON.parse(session.messages) as ConversationMessage[]
-    } else {
-      // Seed context from round1 + optional round2 response
-      const context =
-        (session.response ?? '') +
-        (session.responseRound2 ? `\n\n【第二轮深度分析】\n${session.responseRound2}` : '')
-      messages = [{ role: 'assistant', content: context }]
-    }
-
-    messages.push({ role: 'user', content: injectTimePrefix(data.message) })
-
-    try {
-      const result = await callWithFallback(db, buildDiscussionAIRequest(db, data.sessionId, messages))
-      const auditContext = getDiscussionResearchAuditContext(db, data.sessionId)
-      const researchAudit = auditContext
-        ? auditResearchText({
-            text: result.text,
-            documentKind: 'discussion',
-            evidenceContrast: auditContext.evidenceContrast,
-            asOf: auditContext.asOf,
-            excludedUrls: auditContext.excludedUrls,
-            webSearchTrace: result.webSearchTrace,
-            allowedFactTexts: [
-              ...auditContext.allowedFactTexts,
-              ...messages.filter((message) => message.role === 'user').map((message) => message.content),
-            ],
-          })
-        : null
-      const persistedText = researchAudit?.status === 'blocked'
-        ? buildBlockedResearchText(researchAudit)
-        : result.text
-      messages.push({
-        role: 'assistant',
-        content: persistedText,
-        webSearchTrace: result.webSearchTrace,
-        ...(researchAudit ? { researchAudit } : {}),
-      })
-      updateSessionMessages(db, data.sessionId, messages)
-      refreshStructuredResultInBackground(db, data.sessionId, 'follow up')
-      return { text: persistedText, messages }
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) }
-    }
+    return runDiscussionFollowUp(db, {
+      requestId,
+      sessionId,
+      message,
+    }, {
+      onSuccess: (database, id) => refreshStructuredResultInBackground(database, id, 'follow up'),
+    })
   })
 
   // ── ai:runPortfolioBrief ──────────────────────────────────────────────────────

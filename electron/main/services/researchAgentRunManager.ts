@@ -78,6 +78,8 @@ import {
   RESEARCH_AGENT_NETWORK_TOOL_DEFINITIONS,
   RESEARCH_AGENT_TOOL_REGISTRY_VERSION,
 } from './researchAgentNetworkTools'
+import { withDiscussionSessionLock } from './discussionSessionLock'
+import { deleteSessionWithSessionLock } from './discussionSessionLifecycleService'
 import {
   MULTI_PERSPECTIVE_PROTOCOL_VERSION,
   MULTI_PERSPECTIVE_UNRESTRICTED_PROMPT_RULE_VERSION,
@@ -98,6 +100,14 @@ const LEASE_TTL_MS = 150_000
 const LEASE_RENEW_INTERVAL_MS = 30_000
 const MAX_CONTEXT_MESSAGES = 40
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000
+
+export function isDiscussionSessionBusy(
+  db: import('better-sqlite3').Database,
+  sessionId: number,
+): boolean {
+  return listResearchAgentRuns(db, { discussionSessionId: sessionId, limit: 50 })
+    .some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'paused')
+}
 
 export interface ResearchAgentPreflightView {
   sessionId: number | null
@@ -361,14 +371,14 @@ export class ResearchAgentRunManager {
     })
   }
 
-  startDirect(input: {
+  async startDirect(input: {
     requestId: string
     question: string
     subjects: unknown[]
     includePortfolio: boolean
     projectId?: string | null
     confirmedBudgetVersion: string
-  }): { run: ResearchAgentRunSummaryView; replayed: boolean; discussionSessionId: number } {
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean; discussionSessionId: number }> {
     if (input.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前固定研究预算版本')
     }
@@ -409,7 +419,11 @@ export class ResearchAgentRunManager {
       })
     } catch (error) {
       if (!discussion.resumed && !getResearchAgentRunByRequestId(this.db, input.requestId)) {
-        try { deleteSession(this.db, discussion.discussion.sessionId) } catch { /* Preserve the original start error. */ }
+        try {
+          await deleteSessionWithSessionLock(this.db, discussion.discussion.sessionId, {
+            allowResearchDiscussion: true,
+          })
+        } catch { /* Preserve the original start error. */ }
       }
       throw error
     }
@@ -616,6 +630,17 @@ export class ResearchAgentRunManager {
       return { ...deleted, discussionDeleted: false }
     })
     return transaction()
+  }
+
+  /**
+   * Delete through the same session lock used by discussion follow-up and
+   * compaction. The synchronous delete method remains available to internal
+   * callers that already own the lifecycle boundary; IPC uses this method.
+   */
+  async deleteWithSessionLock(runId: string): Promise<{ deletedRunIds: string[]; discussionDeleted: boolean }> {
+    const run = requireRun(this.db, runId)
+    if (run.discussion_session_id == null) return this.delete(runId)
+    return withDiscussionSessionLock(run.discussion_session_id, () => this.delete(runId))
   }
 
   cancel(runId: string): ResearchAgentRunSummaryView {
@@ -925,33 +950,35 @@ function assertDirectDiscussionReplayMatches(
   }
 }
 
-export function persistResearchAgentReport(
+export async function persistResearchAgentReport(
   db: Database.Database,
   input: ResearchAgentPersistInput,
-): void {
+): Promise<void> {
   if (input.run.discussion_session_id == null) return
-  const transaction = db.transaction(() => {
-    const session = getSession(db, input.run.discussion_session_id!)
-    const discussion = getResearchDiscussionContext(db, input.run.discussion_session_id!)
-    if (!session || !discussion) throw new ResearchAgentRunManagerError('PERSIST_FAILED', '目标研究讨论不存在')
-    const messages = parseConversationMessages(session.messages)
-    if (messages.some((message) => message.researchAgentRunId === input.run.id)) return
-    const assistant: ConversationMessage = {
-      role: 'assistant',
-      content: input.reportMarkdown,
-      researchAgentRunId: input.run.id,
-      researchAudit: input.audit,
-    }
-    const next: ConversationMessage[] = input.run.run_kind === 'multi_perspective'
-      ? [...messages, assistant]
-      : [
-          ...messages,
-          { role: 'user', content: input.run.question, researchAgentRunId: input.run.id },
-          assistant,
-        ]
-    updateSessionMessages(db, session.id, next)
+  await withDiscussionSessionLock(input.run.discussion_session_id, () => {
+    const transaction = db.transaction(() => {
+      const session = getSession(db, input.run.discussion_session_id!)
+      const discussion = getResearchDiscussionContext(db, input.run.discussion_session_id!)
+      if (!session || !discussion) throw new ResearchAgentRunManagerError('PERSIST_FAILED', '目标研究讨论不存在')
+      const messages = parseConversationMessages(session.messages)
+      if (messages.some((message) => message.researchAgentRunId === input.run.id)) return
+      const assistant: ConversationMessage = {
+        role: 'assistant',
+        content: input.reportMarkdown,
+        researchAgentRunId: input.run.id,
+        researchAudit: input.audit,
+      }
+      const next: ConversationMessage[] = input.run.run_kind === 'multi_perspective'
+        ? [...messages, assistant]
+        : [
+            ...messages,
+            { role: 'user', content: input.run.question, researchAgentRunId: input.run.id },
+            assistant,
+          ]
+      updateSessionMessages(db, session.id, next)
+    })
+    transaction()
   })
-  transaction()
 }
 
 function toRunSummary(run: ResearchAgentRunRow): ResearchAgentRunSummaryView {

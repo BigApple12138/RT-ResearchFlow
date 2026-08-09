@@ -179,6 +179,7 @@ export function updateResearchDiscussionProgress(
     baseSnapshotId?: string | null
     baseSelectionReason?: ResearchBaseSelectionReason
     summarizedThroughMessageIndex?: number | null
+    summarizedThroughMessageSequence?: number | null
     latestBatchId?: string | null
     degradedReason?: string | null
   },
@@ -189,6 +190,7 @@ export function updateResearchDiscussionProgress(
   if (patch.baseSnapshotId !== undefined) entries.push(['base_snapshot_id', patch.baseSnapshotId])
   if (patch.baseSelectionReason !== undefined) entries.push(['base_selection_reason', patch.baseSelectionReason])
   if (patch.summarizedThroughMessageIndex !== undefined) entries.push(['summarized_through_message_index', patch.summarizedThroughMessageIndex])
+  if (patch.summarizedThroughMessageSequence !== undefined) entries.push(['summarized_through_message_sequence', patch.summarizedThroughMessageSequence])
   if (patch.latestBatchId !== undefined) entries.push(['latest_batch_id', patch.latestBatchId])
   if (patch.degradedReason !== undefined) entries.push(['degraded_reason', patch.degradedReason])
   if (!entries.length) return getResearchDiscussionContext(db, sessionId)

@@ -1277,10 +1277,27 @@ export function registerIndustryResearchHandlers(getMainWindow?: () => Electron.
   // ── FR-239 contextual discussion changes ────────────────────────────────────
   ipcMain.handle('industryResearch:prepareDiscussionChanges', async (_event, payload: Record<string, unknown>) => {
     try {
+      const hasSequence = payload.throughMessageSequence != null
+      const hasLegacyIndex = payload.throughMessageIndex != null
+      if (!hasSequence && !hasLegacyIndex) {
+        throw new IndustryResearchError('INVALID_PARAM', 'throughMessageSequence 不能为空')
+      }
+      const throughMessageSequence = hasSequence
+        ? finiteNumber(payload.throughMessageSequence, 'throughMessageSequence', true)
+        : null
+      const throughMessageIndex = !hasSequence
+        ? finiteNumber(payload.throughMessageIndex, 'throughMessageIndex', true)
+        : null
+      const range = throughMessageSequence ?? throughMessageIndex
+      if (range == null || !Number.isInteger(range) || range < 0) {
+        throw new IndustryResearchError('INVALID_PARAM', '消息范围必须是非负整数')
+      }
       return ok(await prepareDiscussionChanges(getDb(), {
         requestId: uuid(payload.requestId, 'requestId'),
         sessionId: finiteNumber(payload.sessionId, 'sessionId', true)!,
-        throughMessageIndex: finiteNumber(payload.throughMessageIndex, 'throughMessageIndex', true)!,
+        ...(throughMessageSequence != null
+          ? { throughMessageSequence }
+          : { throughMessageIndex: throughMessageIndex! }),
         projectId: payload.projectId == null ? null : id(payload.projectId, 'projectId'),
         baseSnapshotId: payload.baseSnapshotId == null ? null : id(payload.baseSnapshotId, 'baseSnapshotId'),
       }))

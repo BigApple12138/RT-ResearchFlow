@@ -19,6 +19,7 @@ import {
   getResearchProject,
 } from '../../electron/main/database/industryResearchRepository'
 import { getResearchDiscussionContext } from '../../electron/main/database/researchDiscussionRepository'
+import { insertDiscussionCompaction } from '../../electron/main/database/discussionCompactionRepository'
 import {
   buildDiscussionModelMessages,
   buildDiscussionAIRequest,
@@ -62,6 +63,46 @@ describe('研究讨论上下文服务', () => {
     expect(modelMessages[0].content).toContain('研究边界')
     expect(modelMessages[0].content).not.toContain('回访与停止条件')
     expect(JSON.parse(getSession(db, started.session.id)!.messages!)).toEqual([])
+  })
+
+  it('压缩后模型上下文只包含硬事实、累计摘要、热消息和当前问题', () => {
+    const started = startResearchDiscussion(db, {
+      requestId: '00000000-0000-4000-8000-000000000060',
+      origin: { type: 'industry_research', id: 'project-1' },
+      projectId: 'project-1',
+      mode: 'new',
+      returnTarget: { tab: 'ai-analysis', entityId: 'project-1' },
+    })
+    const persistedMessages = Array.from({ length: 10 }, (_, index) => ({
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: index < 8 ? `归档旧消息 ${index + 1}` : `热消息 ${index + 1}`,
+      sequence: index + 1,
+    }))
+    updateSessionMessages(db, started.session.id, persistedMessages)
+    insertDiscussionCompaction(db, {
+      sessionId: started.session.id,
+      requestId: '00000000-0000-4000-8000-000000000061',
+      sourceStartSequence: 1,
+      coveredThroughSequence: 8,
+      sourceMessagesHash: 'a'.repeat(64),
+      summary: '累计摘要：供给与价格传导仍需验证。',
+      summaryHash: 'b'.repeat(64),
+      provider: 'qwen',
+      model: 'test-model',
+    })
+
+    const request = buildDiscussionAIRequest(db, started.session.id, [
+      ...persistedMessages,
+      { role: 'user', content: '当前问题：下一步做什么验证？' },
+    ])
+    const modelText = request.messages.map((message) => message.content).join('\n')
+
+    expect(modelText).toContain('累计摘要：供给与价格传导仍需验证。')
+    expect(modelText).toContain('热消息 9')
+    expect(modelText).toContain('热消息 10')
+    expect(modelText).toContain('当前问题：下一步做什么验证？')
+    expect(modelText).not.toContain('归档旧消息 1')
+    expect(modelText).not.toContain('归档旧消息 8')
   })
 
   it('同来源恢复原讨论，首条消息后禁止无痕修改上下文', () => {

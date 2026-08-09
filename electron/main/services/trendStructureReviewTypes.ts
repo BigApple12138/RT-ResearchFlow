@@ -3,10 +3,10 @@ import type { TrendWorkbenchItem } from './trendWorkbenchService'
 import type { TrendState } from './trendScoreModel'
 
 export const AI_TREND_VERDICTS = [
-  'trend_intact',
-  'trend_improving',
-  'trend_deteriorating',
-  'trend_broken',
+  'agree',
+  'possible_false_break',
+  'possible_false_hold',
+  'evidence_weak',
   'need_more_data',
 ] as const
 
@@ -29,110 +29,58 @@ export interface AiTrendReviewPayload {
 }
 
 export interface TrendReviewFacts {
-  schemaVersion: 1
   tsCode: string
   stockName: string
-  categories: string[]
-  subCategories: string[]
-  scoreDate: string
-  scoreSource: 'realtime' | 'eod'
-  scoreVersion: 'v2' | 'legacy'
-  totalScore: number | null
-  validWeight: number | null
   trendState: TrendState
+  totalScore: number | null
   scoreDelta5d: number | null
   scoreDelta20d: number | null
-  dimensions: {
-    maArrangement: number | null
-    maAbove60: number | null
-    relativeStrength: number | null
-    drawdownQuality: number | null
-    turnoverQuality: number | null
-    macd: number | null
-    boll: number | null
-  } | null
-  scoreFacts: {
-    stockReturn20d: number | null
-    benchmarkReturn20d: number | null
-    excessReturn20d: number | null
-    maxDrawdown20d: number | null
-    turnoverRatio: number | null
-  } | null
+  maAbove60: boolean | null
+  validWeight: number | null
   dataCoverage: {
     bars: number
     requiredBars: number
     latestTradeDate: string | null
     state: 'ready' | 'partial' | 'missing'
   }
-  benchmark: {
-    state: 'current' | 'stale' | 'missing' | 'insufficient' | 'calendar-unknown'
-    latestTradeDate: string | null
-    expectedTradeDate: string | null
-    bars: number
-    requiredBars: number
-  }
-  market: {
-    price: number | null
-    change: number | null
-    quoteSource: 'realtime' | 'eod'
-    quoteTime: string
-  }
+  facts: {
+    stockReturn20d: number | null
+    benchmarkReturn20d: number | null
+    excessReturn20d: number | null
+    maxDrawdown20d: number | null
+    turnoverRatio: number | null
+  } | null
+  scoreDate: string
 }
 
-export const MAX_TREND_REVIEW_RATIONALE_LENGTH = 2_000
-export const MAX_TREND_REVIEW_FOCUS_POINTS = 8
-export const MAX_TREND_REVIEW_FOCUS_POINT_LENGTH = 240
+export const MAX_TREND_REVIEW_RATIONALE_LENGTH = 120
+export const MAX_TREND_REVIEW_FOCUS_POINTS = 3
+export const MAX_TREND_REVIEW_FOCUS_POINT_LENGTH = 80
 
 export function buildTrendReviewFactsFromItem(item: TrendWorkbenchItem, now = Date.now()): TrendReviewFacts {
   return {
-    schemaVersion: 1,
     tsCode: normalizeTrendTsCode(item.tsCode),
     stockName: item.stockName,
-    categories: [...item.categories],
-    subCategories: [...item.subCategories],
-    scoreDate: item.scoreDate || item.dataCoverage.latestTradeDate || formatYmd(now),
-    scoreSource: item.scoreSource,
-    scoreVersion: item.scoreVersion,
-    totalScore: item.totalScore,
-    validWeight: item.validWeight,
     trendState: item.trendState,
+    totalScore: item.totalScore,
     scoreDelta5d: item.scoreDelta5d,
     scoreDelta20d: item.scoreDelta20d,
-    dimensions: item.dimensions == null ? null : {
-      maArrangement: item.dimensions.maArrangement,
-      maAbove60: item.dimensions.maAbove60,
-      relativeStrength: item.dimensions.relativeStrength,
-      drawdownQuality: item.dimensions.drawdownQuality,
-      turnoverQuality: item.dimensions.turnoverQuality,
-      macd: item.dimensions.macd,
-      boll: item.dimensions.boll,
-    },
-    scoreFacts: item.facts == null ? null : {
-      stockReturn20d: item.facts.stockReturn20d,
-      benchmarkReturn20d: item.facts.benchmarkReturn20d,
-      excessReturn20d: item.facts.excessReturn20d,
-      maxDrawdown20d: item.facts.maxDrawdown20d,
-      turnoverRatio: item.facts.turnoverRatio,
-    },
+    maAbove60: item.maAbove60,
+    validWeight: item.validWeight,
     dataCoverage: {
       bars: item.dataCoverage.bars,
       requiredBars: item.dataCoverage.requiredBars,
       latestTradeDate: item.dataCoverage.latestTradeDate,
       state: item.dataCoverage.state,
     },
-    benchmark: {
-      state: item.benchmarkHealth.state,
-      latestTradeDate: item.benchmarkHealth.latestTradeDate,
-      expectedTradeDate: item.benchmarkHealth.expectedTradeDate,
-      bars: item.benchmarkHealth.bars,
-      requiredBars: item.benchmarkHealth.requiredBars,
+    facts: item.facts == null ? null : {
+      stockReturn20d: item.facts.stockReturn20d,
+      benchmarkReturn20d: item.facts.benchmarkReturn20d,
+      excessReturn20d: item.facts.excessReturn20d,
+      maxDrawdown20d: item.facts.maxDrawdown20d,
+      turnoverRatio: item.facts.turnoverRatio,
     },
-    market: {
-      price: item.price,
-      change: item.change,
-      quoteSource: item.quoteSource,
-      quoteTime: item.quoteTime,
-    },
+    scoreDate: item.scoreDate || item.dataCoverage.latestTradeDate || formatYmd(now),
   }
 }
 
