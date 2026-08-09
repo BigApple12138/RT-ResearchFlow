@@ -98,6 +98,18 @@ describe('趋势结构复核 Repository', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM trend_structure_reviews').get()).toEqual({ count: 1 })
   })
 
+  it('相同 requestId 只接受 tsCode、scoreDate 和 factsHash 全部相同的重放', () => {
+    const base = {
+      tsCode: '600000.SH', scoreDate: '20260808', factsHash: 'a'.repeat(64), requestId: randomUUID(),
+      localTrendState: 'strong' as const, localTotalScore: 78, verdict: 'agree' as const,
+      rationale: '结构完整。', focusPoints: [], provider: null, model: null, audit: { status: 'passed' }, now: 1_000,
+    }
+    saveTrendStructureReview(db, base)
+
+    expect(() => saveTrendStructureReview(db, { ...base, factsHash: 'b'.repeat(64), now: 2_000 }))
+      .toThrow('TREND_REVIEW_REQUEST_CONFLICT')
+  })
+
   it('旧词表迁移到 legacy 表且不伪装成新词表结果', () => {
     const legacyDb = new Database(':memory:')
     runMigrations(legacyDb, DATABASE_MIGRATIONS.filter((migration) => migration.version <= 139))

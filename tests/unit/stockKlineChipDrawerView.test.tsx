@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { RightDrawer } from '../../src/components/shared/RightDrawer'
 import { StockKlineChipDrawer } from '../../src/components/shared/StockMiniChart'
+import { resolveTrendDrawerItem } from '../../src/components/TrendWatcher/TrendDashboard'
 
 describe('股票日K与筹码峰通用抽屉', () => {
   it('使用覆盖整个应用的模态抽屉、蒙层和可访问的宽度调整与关闭入口', () => {
@@ -57,5 +58,16 @@ describe('股票日K与筹码峰通用抽屉', () => {
     expect(output).toContain('打开完整走势')
     expect(output).toContain('正在读取近期日K与筹码')
     expect(output).not.toContain('今日分时')
+  })
+
+  it('趋势抽屉从最新 snapshot 按 tsCode 派生 item，并使用抽屉专用讨论 testid', () => {
+    const latest = { tsCode: '000815.SZ', stockName: '最新名称', structureReview: { stale: false } }
+    expect(resolveTrendDrawerItem('000815.SZ', [latest] as never[])).toBe(latest)
+
+    const output = renderToStaticMarkup(createElement(StockKlineChipDrawer, {
+      tsCode: '000815.SZ', stockName: '美利云', onClose: vi.fn(), onNavigate: vi.fn(), onDiscuss: vi.fn(),
+    }))
+    expect(output).toContain('data-testid="trend-ai-review-discussion-drawer-000815"')
+    expect(output).not.toContain('data-testid="trend-ai-review-discussion-000815"')
   })
 })

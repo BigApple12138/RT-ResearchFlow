@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import {
+  assertTrendStructureReviewRequestIdentity,
   getTrendStructureReviewByCodeDate,
   getTrendStructureReviewByRequestId,
   saveTrendStructureReview,
@@ -72,7 +73,11 @@ export async function reviewStructure(
 
   const requestReplay = getTrendStructureReviewByRequestId(db, input.requestId)
   if (requestReplay) {
-    if (requestReplay.tsCode !== normalizedCode) throw new Error('TREND_REVIEW_REQUEST_CONFLICT')
+    assertTrendStructureReviewRequestIdentity(requestReplay, {
+      tsCode: normalizedCode,
+      scoreDate: facts.scoreDate,
+      factsHash,
+    })
     return toResult(requestReplay, facts)
   }
 

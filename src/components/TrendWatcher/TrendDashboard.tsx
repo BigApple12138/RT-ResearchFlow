@@ -47,10 +47,17 @@ type BatchReviewState = {
   results: BatchReviewResult[]
 }
 
+export function resolveTrendDrawerItem(
+  selectedTsCode: string | null,
+  items: TrendWorkbenchItem[],
+): TrendWorkbenchItem | null {
+  return selectedTsCode == null ? null : items.find((item) => item.tsCode === selectedTsCode) ?? null
+}
+
 export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: TrendWorkbenchPageProps) {
   const [filter, setFilter] = useState<RadarFilter>('all')
   const [query, setQuery] = useState('')
-  const [selected, setSelected] = useState<TrendWorkbenchItem | null>(null)
+  const [selectedTsCode, setSelectedTsCode] = useState<string | null>(null)
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
   const [reviewingCodes, setReviewingCodes] = useState<Set<string>>(() => new Set())
   const [batchReview, setBatchReview] = useState<BatchReviewState | null>(null)
@@ -116,6 +123,10 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
         return (right.totalScore ?? -1) - (left.totalScore ?? -1)
       })
   }, [filter, query, snapshot?.items])
+  const selected = useMemo(
+    () => resolveTrendDrawerItem(selectedTsCode, snapshot?.items ?? []),
+    [selectedTsCode, snapshot?.items],
+  )
 
   const counts = useMemo(() => {
     const all = snapshot?.items ?? []
@@ -426,8 +437,8 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
                 <tr
                   key={item.tsCode}
                   tabIndex={0}
-                  onClick={() => setSelected(item)}
-                  onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelected(item) }}
+                  onClick={() => setSelectedTsCode(item.tsCode)}
+                  onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedTsCode(item.tsCode) }}
                   className="cursor-pointer border-b border-slate-100 bg-white transition-colors motion-reduce:transition-none hover:bg-cyan-50/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-500 dark:border-slate-900 dark:bg-slate-950 dark:hover:bg-cyan-950/20"
                 >
                   <td className="px-3 py-2.5 text-center" onClick={(event) => event.stopPropagation()}>
@@ -503,13 +514,15 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
         <StockKlineChipDrawer
           tsCode={selected.tsCode}
           stockName={selected.stockName}
-          onClose={() => setSelected(null)}
+          onClose={() => setSelectedTsCode(null)}
           onNavigate={() => {
             navigateToStock(selected.stockCode, selected.stockName)
-            setSelected(null)
+            setSelectedTsCode(null)
           }}
           onReview={() => { void reviewOne(selected) }}
-          onDiscuss={() => { void discussReview(selected) }}
+          onDiscuss={selected.structureReview && !selected.structureReview.stale
+            ? () => { void discussReview(selected) }
+            : undefined}
         />
       )}
     </div>

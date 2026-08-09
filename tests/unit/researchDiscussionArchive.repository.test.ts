@@ -26,8 +26,8 @@ describe('研究讨论消息归档 Repository', () => {
     const compaction = insertDiscussionCompaction(db, {
       sessionId,
       requestId: 'compaction-1',
-      sourceStartSequence: 0,
-      coveredThroughSequence: 2,
+      sourceStartSequence: 1,
+      coveredThroughSequence: 3,
       sourceMessagesHash: 'a'.repeat(64),
       summary: '摘要',
       summaryHash: 'b'.repeat(64),
@@ -41,9 +41,9 @@ describe('研究讨论消息归档 Repository', () => {
       compactionId: compaction.id,
       archivedAt: 2_000,
       messages: [
-        { sequence: 2, role: 'assistant', content: '第三条' },
-        { sequence: 0, role: 'user', content: '第一条' },
-        { sequence: 1, role: 'assistant', content: '第二条' },
+        { sequence: 3, role: 'assistant', content: '第三条' },
+        { sequence: 1, role: 'user', content: '第一条' },
+        { sequence: 2, role: 'assistant', content: '第二条' },
       ],
     })
 
@@ -51,9 +51,9 @@ describe('研究讨论消息归档 Repository', () => {
       row.message_sequence,
       JSON.parse(row.message_json).content,
     ])).toEqual([
-      [0, '第一条'],
-      [1, '第二条'],
-      [2, '第三条'],
+      [1, '第一条'],
+      [2, '第二条'],
+      [3, '第三条'],
     ])
   })
 

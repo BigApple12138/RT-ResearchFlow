@@ -2,12 +2,13 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'crypto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createSession, getSession, updateSessionMessages } from '../../electron/main/database/aiAnalysisSessionRepository'
-import { runMigrations } from '../../electron/main/database/db'
+import { DATABASE_MIGRATIONS, runMigrations } from '../../electron/main/database/db'
 import { getAIConfig, updateAIConfig } from '../../electron/main/database/aiConfigRepository'
 import {
   getLatestDiscussionCompaction,
   insertDiscussionCompaction,
 } from '../../electron/main/database/discussionCompactionRepository'
+import { archiveDiscussionMessages } from '../../electron/main/database/discussionMessageArchiveRepository'
 import {
   completeDiscussionTurnRequest,
   getDiscussionTurnRequest,
@@ -83,7 +84,7 @@ describe('讨论上下文归档相关数据库契约', () => {
     const firstInput = {
       sessionId,
       requestId: randomUUID(),
-      sourceStartSequence: 0,
+      sourceStartSequence: 1,
       coveredThroughSequence: 3,
       sourceMessagesHash: 'a'.repeat(64),
       summary: '累计摘要一',
@@ -93,7 +94,7 @@ describe('讨论上下文归档相关数据库契约', () => {
       now: 1_000,
     }
     const first = insertDiscussionCompaction(db, firstInput)
-    const replay = insertDiscussionCompaction(db, { ...firstInput, summary: '不应覆盖', now: 2_000 })
+    const replay = insertDiscussionCompaction(db, { ...firstInput, now: 2_000 })
     const latest = insertDiscussionCompaction(db, {
       ...firstInput,
       requestId: randomUUID(),
@@ -107,6 +108,63 @@ describe('讨论上下文归档相关数据库契约', () => {
 
     expect(replay).toEqual(first)
     expect(getLatestDiscussionCompaction(db, sessionId)).toEqual(latest)
+  })
+
+  it('requestId 只能重放完整压缩身份，跨 session 冲突不会冒充赢家', () => {
+    const winnerSessionId = createSession(db, {
+      provider: 'qwen', model: 'test-model', articleUrls: [], promptSent: '', response: null,
+      scanRunId: null, isError: false,
+    })
+    const loserSessionId = createSession(db, {
+      provider: 'qwen', model: 'test-model', articleUrls: [], promptSent: '', response: null,
+      scanRunId: null, isError: false,
+    })
+    const requestId = randomUUID()
+    const winner = insertDiscussionCompaction(db, {
+      sessionId: winnerSessionId, requestId, sourceStartSequence: 1, coveredThroughSequence: 2,
+      sourceMessagesHash: 'a'.repeat(64), summary: '赢家摘要', summaryHash: 'b'.repeat(64),
+      provider: 'qwen', model: 'test-model', now: 1_000,
+    })
+
+    expect(() => insertDiscussionCompaction(db, {
+      sessionId: loserSessionId, requestId, sourceStartSequence: 1, coveredThroughSequence: 2,
+      sourceMessagesHash: 'c'.repeat(64), summary: '输家摘要', summaryHash: 'd'.repeat(64),
+      provider: 'qwen', model: 'test-model', now: 2_000,
+    })).toThrow('REQUEST_CONFLICT')
+    expect(winner.session_id).toBe(winnerSessionId)
+    expect(db.prepare('SELECT COUNT(*) AS count FROM ai_discussion_message_archives WHERE session_id = ?').get(loserSessionId))
+      .toEqual({ count: 0 })
+  })
+
+  it('142 迁移阻止 compaction 与 archive 跨 session 关联，并拒绝零 sequence', () => {
+    const legacy = new Database(':memory:')
+    runMigrations(legacy, DATABASE_MIGRATIONS.filter((migration) => migration.version <= 141))
+    const first = createSession(legacy, {
+      provider: 'qwen', model: 'test-model', articleUrls: [], promptSent: '', response: null,
+      scanRunId: null, isError: false,
+    })
+    const second = createSession(legacy, {
+      provider: 'qwen', model: 'test-model', articleUrls: [], promptSent: '', response: null,
+      scanRunId: null, isError: false,
+    })
+    const compaction = insertDiscussionCompaction(legacy, {
+      sessionId: first, requestId: randomUUID(), sourceStartSequence: 1, coveredThroughSequence: 1,
+      sourceMessagesHash: 'a'.repeat(64), summary: '摘要', summaryHash: 'b'.repeat(64),
+      provider: 'qwen', model: 'test-model', now: 1_000,
+    })
+
+    runMigrations(legacy)
+    runMigrations(legacy)
+    expect(() => archiveDiscussionMessages(legacy, {
+      sessionId: second, compactionId: compaction.id,
+      messages: [{ role: 'user', content: '跨会话归档', sequence: 1 }], archivedAt: 2_000,
+    })).toThrow('COMPACTION_SESSION_MISMATCH')
+    expect(() => insertDiscussionCompaction(legacy, {
+      sessionId: second, requestId: randomUUID(), sourceStartSequence: 0, coveredThroughSequence: 1,
+      sourceMessagesHash: 'c'.repeat(64), summary: '零序号', summaryHash: 'd'.repeat(64),
+      provider: 'qwen', model: 'test-model', now: 2_000,
+    })).toThrow('COMPACTION_SEQUENCE_MUST_BE_POSITIVE')
+    legacy.close()
   })
 
   it('turn request 按 requestId 幂等，并保存完成后的响应文本', () => {

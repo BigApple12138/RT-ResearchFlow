@@ -4748,6 +4748,36 @@ const MIGRATIONS: DatabaseMigration[] = [
       CREATE INDEX idx_industry_research_candidates_session_sequence
         ON industry_research_change_candidates(batch_id, message_start_sequence, message_end_sequence);
     `
+  },
+  {
+    // Guard the cross-table ownership relationship introduced before sequence values became strictly positive.
+    version: 142,
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_compaction_positive_sequences_insert
+        BEFORE INSERT ON ai_discussion_context_compactions
+        WHEN NEW.source_start_sequence <= 0 OR NEW.covered_through_sequence < NEW.source_start_sequence
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SEQUENCE_MUST_BE_POSITIVE'); END;
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_compaction_positive_sequences_update
+        BEFORE UPDATE OF source_start_sequence, covered_through_sequence ON ai_discussion_context_compactions
+        WHEN NEW.source_start_sequence <= 0 OR NEW.covered_through_sequence < NEW.source_start_sequence
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SEQUENCE_MUST_BE_POSITIVE'); END;
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_archive_session_match_insert
+        BEFORE INSERT ON ai_discussion_message_archives
+        WHEN NEW.message_sequence <= 0
+          OR NOT EXISTS (
+            SELECT 1 FROM ai_discussion_context_compactions c
+            WHERE c.id = NEW.compaction_id AND c.session_id = NEW.session_id
+          )
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SESSION_MISMATCH'); END;
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_archive_session_match_update
+        BEFORE UPDATE OF session_id, message_sequence, compaction_id ON ai_discussion_message_archives
+        WHEN NEW.message_sequence <= 0
+          OR NOT EXISTS (
+            SELECT 1 FROM ai_discussion_context_compactions c
+            WHERE c.id = NEW.compaction_id AND c.session_id = NEW.session_id
+          )
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SESSION_MISMATCH'); END;
+    `
   }
 ]
 

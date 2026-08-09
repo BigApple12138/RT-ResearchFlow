@@ -44,6 +44,7 @@ function getProviderCacheKey(provider: HeatmapProvider, date: string): string {
 
 export type Tab = 'feed' | 'sources' | 'settings' | 'ai-config' | 'ai-analysis' | 'datasource' | 'stock-chart' | 'market-heatmap' | 'industry-heatmap' | 'short-term-strategy' | 'trend-watcher' | 'decision-center'
 export type AIAnalysisSubTab = 'records' | 'deepResearch' | 'industryResearch'
+export type TrendWatcherSubTab = 'portfolio' | 'dashboard' | 'alerts' | 'manage'
 
 export interface ResearchDiscussionReturnTarget {
   tab: Tab
@@ -297,6 +298,8 @@ interface AppState {
   // Global tab navigation
   activeTab: Tab
   setActiveTab: (tab: Tab) => void
+  trendWatcherSubTab: TrendWatcherSubTab
+  setTrendWatcherSubTab: (subTab: TrendWatcherSubTab) => void
   aiAnalysisSubTab: AIAnalysisSubTab
   /** Phase 2a: 无侧栏入口；仅程序化/后台任务/E2E 打开遗留工作台 */
   aiAnalysisWorkbench: null | 'deepResearch' | 'industryResearch'
@@ -423,6 +426,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   aiHasApiKey: false,
   aiProgress: null,
   activeTab: 'decision-center',
+  trendWatcherSubTab: 'portfolio',
   aiAnalysisSubTab: 'records',
   aiAnalysisWorkbench: null,
   pendingIndustryResearchProjectId: null,
@@ -626,6 +630,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearBriefingDeepLink: () => set({ briefingDeepLinkId: null }),
 
   setActiveTab: (tab) => set({ activeTab: tab }),
+  setTrendWatcherSubTab: (subTab) => set({ activeTab: 'trend-watcher', trendWatcherSubTab: subTab }),
   openPremarketScenario: () => set({
     activeTab: 'decision-center',
     premarketScenarioOpenRequest: Date.now(),
@@ -701,6 +706,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         activeTab: 'feed',
         selectedBriefingId: Number(target.entityId),
+        pendingResearchDiscussionSessionId: null,
+        pendingResearchDiscussionReturnTarget: target,
+      })
+      return
+    }
+    if (target.tab === 'trend-watcher') {
+      const subTab = target.subTab === 'dashboard' || target.subTab === 'alerts' || target.subTab === 'manage' || target.subTab === 'portfolio'
+        ? target.subTab
+        : 'portfolio'
+      set({
+        activeTab: 'trend-watcher',
+        trendWatcherSubTab: subTab,
         pendingResearchDiscussionSessionId: null,
         pendingResearchDiscussionReturnTarget: target,
       })

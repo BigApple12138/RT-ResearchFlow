@@ -96,6 +96,24 @@ function getRevisionById(db: Database.Database, revisionId: string): TrendStruct
   return mapRevision(row)
 }
 
+export function hasMatchingTrendStructureReviewRequestIdentity(
+  review: Pick<TrendStructureReview, 'tsCode' | 'scoreDate' | 'factsHash'>,
+  input: Pick<SaveTrendStructureReviewInput, 'tsCode' | 'scoreDate' | 'factsHash'>,
+): boolean {
+  return review.tsCode === input.tsCode
+    && review.scoreDate === input.scoreDate
+    && review.factsHash === input.factsHash
+}
+
+export function assertTrendStructureReviewRequestIdentity(
+  review: Pick<TrendStructureReview, 'tsCode' | 'scoreDate' | 'factsHash'>,
+  input: Pick<SaveTrendStructureReviewInput, 'tsCode' | 'scoreDate' | 'factsHash'>,
+): void {
+  if (!hasMatchingTrendStructureReviewRequestIdentity(review, input)) {
+    throw new Error('TREND_REVIEW_REQUEST_CONFLICT')
+  }
+}
+
 export function getTrendStructureReviewByCodeDate(
   db: Database.Database,
   tsCode: string,
@@ -169,7 +187,10 @@ export function saveTrendStructureReview(
   input: SaveTrendStructureReviewInput,
 ): TrendStructureReview {
   const requestReplay = getTrendStructureReviewByRequestId(db, input.requestId)
-  if (requestReplay) return requestReplay
+  if (requestReplay) {
+    assertTrendStructureReviewRequestIdentity(requestReplay, input)
+    return requestReplay
+  }
 
   const sameFacts = getTrendStructureReviewByCodeDateFactsHash(
     db,
@@ -244,7 +265,14 @@ export function saveTrendStructureReview(
       now,
     )
   })
-  write()
+  try {
+    write()
+  } catch (error) {
+    const replay = getTrendStructureReviewByRequestId(db, input.requestId)
+    if (!replay) throw error
+    assertTrendStructureReviewRequestIdentity(replay, input)
+    return replay
+  }
   return getRevisionById(db, revisionId)!
 }
 

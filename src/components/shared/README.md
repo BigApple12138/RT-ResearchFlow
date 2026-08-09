@@ -14,6 +14,8 @@
 - `RightDrawer`: Portal渲染的全窗口模态右侧抽屉。支持标题、说明、操作区、50%暗色蒙层、背景滚动锁定、焦点约束与恢复、Esc/按钮关闭、左边缘拖动与键盘调宽；面板覆盖Electron标题栏并占满视口高度，调用方可按嵌套宿主提升 `zIndex`。
 - `StockKlineChipDrawer`: 接收股票代码、名称、关闭和进入完整走势回调, 用于策略表格行的快捷行情查看。展示 30/60/120 日日 K、MA/BOLL、终端式价格筹码剖面和技术因子, 点击 K 线可联动对应日期筹码。MA5/10/20/60 与BOLL(20,2)均基于抽屉已加载的完整日 K 本地滚动计算，不受短期技术因子缓存保留期影响；MA20同时表达BOLL中轨，不重复绘制重合线。日K与筹码hover详情均使用不透明深色表面，避免图形穿透文字。
 - `StockMiniChart`: `StockKlineChipDrawer` 的兼容别名; 新调用方不得再传锚点坐标或依赖任意位置浮窗。
+
+趋势雷达传入复核讨论 action 时，抽屉使用专用 `trend-ai-review-discussion-drawer-<stockCode>` testid；调用方只在当前复核存在且未过期时传入该 action。
 - `FactorSummary`: 接收技术因子数据并渲染摘要条。
 
 ## 特殊逻辑备忘

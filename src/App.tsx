@@ -8,7 +8,7 @@ import { BriefingDetail } from './components/BriefingDetail/BriefingDetail'
 import { ScanProgressModal } from './components/ScanProgressModal/ScanProgressModal'
 import { MARKET_OVERVIEW_SUB_TABS, type MarketOverviewSubTab } from './components/MarketOverview/marketOverviewNavigation'
 import { SHORT_TERM_SUB_TABS } from './components/ShortTermStrategy/shortTermNavigation'
-import { TREND_WATCHER_SUB_TABS, type TrendWatcherSubTab } from './components/TrendWatcher/trendWatcherNavigation'
+import { TREND_WATCHER_SUB_TABS } from './components/TrendWatcher/trendWatcherNavigation'
 import { AIAnalysisConfirmDialog } from './components/AIAnalysisConfirmDialog/AIAnalysisConfirmDialog'
 import { AIAnalysisProgressPanel } from './components/AIAnalysisProgressPanel/AIAnalysisProgressPanel'
 import { ConfigDrawer, type ConfigDrawerTab } from './components/ConfigDrawer/ConfigDrawer'
@@ -182,7 +182,6 @@ export default function App() {
   const [navFlyoutTab, setNavFlyoutTab] = useState<Tab | null>(null)
   const [navFlyoutAnchorY, setNavFlyoutAnchorY] = useState<number | null>(null)
   const [marketOverviewSubTab, setMarketOverviewSubTab] = useState<MarketOverviewSubTab>(() => readMarketOverviewSubTab())
-  const [trendWatcherSubTab, setTrendWatcherSubTab] = useState<TrendWatcherSubTab>('portfolio')
   const [onboardingSnapshot, setOnboardingSnapshot] = useState<DiagnosticsHealthSnapshot | null>(null)
   const [onboardingLoading, setOnboardingLoading] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
@@ -240,6 +239,8 @@ export default function App() {
     setAiProgress,
     activeTab,
     setActiveTab,
+    trendWatcherSubTab,
+    setTrendWatcherSubTab,
     theme,
     toggleTheme,
     initTheme,

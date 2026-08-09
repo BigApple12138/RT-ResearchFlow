@@ -134,16 +134,21 @@ async function runDiscussionFollowUpWithinLock(
   const autoCompactEnabled = getAIConfig(db).autoCompactDiscussion !== 0
   const latestCompaction = discussion ? getLatestDiscussionCompaction(db, input.sessionId) : null
   if (discussion && autoCompactEnabled && shouldAutoCompact(messages, latestCompaction?.covered_through_sequence ?? null)) {
-    const compacted = await compactDiscussionContextWithinLock(db, {
-      sessionId: input.sessionId,
-      requestId: `${input.requestId}:auto-compact`,
-      mode: 'auto',
-    }, options.compactAI)
-    if (!compacted.ok) {
-      warning = `自动整理上下文失败：${compacted.message}`
+    try {
+      const compacted = await compactDiscussionContextWithinLock(db, {
+        sessionId: input.sessionId,
+        requestId: `${input.requestId}:auto-compact`,
+        mode: 'auto',
+      }, options.compactAI)
+      if (!compacted.ok) {
+        warning = `自动整理上下文失败：${compacted.message}`
+        console.warn(`[ai:followUp] ${warning}`)
+      } else {
+        messages = compacted.messages
+      }
+    } catch (error) {
+      warning = `自动整理上下文失败：${normalizeError(error)}`
       console.warn(`[ai:followUp] ${warning}`)
-    } else {
-      messages = compacted.messages
     }
   }
 

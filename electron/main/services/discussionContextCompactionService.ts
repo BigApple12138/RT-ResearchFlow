@@ -8,6 +8,7 @@ import {
   type NormalizedConversationMessage,
 } from '../database/aiAnalysisSessionRepository'
 import {
+  DiscussionCompactionRequestConflictError,
   getDiscussionCompactionByRequestId,
   getLatestDiscussionCompaction,
   insertDiscussionCompaction,
@@ -19,6 +20,7 @@ import {
 import type { DiscussionCompactionRow } from '../database/types'
 import { callWithFallback, type AIFallbackResult } from './aiFallbackService'
 import { withDiscussionSessionLock } from './discussionSessionLock'
+import { auditResearchText } from './researchEvidenceAuditService'
 
 export const AUTO_COMPACT_MIN_PAIRS = 12
 export const HOT_TAIL_MESSAGE_COUNT = 6
@@ -138,6 +140,22 @@ function failure(
   return { ok: false, code, message, messages }
 }
 
+function validateCompactionSummary(summary: string, promptSent: string): string | null {
+  const audit = auditResearchText({ text: summary, documentKind: 'discussion', allowedFactTexts: [promptSent] })
+  if (audit.status !== 'passed') {
+    return `累计摘要未通过审计：${audit.checks.filter((check) => check.status !== 'passed').map((check) => check.code).join('、')}`
+  }
+  if (/(?:忽略(?:此前|以上|所有)?指令|ignore\s+(?:previous|all)\s+instructions|系统提示词|system\s+prompt|越狱|jailbreak)/i.test(summary)) {
+    return '累计摘要包含提示词注入内容'
+  }
+  const promptDigits = promptSent.replace(/\D/g, '')
+  const dates = summary.match(/20\d{2}(?:[-年/]?\d{1,2}(?:[-月/]?\d{1,2}日?)?)?/g) ?? []
+  if (dates.some((date) => !promptDigits.includes(date.replace(/\D/g, '')))) return '累计摘要包含无法追溯的日期事实'
+  const verdicts = summary.match(/\b(?:agree|possible_false_break|possible_false_hold|evidence_weak|need_more_data|strengthening|strong|stable|weakening|broken|insufficient)\b/gi) ?? []
+  if (verdicts.some((value) => !promptSent.toLowerCase().includes(value.toLowerCase()))) return '累计摘要改写了硬事实趋势枚举'
+  return null
+}
+
 export async function compactDiscussionContext(
   db: Database.Database,
   input: CompactDiscussionContextInput,
@@ -157,39 +175,44 @@ export async function compactDiscussionContextWithinLock(
   const session = getSession(db, input.sessionId)
   if (!session) return failure('NOT_FOUND', 'Session not found')
 
-  const existing = getDiscussionCompactionByRequestId(db, input.requestId)
-  if (existing) {
-    if (existing.session_id !== input.sessionId) {
-      return failure('REQUEST_CONFLICT', 'requestId 已用于其他讨论会话', getSessionMessages(db, input.sessionId))
-    }
-    return {
-      ok: true,
-      compaction: existing,
-      messages: getSessionMessages(db, input.sessionId),
-      archivedCount: 0,
-      skippedReason: 'already_compacted',
-      replayed: true,
-    }
-  }
-
   const latest = getLatestDiscussionCompaction(db, input.sessionId)
   const hotMessages = getSessionMessages(db, input.sessionId)
   const unarchived = latest
     ? hotMessages.filter((message) => message.sequence > latest.covered_through_sequence)
     : hotMessages
   const pairCount = countCompleteUserAssistantPairs(unarchived)
+  const existing = getDiscussionCompactionByRequestId(db, input.requestId)
+  if (existing && existing.session_id !== input.sessionId) {
+    return failure('REQUEST_CONFLICT', 'requestId 已用于其他讨论会话', hotMessages)
+  }
   if (input.mode === 'auto' && pairCount < AUTO_COMPACT_MIN_PAIRS) {
+    if (existing) {
+      return { ok: true, compaction: existing, messages: hotMessages, archivedCount: 0, skippedReason: 'already_compacted', replayed: true }
+    }
     return { ok: true, compaction: null, messages: hotMessages, archivedCount: 0, skippedReason: 'threshold' }
   }
 
   const archiveEndIndex = findArchiveEndIndex(unarchived)
   if (archiveEndIndex < 0) {
+    if (existing) {
+      return { ok: true, compaction: existing, messages: hotMessages, archivedCount: 0, skippedReason: 'already_compacted', replayed: true }
+    }
     return { ok: true, compaction: null, messages: hotMessages, archivedCount: 0, skippedReason: 'not_enough_messages' }
   }
   const selectedMessages = unarchived.slice(0, archiveEndIndex + 1)
   const selectedForArchive = selectedMessages as DiscussionMessageForArchive[]
   const sourceStartSequence = selectedMessages[0].sequence
   const coveredThroughSequence = selectedMessages[selectedMessages.length - 1].sequence
+  const sourceMessagesHash = hashMessages(selectedForArchive)
+  if (existing) {
+    if (existing.session_id !== input.sessionId
+      || existing.source_start_sequence !== sourceStartSequence
+      || existing.covered_through_sequence !== coveredThroughSequence
+      || existing.source_messages_hash !== sourceMessagesHash) {
+      return failure('REQUEST_CONFLICT', 'requestId 已用于不同的讨论压缩身份', hotMessages)
+    }
+    return { ok: true, compaction: existing, messages: hotMessages, archivedCount: 0, skippedReason: 'already_compacted', replayed: true }
+  }
   const prompt = buildCompactionPrompt(session.promptSent, latest?.summary_text ?? null, selectedForArchive)
 
   let aiResult: AIFallbackResult
@@ -200,8 +223,9 @@ export async function compactDiscussionContextWithinLock(
   }
   const summary = aiResult.text.trim().slice(0, MAX_SUMMARY_CHARS)
   if (!summary) return failure('COMPACTION_FAILED', 'AI 未返回有效的累计摘要', hotMessages)
+  const summaryError = validateCompactionSummary(summary, session.promptSent)
+  if (summaryError) return failure('COMPACTION_FAILED', summaryError, hotMessages)
 
-  const sourceMessagesHash = hashMessages(selectedForArchive)
   const summaryHash = createHash('sha256').update(summary).digest('hex')
   const commit = db.transaction(() => {
     const compaction = insertDiscussionCompaction(db, {
@@ -224,7 +248,15 @@ export async function compactDiscussionContextWithinLock(
     updateSessionMessages(db, input.sessionId, remaining)
     return { compaction, archivedCount }
   })
-  const committed = commit()
+  let committed: { compaction: DiscussionCompactionRow; archivedCount: number }
+  try {
+    committed = commit()
+  } catch (error) {
+    if (error instanceof DiscussionCompactionRequestConflictError) {
+      return failure('REQUEST_CONFLICT', 'requestId 已用于不同的讨论压缩身份', hotMessages)
+    }
+    return failure('COMPACTION_FAILED', error instanceof Error ? error.message : '讨论上下文整理失败', hotMessages)
+  }
   return {
     ok: true,
     compaction: committed.compaction,

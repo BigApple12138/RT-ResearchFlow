@@ -55,4 +55,15 @@ describe('研究讨论跨页导航', () => {
       pendingResearchDiscussionReturnTarget: { tab: 'ai-analysis', subTab: 'deepResearch', stateKey: 'deep-research' },
     })
   })
+
+  it('返回趋势雷达时恢复 dashboard 子页签和完整 return target identity', () => {
+    const target = { tab: 'trend-watcher' as const, subTab: 'dashboard', entityId: '600000.SH', stateKey: 'trend-radar' }
+    useAppStore.getState().returnFromResearchDiscussion(target)
+
+    expect(useAppStore.getState()).toMatchObject({
+      activeTab: 'trend-watcher',
+      trendWatcherSubTab: 'dashboard',
+      pendingResearchDiscussionReturnTarget: target,
+    })
+  })
 })

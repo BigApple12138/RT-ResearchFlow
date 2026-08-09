@@ -545,7 +545,7 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
           {onDiscuss && (
             <button
               type="button"
-              data-testid={`trend-ai-review-discussion-${tsCode.replace(/\.(SH|SZ|BJ)$/i, '')}`}
+              data-testid={`trend-ai-review-discussion-drawer-${tsCode.replace(/\.(SH|SZ|BJ)$/i, '')}`}
               onClick={onDiscuss}
               className="min-h-9 rounded-md border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-800 transition-colors hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-indigo-800 dark:bg-indigo-950/45 dark:text-indigo-200 dark:hover:bg-indigo-900/55"
             >

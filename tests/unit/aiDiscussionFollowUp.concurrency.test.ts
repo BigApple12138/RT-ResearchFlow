@@ -121,6 +121,30 @@ describe('讨论 follow-up 并发与幂等', () => {
     expect(getSessionMessages(db, sessionId)).toHaveLength(26)
   })
 
+  it('自动压缩事务异常后继续原 hot context，receipt 不会停留 running', async () => {
+    const sessionId = createDiscussion(24)
+    db.exec(`
+      CREATE TRIGGER fail_auto_compaction
+      BEFORE INSERT ON ai_discussion_context_compactions
+      BEGIN SELECT RAISE(ABORT, 'TEST_COMPACTION_TRANSACTION_CONFLICT'); END;
+    `)
+    let calls = 0
+
+    const result = await runDiscussionFollowUp(db, {
+      requestId: '00000000-0000-4000-8000-000000000106', sessionId, message: '事务失败后继续',
+    }, {
+      compactAI: async () => ({ provider: 'qwen' as const, model: 'test-model', text: '安全摘要' }),
+      callAI: async () => {
+        calls += 1
+        return { provider: 'qwen' as const, model: 'test-model', text: '使用原上下文继续回答' }
+      },
+    })
+
+    expect(result).toMatchObject({ text: '使用原上下文继续回答', warning: expect.stringContaining('自动整理上下文失败') })
+    expect(calls).toBe(1)
+    expect(getDiscussionTurnRequest(db, '00000000-0000-4000-8000-000000000106')).toMatchObject({ status: 'succeeded' })
+  })
+
   it('删除研究讨论与进行中的 follow-up 通过同一 session lock 串行化', async () => {
     const sessionId = createDiscussion()
     let release!: () => void

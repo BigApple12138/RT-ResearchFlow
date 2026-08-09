@@ -174,4 +174,19 @@ describe('趋势结构复核服务', () => {
     expect(isTrendStructureReviewStale({ scoreDate: '20260807', factsHash: hashTrendReviewFacts(facts) }, facts)).toBe(true)
     expect(isTrendStructureReviewStale({ scoreDate: facts.scoreDate, factsHash: 'c'.repeat(64) }, facts)).toBe(true)
   })
+
+  it('同 requestId 在同代码但 scoreDate 或 factsHash 改变时拒绝重放', async () => {
+    const requestId = randomUUID()
+    const first = await reviewStructure(db, { requestId, tsCode: '600000.SH' }, {
+      getWorkbench: () => createSnapshot(),
+      callAI: async () => ({ provider: 'qwen', model: 'test-model', text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }) }),
+      auditText: () => createAudit(), now: () => 1_000,
+    })
+    expect(first.review.requestId).toBe(requestId)
+
+    await expect(reviewStructure(db, { requestId, tsCode: '600000.SH' }, {
+      getWorkbench: () => createSnapshot({ scoreDate: '20260809', totalScore: 79 }),
+      auditText: () => createAudit(), now: () => 2_000,
+    })).rejects.toThrow('TREND_REVIEW_REQUEST_CONFLICT')
+  })
 })

@@ -29,6 +29,9 @@ export function archiveDiscussionMessagesInTransaction(
   db: Database.Database,
   input: ArchiveDiscussionMessagesInput,
 ): number {
+  if (!input.messages.every((message) => Number.isInteger(message.sequence) && message.sequence > 0)) {
+    throw new Error('ARCHIVE_SEQUENCE_MUST_BE_POSITIVE')
+  }
   const archivedAt = input.archivedAt ?? Date.now()
   const insert = db.prepare(`
     INSERT OR IGNORE INTO ai_discussion_message_archives (
