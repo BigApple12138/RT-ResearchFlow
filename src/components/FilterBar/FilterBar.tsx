@@ -9,7 +9,18 @@ const RATINGS: { value: ImpactRating | null; label: string }[] = [
 ]
 
 export function FilterBar() {
-  const { selectedRating, searchQuery, setFilter, scanStatus, isScanning, unreadCount } = useAppStore()
+  const {
+    selectedRating,
+    searchQuery,
+    setFilter,
+    scanStatus,
+    isScanning,
+    unreadCount,
+    allUnreadCount,
+    relevanceScope,
+    relevanceModeApplied,
+    totalCount,
+  } = useAppStore()
 
   function formatTime(ms: number | null | undefined): string {
     if (!ms) return '暂无扫描'
@@ -20,9 +31,47 @@ export function FilterBar() {
     return `${hh}:${mm}`
   }
 
+  const showAllUnreadHint =
+    relevanceScope === 'portfolio'
+    && relevanceModeApplied === 'portfolio'
+    && allUnreadCount > unreadCount
+
   return (
     <div className="flex shrink-0 flex-col gap-2 border-b border-slate-100 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900/90">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div
+          className="flex rounded-md border border-slate-200 bg-white p-1 shadow-sm shadow-slate-100/80 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10"
+          role="group"
+          aria-label="资讯相关性"
+        >
+          <button
+            type="button"
+            data-testid="briefing-relevance-portfolio"
+            onClick={() => setFilter({ relevanceScope: 'portfolio' })}
+            className={[
+              'rounded px-2.5 py-1 text-xs transition-colors',
+              relevanceScope === 'portfolio'
+                ? 'bg-teal-700 font-semibold text-white shadow-sm dark:bg-teal-400 dark:text-slate-950'
+                : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+            ].join(' ')}
+          >
+            与我相关
+          </button>
+          <button
+            type="button"
+            data-testid="briefing-relevance-all"
+            onClick={() => setFilter({ relevanceScope: 'all' })}
+            className={[
+              'rounded px-2.5 py-1 text-xs transition-colors',
+              relevanceScope === 'all'
+                ? 'bg-slate-900 font-semibold text-white shadow-sm dark:bg-cyan-400 dark:text-slate-950'
+                : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+            ].join(' ')}
+          >
+            全部资讯
+          </button>
+        </div>
+
         <div className="flex rounded-md border border-slate-200 bg-white p-1 shadow-sm shadow-slate-100/80 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10">
           {RATINGS.map(({ value, label }) => (
             <button
@@ -53,9 +102,22 @@ export function FilterBar() {
           className="ml-auto min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 shadow-sm shadow-slate-100/80 placeholder:text-slate-400 focus:border-cyan-300 focus:outline-none dark:border-slate-800 dark:bg-slate-950/40 dark:text-slate-200 dark:shadow-black/10 dark:focus:border-cyan-500"
         />
       </div>
-      <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
         <span>上次 {formatTime(scanStatus?.lastScanAt)} · {isScanning ? '自动扫描中' : '扫描待命'}</span>
-        <span>{unreadCount > 0 ? `${unreadCount} 条未读` : '暂无未读'}</span>
+        <span className="text-right">
+          {unreadCount > 0 ? `${unreadCount} 条未读` : '暂无未读'}
+          {showAllUnreadHint && (
+            <span className="ml-1.5 text-slate-400 dark:text-slate-500" title="当前为持仓相关口径；切换「全部资讯」可看全量">
+              · 全部未读 {allUnreadCount}
+            </span>
+          )}
+          {relevanceModeApplied === 'portfolio_fallback_empty' && relevanceScope === 'portfolio' && (
+            <span className="ml-1.5 text-amber-600 dark:text-amber-300">· 无持仓，暂显示全部</span>
+          )}
+          {relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' && totalCount === 0 && (
+            <span className="ml-1.5 text-slate-400">· 无持仓相关资讯</span>
+          )}
+        </span>
       </div>
     </div>
   )

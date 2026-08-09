@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Briefing, BriefingListOptions, BriefingSourceStat, DailyArchiveRow, Source, AppSettingsRow, DecisionCenterFiltersPreference, ImpactRating, PublicationTimeScope, ScanStatus } from '../../electron/main/database/types'
+import type { Briefing, BriefingListOptions, BriefingListResult, BriefingRelevanceScope, BriefingSourceStat, DailyArchiveRow, Source, AppSettingsRow, DecisionCenterFiltersPreference, ImpactRating, PublicationTimeScope, ScanStatus } from '../../electron/main/database/types'
 
 interface MarketSnapshot {
   updatedAt: string
@@ -261,6 +261,11 @@ interface AppState {
   selectedSourceId: number | null
   publicationTimeScope: PublicationTimeScope
   searchQuery: string
+  /** 资讯默认「与我相关」本地过滤 */
+  relevanceScope: BriefingRelevanceScope
+  relevanceModeApplied: BriefingListResult['relevanceModeApplied']
+  allUnreadCount: number
+  portfolioTermCount: number
 
   // Scan status
   scanStatus: ScanStatus | null
@@ -374,7 +379,7 @@ interface AppState {
   goToPage: (page: number) => Promise<void>
   markRead: (id: number) => Promise<void>
   markAllRead: () => Promise<void>
-  setFilter: (filter: Partial<Pick<AppState, 'selectedDate' | 'selectedRating' | 'selectedSourceId' | 'publicationTimeScope' | 'searchQuery'>>) => void
+  setFilter: (filter: Partial<Pick<AppState, 'selectedDate' | 'selectedRating' | 'selectedSourceId' | 'publicationTimeScope' | 'searchQuery' | 'relevanceScope'>>) => void
   loadScanStatus: () => Promise<void>
   triggerManualScan: () => Promise<void>
   loadArchiveDates: () => Promise<void>
@@ -410,6 +415,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedSourceId: null,
   publicationTimeScope: 'all',
   searchQuery: '',
+  relevanceScope: 'portfolio',
+  relevanceModeApplied: 'all',
+  allUnreadCount: 0,
+  portfolioTermCount: 0,
   scanStatus: null,
   isScanning: false,
   archiveDates: [],
@@ -457,13 +466,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadBriefings: async (options) => {
     set({ isLoadingBriefings: true, currentPage: 1 })
     try {
-      const { selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery } = get()
+      const state = get()
       const result = await window.api.briefings.list({
-        date: options?.date ?? selectedDate ?? undefined,
-        impactRating: options?.impactRating ?? selectedRating ?? undefined,
-        sourceId: options?.sourceId ?? selectedSourceId ?? undefined,
-        publicationTimeScope: options?.publicationTimeScope ?? publicationTimeScope,
-        search: (options?.search ?? searchQuery) || undefined,
+        date: options?.date ?? state.selectedDate ?? undefined,
+        impactRating: options?.impactRating ?? state.selectedRating ?? undefined,
+        sourceId: options?.sourceId ?? state.selectedSourceId ?? undefined,
+        publicationTimeScope: options?.publicationTimeScope ?? state.publicationTimeScope,
+        search: (options?.search ?? state.searchQuery) || undefined,
+        relevance: options?.relevance ?? state.relevanceScope,
         limit: PAGE_SIZE,
         offset: 0
       })
@@ -471,6 +481,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         briefings: result.items,
         totalCount: result.total,
         unreadCount: result.unreadCount,
+        allUnreadCount: result.allUnreadCount ?? result.unreadCount,
+        relevanceModeApplied: result.relevanceModeApplied ?? 'all',
+        portfolioTermCount: result.portfolioTermCount ?? 0,
         briefingSourceStats: result.sourceStats,
         isLoadingBriefings: false
       })
@@ -481,17 +494,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   goToPage: async (page) => {
-    const { selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery, totalCount } = get()
-    const totalPages = Math.ceil(totalCount / PAGE_SIZE)
+    const state = get()
+    const totalPages = Math.ceil(state.totalCount / PAGE_SIZE)
     if (page < 1 || page > totalPages) return
     set({ isLoadingBriefings: true, currentPage: page, selectedBriefingId: null, briefingDeepLinkId: null })
     try {
       const result = await window.api.briefings.list({
-        date: selectedDate ?? undefined,
-        impactRating: selectedRating ?? undefined,
-        sourceId: selectedSourceId ?? undefined,
-        publicationTimeScope,
-        search: searchQuery || undefined,
+        date: state.selectedDate ?? undefined,
+        impactRating: state.selectedRating ?? undefined,
+        sourceId: state.selectedSourceId ?? undefined,
+        publicationTimeScope: state.publicationTimeScope,
+        search: state.searchQuery || undefined,
+        relevance: state.relevanceScope,
         limit: PAGE_SIZE,
         offset: (page - 1) * PAGE_SIZE
       })
@@ -499,6 +513,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         briefings: result.items,
         totalCount: result.total,
         unreadCount: result.unreadCount,
+        allUnreadCount: result.allUnreadCount ?? result.unreadCount,
+        relevanceModeApplied: result.relevanceModeApplied ?? 'all',
+        portfolioTermCount: result.portfolioTermCount ?? 0,
         briefingSourceStats: result.sourceStats,
         isLoadingBriefings: false
       })
@@ -508,23 +525,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadMoreBriefings: async () => {
-    const { briefings, totalCount, selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery } = get()
-    if (briefings.length >= totalCount) return
+    const state = get()
+    if (state.briefings.length >= state.totalCount) return
 
     set({ isLoadingBriefings: true })
     try {
       const result = await window.api.briefings.list({
-        date: selectedDate ?? undefined,
-        impactRating: selectedRating ?? undefined,
-        sourceId: selectedSourceId ?? undefined,
-        publicationTimeScope,
-        search: searchQuery || undefined,
+        date: state.selectedDate ?? undefined,
+        impactRating: state.selectedRating ?? undefined,
+        sourceId: state.selectedSourceId ?? undefined,
+        publicationTimeScope: state.publicationTimeScope,
+        search: state.searchQuery || undefined,
+        relevance: state.relevanceScope,
         limit: PAGE_SIZE,
-        offset: briefings.length
+        offset: state.briefings.length
       })
       set({
-        briefings: [...briefings, ...result.items],
+        briefings: [...state.briefings, ...result.items],
         briefingSourceStats: result.sourceStats,
+        unreadCount: result.unreadCount,
+        allUnreadCount: result.allUnreadCount ?? result.unreadCount,
+        relevanceModeApplied: result.relevanceModeApplied ?? 'all',
+        portfolioTermCount: result.portfolioTermCount ?? 0,
         isLoadingBriefings: false
       })
     } catch {
@@ -534,28 +556,33 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   markRead: async (id) => {
     await window.api.briefings.markRead(id)
-    set((state) => ({
-      briefings: state.briefings.map((b) =>
-        b.id === id ? { ...b, isRead: true, readAt: Date.now() } : b
-      ),
-      unreadCount: Math.max(0, state.unreadCount - (state.briefings.some((b) => b.id === id && !b.isRead) ? 1 : 0))
-    }))
+    set((state) => {
+      const wasUnread = state.briefings.some((b) => b.id === id && !b.isRead)
+      return {
+        briefings: state.briefings.map((b) =>
+          b.id === id ? { ...b, isRead: true, readAt: Date.now() } : b
+        ),
+        unreadCount: Math.max(0, state.unreadCount - (wasUnread ? 1 : 0)),
+        allUnreadCount: Math.max(0, state.allUnreadCount - (wasUnread ? 1 : 0)),
+      }
+    })
     get().loadArchiveDates()
   },
 
   markAllRead: async () => {
-    const { selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery } = get()
+    const state = get()
     await window.api.briefings.markAllRead({
-      date: selectedDate ?? undefined,
-      impactRating: selectedRating ?? undefined,
-      sourceId: selectedSourceId ?? undefined,
-      publicationTimeScope,
-      search: searchQuery || undefined,
+      date: state.selectedDate ?? undefined,
+      impactRating: state.selectedRating ?? undefined,
+      sourceId: state.selectedSourceId ?? undefined,
+      publicationTimeScope: state.publicationTimeScope,
+      search: state.searchQuery || undefined,
+      relevance: state.relevanceScope,
     })
-    set((state) => ({
+    set({
       briefings: state.briefings.map((b) => ({ ...b, isRead: true })),
-      unreadCount: 0
-    }))
+      unreadCount: 0,
+    })
     await Promise.all([get().loadBriefings(), get().loadArchiveDates()])
   },
 

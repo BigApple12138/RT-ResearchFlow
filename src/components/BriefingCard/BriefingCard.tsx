@@ -66,6 +66,22 @@ export function BriefingCard({ briefing, isSelected, onClick, onChainClick }: Pr
         <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{briefing.summary}</p>
       )}
 
+      {briefing.relevanceHits && briefing.relevanceHits.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1" data-testid="briefing-relevance-hits">
+          <span className="text-[10px] text-slate-400 dark:text-slate-500">
+            {briefing.relevanceKind === 'chain_peer' ? '产业链邻近' : '命中'}
+          </span>
+          {briefing.relevanceHits.slice(0, 2).map((hit) => (
+            <span
+              key={hit}
+              className="rounded border border-teal-200/80 bg-teal-50/80 px-1.5 py-0.5 text-[10px] font-medium text-teal-800 dark:border-teal-900 dark:bg-teal-950/40 dark:text-teal-200"
+            >
+              {hit}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="mt-2.5 flex items-center gap-2">
         <span className="text-[11px] text-slate-400 dark:text-slate-500">影响分 {Math.round(briefing.impactRatingScore ?? 0)}</span>
         {onChainClick && briefing.impactRating !== 'GENERAL' && (

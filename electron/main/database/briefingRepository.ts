@@ -9,6 +9,12 @@ import type {
   ImpactRating,
   PublicationTimeStatus,
 } from './types'
+import {
+  escapeLikePattern,
+  loadPortfolioRelevanceTerms,
+  matchBriefingRelevance,
+  type PortfolioRelevanceTerm,
+} from '../services/portfolioBriefingRelevance'
 
 function rowToBriefing(row: BriefingRow): Briefing {
   return {
@@ -90,7 +96,15 @@ export function listBriefings(
   const db = database ?? getDb()
   const { sourceId, limit = 50, offset = 0 } = options
   const built = buildBriefingConditions(options, db, false)
-  if (built.noSearchResults) return { items: [], total: 0, unreadCount: 0, sourceStats: [] }
+  const emptyMeta = {
+    relevanceUnreadCount: 0,
+    allUnreadCount: 0,
+    relevanceModeApplied: built.relevanceModeApplied,
+    portfolioTermCount: built.portfolioTerms.length,
+  }
+  if (built.noSearchResults) {
+    return { items: [], total: 0, unreadCount: 0, sourceStats: [], ...emptyMeta }
+  }
   const baseConditions = built.conditions
   const baseParams = built.params
 
@@ -118,13 +132,35 @@ export function listBriefings(
       .get(itemParams) as { cnt: number }
   ).cnt
 
+  const allUnreadBuilt = buildBriefingConditions({ ...options, relevance: 'all' }, db, false)
+  let allUnreadCount = unreadCount
+  if (!allUnreadBuilt.noSearchResults) {
+    const allItemConditions = [...allUnreadBuilt.conditions]
+    const allItemParams = [...allUnreadBuilt.params]
+    if (sourceId != null) {
+      allItemConditions.push('b.sourceId = ?')
+      allItemParams.push(sourceId)
+    }
+    const allItemWhere =
+      allItemConditions.length > 0 ? `WHERE ${allItemConditions.join(' AND ')}` : ''
+    allUnreadCount = (
+      db
+        .prepare(
+          `SELECT COUNT(*) as cnt FROM briefings b ${allItemWhere} ${allItemWhere ? 'AND' : 'WHERE'} b.isRead = 0`
+        )
+        .get(allItemParams) as { cnt: number }
+    ).cnt
+  }
+
+  const orderBy = buildRelevanceOrderBy(built.portfolioTerms, built.relevanceModeApplied)
+
   const rows = db
     .prepare(
       `SELECT b.* FROM briefings b ${itemWhere}
-       ORDER BY b.publishedAt DESC
+       ORDER BY ${orderBy.sql}
        LIMIT ? OFFSET ?`
     )
-    .all([...itemParams, limit, offset]) as BriefingRow[]
+    .all([...itemParams, ...orderBy.params, limit, offset]) as BriefingRow[]
 
   const sourceStats = db
     .prepare(
@@ -139,22 +175,61 @@ export function listBriefings(
     )
     .all(baseParams) as BriefingSourceStat[]
 
+  const items = rows.map((row) => {
+    const briefing = rowToBriefing(row)
+    if (built.relevanceModeApplied !== 'portfolio' || built.portfolioTerms.length === 0) {
+      return briefing
+    }
+    const matched = matchBriefingRelevance(
+      { title: briefing.title, summary: briefing.summary },
+      built.portfolioTerms,
+    )
+    if (!matched) return briefing
+    return {
+      ...briefing,
+      relevanceHits: matched.hits,
+      relevanceKind: matched.kind,
+    }
+  })
+
   return {
-    items: rows.map(rowToBriefing),
+    items,
     total,
     unreadCount,
-    sourceStats
+    relevanceUnreadCount: unreadCount,
+    allUnreadCount,
+    relevanceModeApplied: built.relevanceModeApplied,
+    portfolioTermCount: built.portfolioTerms.length,
+    sourceStats,
   }
+}
+
+type BuiltBriefingConditions = {
+  conditions: string[]
+  params: Array<string | number>
+  noSearchResults: boolean
+  relevanceModeApplied: BriefingListResult['relevanceModeApplied']
+  portfolioTerms: PortfolioRelevanceTerm[]
 }
 
 function buildBriefingConditions(
   options: BriefingListOptions,
   db: Database.Database,
   includeSource: boolean,
-): { conditions: string[]; params: Array<string | number>; noSearchResults: boolean } {
-  const { date, impactRating, sourceId, isRead, search, publicationTimeScope = 'all' } = options
+): BuiltBriefingConditions {
+  const {
+    date,
+    impactRating,
+    sourceId,
+    isRead,
+    search,
+    publicationTimeScope = 'all',
+    relevance = 'all',
+  } = options
   const conditions: string[] = []
   const params: Array<string | number> = []
+  let relevanceModeApplied: BriefingListResult['relevanceModeApplied'] = 'all'
+  let portfolioTerms: PortfolioRelevanceTerm[] = []
 
   if (date) {
     if (date.length < 10) {
@@ -187,10 +262,57 @@ function buildBriefingConditions(
       'SELECT rowid FROM briefings_fts WHERE briefings_fts MATCH ? ORDER BY rank LIMIT 500'
     ).all(`${search.trim()}*`) as Array<{ rowid: number }>
     const ids = ftsRows.map((row) => row.rowid)
-    if (ids.length === 0) return { conditions, params, noSearchResults: true }
+    if (ids.length === 0) {
+      return {
+        conditions,
+        params,
+        noSearchResults: true,
+        relevanceModeApplied: relevance === 'portfolio' ? 'portfolio_fallback_empty' : 'all',
+        portfolioTerms: [],
+      }
+    }
     conditions.push(`b.id IN (${ids.join(',')})`)
   }
-  return { conditions, params, noSearchResults: false }
+
+  if (relevance === 'portfolio') {
+    portfolioTerms = loadPortfolioRelevanceTerms(db)
+    if (portfolioTerms.length === 0) {
+      relevanceModeApplied = 'portfolio_fallback_empty'
+    } else {
+      relevanceModeApplied = 'portfolio'
+      const clause = portfolioTerms
+        .map(() => `(b.title LIKE ? ESCAPE '\\' OR b.summary LIKE ? ESCAPE '\\')`)
+        .join(' OR ')
+      conditions.push(`(${clause})`)
+      for (const term of portfolioTerms) {
+        const pattern = `%${escapeLikePattern(term.term)}%`
+        params.push(pattern, pattern)
+      }
+    }
+  }
+
+  return { conditions, params, noSearchResults: false, relevanceModeApplied, portfolioTerms }
+}
+
+function buildRelevanceOrderBy(
+  terms: PortfolioRelevanceTerm[],
+  mode: BriefingListResult['relevanceModeApplied'],
+): { sql: string; params: string[] } {
+  if (mode !== 'portfolio') return { sql: 'b.publishedAt DESC', params: [] }
+  const direct = terms.filter((t) => t.kind === 'direct')
+  if (direct.length === 0) return { sql: 'b.publishedAt DESC', params: [] }
+  const parts = direct.map(
+    () => `(b.title LIKE ? ESCAPE '\\' OR b.summary LIKE ? ESCAPE '\\')`,
+  )
+  const params: string[] = []
+  for (const term of direct) {
+    const pattern = `%${escapeLikePattern(term.term)}%`
+    params.push(pattern, pattern)
+  }
+  return {
+    sql: `CASE WHEN (${parts.join(' OR ')}) THEN 0 ELSE 1 END ASC, b.publishedAt DESC`,
+    params,
+  }
 }
 
 export function hashExists(hash: string): boolean {

@@ -2442,6 +2442,9 @@ export interface DecisionJudgmentFollowUpRecord {
 export interface Briefing extends Omit<BriefingRow, 'isRead' | 'isCatchUp'> {
   isRead: boolean
   isCatchUp: boolean
+  /** 持仓相关过滤命中词（最多 3 个，展示用可再截断） */
+  relevanceHits?: string[]
+  relevanceKind?: 'direct' | 'chain_peer'
 }
 
 export interface Source extends Omit<SourceRow, 'isBuiltIn' | 'isEnabled'> {
@@ -2456,6 +2459,8 @@ export interface ScanStatus {
   currentRun: ScanRunRow | null
 }
 
+export type BriefingRelevanceScope = 'all' | 'portfolio'
+
 export interface BriefingListOptions {
   date?: string // YYYY-MM-DD filter
   impactRating?: ImpactRating | null
@@ -2463,6 +2468,8 @@ export interface BriefingListOptions {
   isRead?: boolean | null
   search?: string | null
   publicationTimeScope?: PublicationTimeScope
+  /** IPC 缺省 'all'；Renderer 默认传 'portfolio' */
+  relevance?: BriefingRelevanceScope
   limit?: number
   offset?: number
 }
@@ -2478,7 +2485,14 @@ export interface BriefingSourceStat {
 export interface BriefingListResult {
   items: Briefing[]
   total: number
+  /** 与当前列表过滤（含 relevance）一致的未读数 */
   unreadCount: number
+  /** 同 unreadCount；显式命名便于 UI */
+  relevanceUnreadCount: number
+  /** 忽略 relevance 后、其余筛选下的未读（次级「全部未读」） */
+  allUnreadCount: number
+  relevanceModeApplied: 'all' | 'portfolio' | 'portfolio_fallback_empty'
+  portfolioTermCount: number
   sourceStats: BriefingSourceStat[]
 }
 

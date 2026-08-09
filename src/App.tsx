@@ -221,6 +221,9 @@ export default function App() {
     briefings,
     catchUpMessage,
     unreadCount,
+    allUnreadCount,
+    relevanceScope,
+    relevanceModeApplied,
     scanStatus,
     isScanning,
     settings,
@@ -1062,7 +1065,8 @@ export default function App() {
       )}
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* 壳层 select-none 防误选；主工作区需可选中复制（AI 气泡、研判正文等） */}
+      <div className="flex min-w-0 flex-1 flex-col select-text">
         {industryResearchTask && activeTab !== 'ai-analysis' && (
           <button
             type="button"
@@ -1154,9 +1158,22 @@ export default function App() {
                       <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">重大影响</div>
                       <div className="mt-1 text-2xl font-semibold leading-none tabular-nums text-red-500">{highImpactCount}</div>
                     </div>
-                    <div data-testid="feed-summary-metric" className="flex min-w-[92px] flex-col items-center justify-center rounded-md border border-slate-200/80 bg-white px-3 py-2 text-center shadow-sm shadow-slate-100/70 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10">
-                      <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">未读资讯</div>
+                    <div
+                      data-testid="feed-summary-metric"
+                      className="flex min-w-[92px] flex-col items-center justify-center rounded-md border border-slate-200/80 bg-white px-3 py-2 text-center shadow-sm shadow-slate-100/70 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10"
+                      title={
+                        relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' && allUnreadCount > unreadCount
+                          ? `相关未读 ${unreadCount} · 全部未读 ${allUnreadCount}`
+                          : undefined
+                      }
+                    >
+                      <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                        {relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' ? '相关未读' : '未读资讯'}
+                      </div>
                       <div className="mt-1 text-2xl font-semibold leading-none tabular-nums text-slate-950 dark:text-white">{unreadCount}</div>
+                      {relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' && allUnreadCount > unreadCount && (
+                        <div className="mt-1 text-[10px] tabular-nums text-slate-400 dark:text-slate-500">全部 {allUnreadCount}</div>
+                      )}
                     </div>
                     <div data-testid="feed-summary-metric" className="flex min-w-[92px] flex-col items-center justify-center rounded-md border border-slate-200/80 bg-white px-3 py-2 text-center shadow-sm shadow-slate-100/70 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10">
                       <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">待处理</div>
