@@ -20,6 +20,7 @@
 - 本地日线根数、最新日期和 `ready/partial/missing` 覆盖状态。
 - 既有 `trend_alerts` 及其 `active/recovered/unknown` 当前状态。
 - 本地已有的持仓成本、筹码摘要和处置规则结果。
+- `trend:getWorkbench` 还会附加按 `scoreDate + factsHash` 校验的 `structureReview`；AI 徽章只表示第二意见，不覆盖本地 `trendState`，事实变化时显示「需重核」。
 
 评分 V2 使用归一化七维权重。个股和沪深300都使用20交易日收益；最大回撤遵守先峰值后谷值；缺失维度保持 `null`，有效权重不足70%时综合分保持 `null`。实时价格不会把日终评分错误标记为实时评分。
 
@@ -28,6 +29,8 @@
 观察池添加股票后调用 `trend:backfillStocks` 检查并补齐候选日线。任务在主进程执行，切换页面不取消；未配置Tushare或上游失败时保留观察股，并在页面提供可重试结果。全市场同步只保留为紧凑的数据维护入口，单个进度条占满整行。观察池列表另提供独立的分类/细分赛道筛选，不与新增股票表单中的分类字段混用；两个选项菜单限制为18rem并在内部滚动，长列表不得带动页面滚动。
 
 趋势雷达、趋势事件和观察池股票行复用 `StockKlineChipDrawer`；持仓详情继续复用 `ForecastPanel`。删除观察股使用项目内 `TrendConfirmDialog`，不调用浏览器原生 `confirm/alert`。
+
+趋势雷达的 AI 结构复核必须由用户显式点击。行内「AI复核结构」调用主进程 `trend:reviewStructure`，成功后刷新 workbench；复核失败只显示 Toast，不改变本地趋势状态。勾选按 `tsCode` 保存，最多20只，批量入口调用串行的 `trend:reviewStructureBatch` 并展示逐条成功/失败结果。趋势雷达向 `StockKlineChipDrawer` 传入可选的复核 action；未传入时，其他调用方不显示该按钮。
 
 ## 边界
 

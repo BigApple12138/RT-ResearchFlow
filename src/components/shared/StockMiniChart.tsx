@@ -39,6 +39,10 @@ interface Props {
   onClose: () => void
   /** 点击「查看走势图」按钮时触发 */
   onNavigate: () => void
+  /** 由趋势雷达显式传入时显示 AI 结构复核入口。 */
+  onReview?: () => void
+  /** 由趋势雷达显式传入时显示带着复核去讨论入口。 */
+  onDiscuss?: () => void
   /** 嵌套在整页业务抽屉中时由调用方提升层级。 */
   zIndex?: number
 }
@@ -77,6 +81,8 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
   stockName,
   onClose,
   onNavigate,
+  onReview,
+  onDiscuss,
   zIndex = 9999,
 }) => {
   const candleRef = useRef<HTMLDivElement>(null)
@@ -525,13 +531,35 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
       testId="stock-kline-chip-drawer"
       bodyClassName="min-h-0 flex-1 overflow-y-auto bg-slate-50 p-4 dark:bg-slate-900"
       actions={(
-        <button
-          type="button"
-          onClick={onNavigate}
-          className="min-h-9 rounded-md border border-cyan-200 bg-cyan-50 px-3 text-xs font-semibold text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-cyan-800 dark:bg-cyan-950/45 dark:text-cyan-200 dark:hover:bg-cyan-900/55"
-        >
-          打开完整走势
-        </button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {onReview && (
+            <button
+              type="button"
+              data-testid={`trend-ai-review-drawer-${tsCode.replace(/\.(SH|SZ|BJ)$/i, '')}`}
+              onClick={onReview}
+              className="min-h-9 rounded-md border border-violet-200 bg-violet-50 px-3 text-xs font-semibold text-violet-800 transition-colors hover:border-violet-300 hover:bg-violet-100 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-violet-800 dark:bg-violet-950/45 dark:text-violet-200 dark:hover:bg-violet-900/55"
+            >
+              AI复核结构
+            </button>
+          )}
+          {onDiscuss && (
+            <button
+              type="button"
+              data-testid={`trend-ai-review-discussion-${tsCode.replace(/\.(SH|SZ|BJ)$/i, '')}`}
+              onClick={onDiscuss}
+              className="min-h-9 rounded-md border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-800 transition-colors hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-indigo-800 dark:bg-indigo-950/45 dark:text-indigo-200 dark:hover:bg-indigo-900/55"
+            >
+              带着复核去讨论
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onNavigate}
+            className="min-h-9 rounded-md border border-cyan-200 bg-cyan-50 px-3 text-xs font-semibold text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-cyan-800 dark:bg-cyan-950/45 dark:text-cyan-200 dark:hover:bg-cyan-900/55"
+          >
+            打开完整走势
+          </button>
+        </div>
       )}
     >
       <section data-testid="stock-kline-chip-content" className="overflow-hidden rounded-md border border-slate-700 bg-slate-800 shadow-sm">
