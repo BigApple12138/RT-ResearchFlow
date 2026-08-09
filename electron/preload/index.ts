@@ -1987,7 +1987,12 @@ const api = {
     searchStock: (keyword: string) =>
       ipcRenderer.invoke('datasource:searchStock', { keyword }) as Promise<
         | { ok: true; results: Array<{ tsCode: string; name: string; market: string | null }>; empty: false }
-        | { ok: true; results: []; empty: true }
+        | { ok: true; results: Array<{ tsCode: string; name: string; market: string | null }>; empty: true }
+      >,
+    resolveStockName: (stockCode: string) =>
+      ipcRenderer.invoke('datasource:resolveStockName', { stockCode }) as Promise<
+        | { ok: true; stockCode: string; tsCode: string; stockName: string; source: 'local' | 'eastmoney-quote' }
+        | { ok: false; code: 'INVALID_STOCK_CODE' | 'STOCK_NOT_FOUND' | 'FETCH_FAILED'; message: string }
       >,
     getIntradayData: (stockCode: string) =>
       ipcRenderer.invoke('datasource:getIntradayData', { stockCode }),
@@ -3216,6 +3221,14 @@ const api = {
     removeStock: ({ tsCode, subCategory }: { tsCode: string; subCategory?: string }) =>
       ipcRenderer.invoke('trend:removeStock', { tsCode, subCategory }) as Promise<{
         ok: boolean; error?: string
+      }>,
+    clearWatchlist: () =>
+      ipcRenderer.invoke('trend:clearWatchlist') as Promise<{
+        ok: boolean
+        removedRows?: number
+        removedStocks?: number
+        error?: string
+        message?: string
       }>,
     updateGroupTag: (tsCode: string, groupTag: string) =>
       ipcRenderer.invoke('trend:updateGroupTag', { tsCode, groupTag }) as Promise<{ ok: boolean; error?: string }>,

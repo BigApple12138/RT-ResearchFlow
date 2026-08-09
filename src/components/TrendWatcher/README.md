@@ -26,9 +26,13 @@
 
 ## 恢复与交互
 
-观察池添加股票后调用 `trend:backfillStocks` 检查并补齐候选日线。任务在主进程执行，切换页面不取消；未配置Tushare或上游失败时保留观察股，并在页面提供可重试结果。全市场同步只保留为紧凑的数据维护入口，单个进度条占满整行。观察池列表另提供独立的分类/细分赛道筛选，不与新增股票表单中的分类字段混用；两个选项菜单限制为18rem并在内部滚动，长列表不得带动页面滚动。
+观察池加入股票只做登记与名称解析，不自动拉日线。用户点击页头「补齐缺口」或行内「补齐」时才调用 `trend:backfillStocks`；任务在主进程执行，切换页面不取消；未配置Tushare时走公开行情，失败可重试。全市场同步只保留为紧凑的数据维护入口，单个进度条占满整行。观察池列表另提供独立的分类/细分赛道筛选，不与新增股票表单中的分类字段混用；两个选项菜单限制为18rem并在内部滚动，长列表不得带动页面滚动。
 
-趋势雷达、趋势事件和观察池股票行复用 `StockKlineChipDrawer`；持仓详情继续复用 `ForecastPanel`。删除观察股使用项目内 `TrendConfirmDialog`，不调用浏览器原生 `confirm/alert`。
+观察池支持「清空观察池」：`data-testid="trend-watchlist-clear-all"`，空池禁用；确认后调用 `trend:clearWatchlist`，只删除 `trend_watchlist` 行，不删本地日线/评分/alerts/`stock_basic_cache`，也不自动重播种子目录。批量加入时按本地目录与观察池既有登记智能填写分类/细分赛道；用户手改后不再覆盖，可用「重新识别分类」强制重算（无 AI、0 Token）。
+
+加股与股票走势图同链路：名称搜索走 `datasource:searchStock`（本地字典；六位无命中时用东财轻量报价只取名称）；回车/点选后 `trend:addStocks` 登记，日线留给补齐按钮。字典为空时提示可直接输六位代码；「执行全市场同步」缺 Tushare 的错误只显示在数据维护区，不占用加股表单。
+
+趋势雷达、趋势事件和观察池股票行复用 `StockKlineChipDrawer`；持仓详情继续复用 `ForecastPanel`。删除观察股与清空整池均使用项目内 `TrendConfirmDialog`，不调用浏览器原生 `confirm/alert`。
 
 趋势雷达的 AI 结构复核必须由用户显式点击。行内「AI复核结构」调用主进程 `trend:reviewStructure`，成功后刷新 workbench；复核失败只显示 Toast，不改变本地趋势状态。勾选按 `tsCode` 保存，最多20只，批量入口调用串行的 `trend:reviewStructureBatch` 并展示逐条成功/失败结果。趋势雷达向 `StockKlineChipDrawer` 传入可选的复核 action；未传入时，其他调用方不显示该按钮。
 

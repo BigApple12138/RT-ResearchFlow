@@ -9,20 +9,16 @@ import {
   formatTrendDate,
 } from './TrendWorkbenchUi'
 import { TrendConfirmDialog } from './TrendConfirmDialog'
+import { suggestWatchlistCategory } from './trendWatchlistCategorySuggest'
+import { WATCHLIST_CATEGORY_TREE } from './trendWatchlistCategoryTree'
+import {
+  buildWatchlistEntryFromCodes,
+  isSyntheticWatchlistName,
+  syntheticCandidateForSixDigit,
+} from './trendWatchlistAddResolve'
 import type { TrendWorkbenchItem, TrendWorkbenchPageProps } from './trendWorkbenchTypes'
 
-const CATEGORY_TREE: Record<string, string[]> = {
-  AI算力: ['AI服务器'],
-  半导体设备: ['刻蚀设备', '薄膜沉积设备', '清洗设备', '离子注入'],
-  半导体材料: ['光刻胶（KrF/ArF高端）', '光刻胶（G/I线成熟）', '半导体硅片', '溅射靶材', 'CMP抛光材料', 'EDA软件', '先进封装（封测）', '测试板'],
-  CPO: ['光模块', '光器件', 'CPO交换机', '封装/耦合设备'],
-  PCB: ['消费电子/FPC', '通信/服务器PCB', '汽车电子PCB', 'IC封装基板', '覆铜板（CCL）', '显卡/新能源PCB'],
-  锂电池: ['磷酸铁锂正极', '三元材料正极', '负极材料', '电解液', '隔膜', '结构件', '锂电设备'],
-  固态电池: ['固态电池（整体）', '硫化物电解质', '氧化物电解质', '固态电池隔膜'],
-  '绿色能源（风电）': ['风电整机', '风电叶片'],
-  储能: ['储能系统集成商', '储能电池'],
-  能源金属: ['锂矿', '钴', '镍'],
-}
+const CATEGORY_TREE = WATCHLIST_CATEGORY_TREE
 
 interface WatchItem {
   tsCode: string
@@ -60,10 +56,17 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
   const [listSubCategory, setListSubCategory] = useState('')
   const [adding, setAdding] = useState(false)
   const [actionMessage, setActionMessage] = useState<{ tone: 'info' | 'error' | 'success'; text: string } | null>(null)
+  const [syncMessage, setSyncMessage] = useState<{ tone: 'error' | 'info'; text: string } | null>(null)
+  const [stockBasicEmpty, setStockBasicEmpty] = useState(false)
+  const [resolvingCode, setResolvingCode] = useState(false)
   const [editingGroupCode, setEditingGroupCode] = useState<string | null>(null)
   const [editingGroupValue, setEditingGroupValue] = useState('')
   const [removeTarget, setRemoveTarget] = useState<TrendWorkbenchItem | null>(null)
   const [removing, setRemoving] = useState(false)
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const [categoryTouched, setCategoryTouched] = useState(false)
+  const [categoryHint, setCategoryHint] = useState<string | null>(null)
   const [selectedDetail, setSelectedDetail] = useState<TrendWorkbenchItem | null>(null)
   const [backfillRunning, setBackfillRunning] = useState(false)
   const [backfillProgress, setBackfillProgress] = useState<ProgressState | null>(null)
@@ -173,32 +176,117 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
     if (!value.trim()) {
       setSearchResults([])
+      setStockBasicEmpty(false)
       setShowSearchResults(false)
       return
     }
     searchTimerRef.current = setTimeout(async () => {
       setSearchLoading(true)
       try {
-        const response = await window.api.trend.searchStocks(value.trim())
-        if (response.ok && response.data) {
-          setSearchResults(response.data)
-          setShowSearchResults(true)
-        } else {
-          setActionMessage({ tone: 'error', text: response.error ?? '股票搜索失败' })
+        const trimmed = value.trim()
+        const response = await window.api.datasource.searchStock(trimmed)
+        if (!response.ok) {
+          setActionMessage({ tone: 'error', text: '股票搜索失败' })
+          return
         }
+        setStockBasicEmpty(response.empty)
+        let results: SearchResult[] = response.results.map((row) => ({
+          tsCode: row.tsCode,
+          name: row.name,
+        }))
+        // 仅在公开轻量查名也失败时，才用「代码 xxxxxx」占位
+        if (results.length === 0) {
+          const synthetic = syntheticCandidateForSixDigit(trimmed)
+          if (synthetic) results = [synthetic]
+        }
+        setSearchResults(results)
+        setShowSearchResults(true)
       } finally {
         setSearchLoading(false)
       }
     }, 240)
   }
 
+  const applyCategorySuggestion = useCallback((stocks: Map<string, SearchResult>, force = false) => {
+    if (!force && categoryTouched) return
+    const first = stocks.values().next().value as SearchResult | undefined
+    if (!first) {
+      if (force || !categoryTouched) {
+        setSelectedCategory('')
+        setSelectedSubCategory('')
+        setCategoryHint(null)
+      }
+      return
+    }
+    const suggested = suggestWatchlistCategory(first.tsCode, watchRows)
+    if (!suggested) {
+      if (force) {
+        setSelectedCategory('')
+        setSelectedSubCategory('')
+        setCategoryHint('未识别到内置分类，可手选后加入')
+        setCategoryTouched(false)
+      } else {
+        setCategoryHint('未识别到内置分类，可手选赛道')
+      }
+      return
+    }
+    setSelectedCategory(suggested.category)
+    setSelectedSubCategory(suggested.subCategory)
+    setCategoryTouched(false)
+    const sourceLabel = suggested.source === 'watchlist' ? '沿用池内登记' : '本地目录'
+    const multi = stocks.size > 1 ? '（批量共用首只建议，可改）' : ''
+    setCategoryHint(`已自动填写：${suggested.category} / ${suggested.subCategory} · ${sourceLabel}${multi}`)
+  }, [categoryTouched, watchRows])
+
   const toggleSearchResult = (result: SearchResult) => {
     setSelectedStocks((current) => {
       const next = new Map(current)
-      if (next.has(result.tsCode)) next.delete(result.tsCode)
-      else next.set(result.tsCode, result)
+      if (next.has(result.tsCode)) {
+        next.delete(result.tsCode)
+        queueMicrotask(() => applyCategorySuggestion(next))
+        return next
+      }
+      next.set(result.tsCode, result)
+      queueMicrotask(() => applyCategorySuggestion(next))
       return next
     })
+    if (isSyntheticWatchlistName(result.name)) {
+      void resolveNameForSelected(result)
+    }
+  }
+
+  /** 合成候选仅有代码占位名时，走轻量报价补全真名（不拉日线） */
+  const resolveNameForSelected = async (result: SearchResult) => {
+    const six = result.tsCode.replace(/\.(SH|SZ|BJ)$/i, '')
+    if (!/^\d{6}$/.test(six) || resolvingCode) return
+    setResolvingCode(true)
+    setActionMessage(null)
+    try {
+      const resolved = await window.api.datasource.resolveStockName(six)
+      if (!resolved.ok) {
+        setActionMessage({
+          tone: 'info',
+          text: `${resolved.message}；已选中代码 ${six}，仍可先加入观察池，名称稍后补齐`,
+        })
+        return
+      }
+      const entry = buildWatchlistEntryFromCodes(resolved.stockCode, resolved.stockName)
+      if (!entry) return
+      setSelectedStocks((current) => {
+        if (!current.has(result.tsCode) && !current.has(entry.tsCode)) return current
+        const next = new Map(current)
+        next.delete(result.tsCode)
+        next.set(entry.tsCode, entry)
+        queueMicrotask(() => applyCategorySuggestion(next))
+        return next
+      })
+      setSearchResults((rows) =>
+        rows.map((row) => (row.tsCode === result.tsCode || row.tsCode === entry.tsCode ? entry : row)),
+      )
+      setSearchQuery(entry.name)
+    } finally {
+      setResolvingCode(false)
+    }
   }
 
   const runBackfill = useCallback(async (codes: string[]) => {
@@ -221,17 +309,17 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
     onRefresh()
   }, [backfillRunning, loadWatchRows, onRefresh])
 
-  const handleAdd = async () => {
-    const stocks = [...selectedStocks.values()]
+  const handleAdd = async (override?: SearchResult[]) => {
+    const stocks = override ?? [...selectedStocks.values()]
     if (stocks.length === 0) {
-      setActionMessage({ tone: 'error', text: '请至少选择一只股票' })
+      setActionMessage({ tone: 'error', text: '请至少选择一只股票，或输入六位代码后回车' })
       return
     }
     setAdding(true)
     try {
       const response = await window.api.trend.addStocks(stocks.map((stock) => ({
         tsCode: stock.tsCode,
-        stockName: stock.name,
+        stockName: stock.name.startsWith('代码 ') ? stock.tsCode.replace(/\.(SH|SZ|BJ)$/i, '') : stock.name,
         groupTag: inputGroup.trim() || '自定义',
         category: selectedCategory,
         subCategory: selectedSubCategory,
@@ -240,16 +328,80 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
         setActionMessage({ tone: 'error', text: response.message ?? response.error ?? '添加失败' })
         return
       }
-      setActionMessage({ tone: 'success', text: `已将 ${stocks.length} 只股票加入观察池，正在检查日线覆盖` })
+      setActionMessage({
+        tone: 'success',
+        text: `已将 ${stocks.length} 只股票加入观察池。需要日线时再点「补齐缺口」或行内「补齐」`,
+      })
       setSelectedStocks(new Map())
       setSearchQuery('')
       setSearchResults([])
       setShowSearchResults(false)
+      setStockBasicEmpty(false)
       await loadWatchRows()
       onRefresh()
-      void runBackfill(stocks.map((stock) => stock.tsCode))
     } finally {
       setAdding(false)
+    }
+  }
+
+  const resolveSixDigitAndAdd = async (raw: string) => {
+    const six = raw.trim()
+    if (!/^\d{6}$/.test(six) || resolvingCode || adding) return
+    setResolvingCode(true)
+    setActionMessage(null)
+    setShowSearchResults(false)
+    try {
+      const resolved = await window.api.datasource.resolveStockName(six)
+      if (!resolved.ok) {
+        setActionMessage({
+          tone: 'error',
+          text: `${resolved.message}（公开轻量查名；可稍后重试，不必先配置 Tushare）`,
+        })
+        return
+      }
+      const entry = buildWatchlistEntryFromCodes(resolved.stockCode, resolved.stockName)
+      if (!entry) {
+        setActionMessage({ tone: 'error', text: '股票代码无效' })
+        return
+      }
+      const suggested = suggestWatchlistCategory(entry.tsCode, watchRows)
+      const category = suggested?.category ?? selectedCategory
+      const subCategory = suggested?.subCategory ?? (suggested ? '' : selectedSubCategory)
+      if (suggested) {
+        setSelectedCategory(suggested.category)
+        setSelectedSubCategory(suggested.subCategory)
+        setCategoryTouched(false)
+        setCategoryHint(`已自动填写：${suggested.category} / ${suggested.subCategory} · 本地目录`)
+      }
+      setAdding(true)
+      try {
+        const response = await window.api.trend.addStocks([{
+          tsCode: entry.tsCode,
+          stockName: entry.name,
+          groupTag: inputGroup.trim() || '自定义',
+          category,
+          subCategory,
+        }])
+        if (!response.ok) {
+          setActionMessage({ tone: 'error', text: response.message ?? response.error ?? '添加失败' })
+          return
+        }
+        setActionMessage({
+          tone: 'success',
+          text: `已将 ${entry.name}（${entry.tsCode}）加入观察池。需要日线时再点「补齐缺口」或行内「补齐」`,
+        })
+        setSelectedStocks(new Map())
+        setSearchQuery('')
+        setSearchResults([])
+        setShowSearchResults(false)
+        setStockBasicEmpty(false)
+        await loadWatchRows()
+        onRefresh()
+      } finally {
+        setAdding(false)
+      }
+    } finally {
+      setResolvingCode(false)
     }
   }
 
@@ -282,14 +434,36 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
     onRefresh()
   }
 
+  const confirmClearAll = async () => {
+    if (clearing || watchRows.length === 0) return
+    setClearing(true)
+    try {
+      const response = await window.api.trend.clearWatchlist()
+      if (!response.ok) {
+        setActionMessage({ tone: 'error', text: response.message ?? response.error ?? '清空失败' })
+        return
+      }
+      setActionMessage({
+        tone: 'success',
+        text: `已清空观察池：${response.removedStocks ?? 0} 只股票（${response.removedRows ?? 0} 条登记）`,
+      })
+      setClearConfirmOpen(false)
+      await loadWatchRows()
+      onRefresh()
+    } finally {
+      setClearing(false)
+    }
+  }
+
   const handleFullSync = async () => {
     if (syncRunning) return
     setSyncRunning(true)
+    setSyncMessage(null)
     setSyncProgress({ current: 0, total: 90, detail: '准备同步最近90个交易日' })
     const response = await window.api.trend.syncNow(90)
     if (!response.ok) {
       setSyncRunning(false)
-      setActionMessage({ tone: 'error', text: localizeSyncError(response.error, response.message) })
+      setSyncMessage({ tone: 'error', text: localizeSyncError(response.error, response.message) })
     }
   }
 
@@ -301,7 +475,22 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
         loading={loading || listLoading}
         onRefresh={() => { void loadWatchRows(); onRefresh() }}
         meta={<span className="text-xs tabular-nums text-slate-500 dark:text-slate-400">{allItems.length}只 · {missingCodes.length}只待补数据</span>}
-        actions={missingCodes.length > 0 && <button type="button" disabled={backfillRunning} onClick={() => void runBackfill(missingCodes)} className="min-h-11 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-wait disabled:opacity-50 dark:bg-cyan-600 dark:hover:bg-cyan-500">{backfillRunning ? '补齐进行中' : `补齐缺口 ${missingCodes.length}`}</button>}
+        actions={(
+          <>
+            <button
+              type="button"
+              data-testid="trend-watchlist-clear-all"
+              disabled={watchRows.length === 0 || clearing || backfillRunning}
+              onClick={() => setClearConfirmOpen(true)}
+              className="min-h-11 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 disabled:cursor-not-allowed disabled:opacity-40 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300 dark:hover:bg-rose-950/70"
+            >
+              清空观察池
+            </button>
+            {missingCodes.length > 0 && (
+              <button type="button" disabled={backfillRunning} onClick={() => void runBackfill(missingCodes)} className="min-h-11 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-wait disabled:opacity-50 dark:bg-cyan-600 dark:hover:bg-cyan-500">{backfillRunning ? '补齐进行中' : `补齐缺口 ${missingCodes.length}`}</button>
+            )}
+          </>
+        )}
       />
 
       {errorMessage && <WorkbenchError message={errorMessage} onRetry={onRefresh} />}
@@ -311,23 +500,91 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
           <div ref={searchRootRef} className="relative min-w-[260px] flex-1">
             <label id="trend-add-title" className="mb-1 block text-[11px] font-medium text-slate-500 dark:text-slate-400">搜索并批量选择股票</label>
             <div className="flex min-h-11 items-center rounded-md border border-slate-300 bg-white px-3 focus-within:border-cyan-500 focus-within:ring-2 focus-within:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-900">
-              <input value={searchQuery} onChange={(event) => handleSearch(event.target.value)} onFocus={() => searchResults.length > 0 && setShowSearchResults(true)} placeholder="输入名称或代码" className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 dark:text-slate-100" />
-              {searchLoading && <span className="shrink-0 text-[11px] text-slate-400">搜索中</span>}
+              <input
+                data-testid="trend-watchlist-search"
+                value={searchQuery}
+                onChange={(event) => handleSearch(event.target.value)}
+                onFocus={() => (searchResults.length > 0 || stockBasicEmpty) && setShowSearchResults(true)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void resolveSixDigitAndAdd(searchQuery)
+                  }
+                  if (event.key === 'Escape') setShowSearchResults(false)
+                }}
+                placeholder="输入名称或六位代码（回车加入）"
+                className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 dark:text-slate-100"
+              />
+              {(searchLoading || resolvingCode) && <span className="shrink-0 text-[11px] text-slate-400">{resolvingCode ? '解析名称中' : '搜索中'}</span>}
               {selectedStocks.size > 0 && <span className="ml-2 shrink-0 rounded bg-cyan-50 px-2 py-1 text-[11px] font-medium text-cyan-700 dark:bg-cyan-950/40 dark:text-cyan-300">已选 {selectedStocks.size}</span>}
             </div>
+            {selectedStocks.size > 0 && (
+              <div data-testid="trend-watchlist-selected" className="mt-1.5 flex flex-wrap gap-1.5">
+                {[...selectedStocks.values()].map((stock) => (
+                  <button
+                    key={stock.tsCode}
+                    type="button"
+                    onClick={() => toggleSearchResult(stock)}
+                    className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-cyan-200 bg-cyan-50 px-2 py-1 text-[11px] text-cyan-900 hover:border-rose-300 hover:bg-rose-50 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-100"
+                    title="点击取消选择"
+                  >
+                    <span className="truncate font-medium">{isSyntheticWatchlistName(stock.name) ? '名称解析中…' : stock.name}</span>
+                    <span className="shrink-0 font-mono text-cyan-700/80 dark:text-cyan-300/80">{stripCode(stock.tsCode)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {showSearchResults && (
               <div role="listbox" aria-multiselectable="true" aria-label="股票搜索结果" className="absolute left-0 right-0 z-40 mt-1 max-h-64 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-xl dark:border-slate-700 dark:bg-slate-900">
-                {searchResults.length === 0 ? <div className="px-3 py-4 text-center text-xs text-slate-400">没有匹配股票</div> : searchResults.map((result) => {
+                {stockBasicEmpty && (
+                  <div data-testid="trend-watchlist-stock-basic-empty" className="border-b border-slate-100 px-3 py-2 text-[11px] leading-relaxed text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                    尚未同步股票基础数据，名称搜索暂不可用。可直接输入六位代码后回车加入（走公开行情链路，不必先配 Tushare）。
+                  </div>
+                )}
+                {searchResults.length === 0 ? (
+                  <div className="px-3 py-4 text-center text-xs text-slate-400">
+                    {stockBasicEmpty ? '输入六位代码后按回车加入' : '没有匹配股票'}
+                  </div>
+                ) : searchResults.map((result) => {
                   const checked = selectedStocks.has(result.tsCode)
-                  return <button key={result.tsCode} type="button" role="option" aria-selected={checked} onClick={() => toggleSearchResult(result)} className="flex min-h-11 w-full items-center gap-3 px-3 text-left hover:bg-cyan-50 focus:outline-none focus-visible:bg-cyan-50 dark:hover:bg-cyan-950/30 dark:focus-visible:bg-cyan-950/30"><span aria-hidden="true" className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${checked ? 'border-cyan-600 bg-cyan-600 text-white' : 'border-slate-300 dark:border-slate-600'}`}>{checked ? '✓' : ''}</span><span className="w-24 shrink-0 font-mono text-xs text-slate-500">{result.tsCode}</span><span className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{result.name}</span></button>
+                  return (
+                    <button
+                      key={result.tsCode}
+                      type="button"
+                      role="option"
+                      aria-selected={checked}
+                      onClick={() => toggleSearchResult(result)}
+                      className="flex min-h-11 w-full items-center gap-3 px-3 text-left hover:bg-cyan-50 focus:outline-none focus-visible:bg-cyan-50 dark:hover:bg-cyan-950/30 dark:focus-visible:bg-cyan-950/30"
+                    >
+                      <span aria-hidden="true" className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${checked ? 'border-cyan-600 bg-cyan-600 text-white' : 'border-slate-300 dark:border-slate-600'}`}>{checked ? '✓' : ''}</span>
+                      <span className="w-24 shrink-0 font-mono text-xs text-slate-500">{result.tsCode}</span>
+                      <span className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{result.name}</span>
+                    </button>
+                  )
                 })}
               </div>
             )}
           </div>
-          <OptionMenu label="分类" value={selectedCategory} options={categoryOptions} onChange={(value) => { setSelectedCategory(value); setSelectedSubCategory('') }} className="w-40" />
-          <OptionMenu label="细分赛道" value={selectedSubCategory} options={subCategoryOptions} onChange={setSelectedSubCategory} disabled={!selectedCategory} className="w-48" />
+          <OptionMenu label="分类" value={selectedCategory} options={categoryOptions} onChange={(value) => { setCategoryTouched(true); setSelectedCategory(value); setSelectedSubCategory(''); setCategoryHint('已改手选分类') }} className="w-40" />
+          <OptionMenu label="细分赛道" value={selectedSubCategory} options={subCategoryOptions} onChange={(value) => { setCategoryTouched(true); setSelectedSubCategory(value); setCategoryHint('已改手选赛道') }} disabled={!selectedCategory} className="w-48" />
           <label className="w-36"><span className="mb-1 block text-[11px] font-medium text-slate-500 dark:text-slate-400">自定义分组</span><input value={inputGroup} onChange={(event) => setInputGroup(event.target.value)} placeholder="例如：重点跟踪" className="min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" /></label>
-          <button type="button" onClick={() => void handleAdd()} disabled={adding || selectedStocks.size === 0} className="min-h-11 rounded-md bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-500 dark:text-slate-950 dark:hover:bg-cyan-400">{adding ? '正在加入' : `加入观察池${selectedStocks.size > 0 ? ` (${selectedStocks.size})` : ''}`}</button>
+          <button type="button" onClick={() => void handleAdd()} disabled={adding || resolvingCode || selectedStocks.size === 0} className="min-h-11 rounded-md bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-500 dark:text-slate-950 dark:hover:bg-cyan-400">{adding || resolvingCode ? '正在加入' : `加入观察池${selectedStocks.size > 0 ? ` (${selectedStocks.size})` : ''}`}</button>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {categoryHint && (
+            <span className="inline-flex items-center rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-[11px] text-cyan-800 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-200">
+              {categoryHint}
+            </span>
+          )}
+          <button
+            type="button"
+            data-testid="trend-watchlist-resuggest-category"
+            disabled={selectedStocks.size === 0}
+            onClick={() => applyCategorySuggestion(selectedStocks, true)}
+            className="rounded-md border border-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-cyan-400 hover:text-cyan-700 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300"
+          >
+            重新识别分类
+          </button>
         </div>
         {actionMessage && <div role="status" className={`mt-2 text-xs ${actionMessage.tone === 'error' ? 'text-rose-700 dark:text-rose-300' : actionMessage.tone === 'success' ? 'text-cyan-700 dark:text-cyan-300' : 'text-amber-700 dark:text-amber-300'}`}>{actionMessage.text}</div>}
       </section>
@@ -339,10 +596,17 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
         </div>
       )}
 
-      <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs dark:border-slate-800 dark:bg-slate-900/60 sm:px-5">
-        <span className="font-medium text-slate-700 dark:text-slate-200">数据维护</span>
-        <span className="text-slate-500 dark:text-slate-400">全市场最近90个交易日</span>
-        <button type="button" disabled={syncRunning} onClick={() => void handleFullSync()} className="ml-auto min-h-10 rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:border-cyan-400 hover:text-cyan-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-wait disabled:opacity-45 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">{syncRunning ? '同步进行中' : '执行全市场同步'}</button>
+      <div className="flex flex-col gap-1 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs dark:border-slate-800 dark:bg-slate-900/60 sm:px-5">
+        <div className="flex items-center gap-3">
+          <span className="font-medium text-slate-700 dark:text-slate-200">数据维护</span>
+          <span className="text-slate-500 dark:text-slate-400">全市场最近90个交易日（可选；加股不依赖此项）</span>
+          <button type="button" disabled={syncRunning} onClick={() => void handleFullSync()} className="ml-auto min-h-10 rounded-md border border-slate-300 bg-white px-3 font-medium text-slate-700 hover:border-cyan-400 hover:text-cyan-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-wait disabled:opacity-45 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">{syncRunning ? '同步进行中' : '执行全市场同步'}</button>
+        </div>
+        {syncMessage && (
+          <div data-testid="trend-watchlist-sync-error" role="status" className={syncMessage.tone === 'error' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-500'}>
+            {syncMessage.text}
+          </div>
+        )}
       </div>
 
       {allItems.length > 0 && (
@@ -385,9 +649,23 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
       )}
 
       {removeTarget && <TrendConfirmDialog title="移出观察池" description="这只股票的全部分类和赛道登记都会从观察池中移除。" subject={`${removeTarget.stockName} · ${removeTarget.stockCode}`} busy={removing} onCancel={() => setRemoveTarget(null)} onConfirm={() => void confirmRemove()} />}
+      {clearConfirmOpen && (
+        <TrendConfirmDialog
+          title="清空观察池"
+          description="将删除观察池内全部股票登记（含多赛道条目）。本地日线与评分缓存不会删除；种子目录也不会自动恢复。"
+          subject={`当前 ${countDistinctCodes(watchRows)} 只股票 · ${watchRows.length} 条登记`}
+          busy={clearing}
+          onCancel={() => setClearConfirmOpen(false)}
+          onConfirm={() => { void confirmClearAll() }}
+        />
+      )}
       {selectedDetail && <StockKlineChipDrawer tsCode={selectedDetail.tsCode} stockName={selectedDetail.stockName} onClose={() => setSelectedDetail(null)} onNavigate={() => { navigateToStock(selectedDetail.stockCode, selectedDetail.stockName); setSelectedDetail(null) }} />}
     </div>
   )
+}
+
+function countDistinctCodes(rows: WatchItem[]): number {
+  return new Set(rows.map((row) => normalizeCode(row.tsCode))).size
 }
 
 function ProgressStrip({ label, progress, running }: { label: string; progress: ProgressState; running: boolean }) {

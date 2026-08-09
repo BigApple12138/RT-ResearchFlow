@@ -36,6 +36,7 @@ import {
   fetchStockMinuteDaily,
   forceFetchSingleStock,
   getBoardSecid,
+  resolveStockIdentityPublic,
   validateTushareToken,
 } from '../services/tushareService'
 import { inspectTrendBenchmarkHealth, type TrendBenchmarkHealth } from '../services/trendBenchmarkFreshness'
@@ -1888,18 +1889,54 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // ── datasource:searchStock ────────────────────────────────────────────────
-  // 按股票名称或代码模糊搜索，优先从本地 stock_basic_cache 查询，无需调用 API
-  ipcMain.handle('datasource:searchStock', (_e, data: { keyword: string }) => {
+  // 优先本地 stock_basic_cache；六位代码无命中时走东财轻量报价补名称（不拉日线）
+  ipcMain.handle('datasource:searchStock', async (_e, data: { keyword: string }) => {
     const keyword = (data?.keyword ?? '').trim()
     if (!keyword) return { ok: true as const, results: [], empty: false }
     const db = getDb()
     const total = countStockBasic(db)
+    const sixDigit = /^\d{6}$/.test(keyword) ? keyword : null
+
+    const toResult = (tsCode: string, name: string, market: string | null = null) => ({
+      tsCode,
+      name,
+      market,
+    })
+
     if (total === 0) {
-      // stock_basic 尚未同步，提示用户
-      return { ok: true as const, results: [], empty: true }
+      if (sixDigit) {
+        const resolved = await resolveStockIdentityPublic(db, sixDigit)
+        if (resolved.ok) {
+          return {
+            ok: true as const,
+            results: [toResult(resolved.tsCode, resolved.stockName, resolved.tsCode.split('.')[1] ?? null)],
+            empty: true as const,
+          }
+        }
+      }
+      return { ok: true as const, results: [], empty: true as const }
     }
+
     const results = searchByNameOrCode(db, keyword, 10)
-    return { ok: true as const, results, empty: false }
+    if (results.length > 0) return { ok: true as const, results, empty: false as const }
+
+    if (sixDigit) {
+      const resolved = await resolveStockIdentityPublic(db, sixDigit)
+      if (resolved.ok) {
+        return {
+          ok: true as const,
+          results: [toResult(resolved.tsCode, resolved.stockName, resolved.tsCode.split('.')[1] ?? null)],
+          empty: false as const,
+        }
+      }
+    }
+    return { ok: true as const, results: [], empty: false as const }
+  })
+
+  // ── datasource:resolveStockName ───────────────────────────────────────────
+  // 轻量代码→名称（本地 / 东财报价），供观察池等补全展示名
+  ipcMain.handle('datasource:resolveStockName', async (_e, data: { stockCode: string }) => {
+    return resolveStockIdentityPublic(getDb(), String(data?.stockCode ?? ''))
   })
 
   // ── datasource:getIntradayData ─────────────────────────────────────────────

@@ -166,6 +166,93 @@ function normalizeAshareCode(value: string): { stockCode: string; tsCode: string
   }
 }
 
+const EASTMONEY_QUOTE_API = 'https://push2.eastmoney.com/api/qt/stock/get'
+
+export type StockIdentityResolveResult =
+  | {
+      ok: true
+      stockCode: string
+      tsCode: string
+      stockName: string
+      source: 'local' | 'eastmoney-quote'
+    }
+  | {
+      ok: false
+      code: 'INVALID_STOCK_CODE' | 'STOCK_NOT_FOUND' | 'FETCH_FAILED'
+      message: string
+    }
+
+/**
+ * 轻量解析股票代码→名称（本地 stock_info 或东财 push2 报价字段 f58）。
+ * 不拉日线，供搜索/加股展示；日线仍走 fetchEastmoneySingleStockDaily / fetchStock。
+ */
+export async function resolveStockIdentityPublic(
+  db: Database.Database,
+  inputCode: string,
+): Promise<StockIdentityResolveResult> {
+  const normalized = normalizeAshareCode(inputCode)
+  if (!normalized) {
+    return { ok: false, code: 'INVALID_STOCK_CODE', message: '请输入六位股票代码' }
+  }
+
+  const localName = getStockInfo(db, normalized.stockCode)?.stockName
+  if (isUsableStockName(localName, normalized.stockCode)) {
+    return {
+      ok: true,
+      stockCode: normalized.stockCode,
+      tsCode: normalized.tsCode,
+      stockName: localName.trim(),
+      source: 'local',
+    }
+  }
+
+  const url = new URL(EASTMONEY_QUOTE_API)
+  url.searchParams.set('fltt', '2')
+  url.searchParams.set('invt', '2')
+  url.searchParams.set('secid', normalized.secid)
+  url.searchParams.set('fields', 'f57,f58')
+  url.searchParams.set('_', String(Date.now()))
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 4_000)
+    let response: Response
+    try {
+      response = await fetch(url.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+    if (!response.ok) {
+      return { ok: false, code: 'FETCH_FAILED', message: '公开行情名称查询失败，请稍后重试' }
+    }
+    const json = (await response.json()) as {
+      rc?: number
+      data?: { f57?: string | number; f58?: string } | null
+    }
+    const name = typeof json.data?.f58 === 'string' ? json.data.f58.trim() : ''
+    if (json.rc !== 0 || !isUsableStockName(name, normalized.stockCode)) {
+      return {
+        ok: false,
+        code: 'STOCK_NOT_FOUND',
+        message: `未找到股票代码 ${normalized.stockCode}，请确认代码是否正确`,
+      }
+    }
+    upsertStockInfo(db, normalized.stockCode, name)
+    return {
+      ok: true,
+      stockCode: normalized.stockCode,
+      tsCode: normalized.tsCode,
+      stockName: name,
+      source: 'eastmoney-quote',
+    }
+  } catch {
+    return { ok: false, code: 'FETCH_FAILED', message: '公开行情名称查询超时或失败，请稍后重试' }
+  }
+}
+
 function parseEastmoneyDailyRows(
   stockCode: string,
   klines: string[],
