@@ -31,6 +31,11 @@ pnpm run verify
 - 不提交凭据、真实持仓、个人路径、运行数据库、构建产物或日志。
 - 复用现有类型/服务/UI；避免无关大重构。
 
+## Git 提交
+
+- **Commit message 必须使用中文。** 可采用 Conventional Commits 前缀（如 `feat(trend):` / `fix:` / `docs:`），冒号后的说明与正文用中文写清「为什么」。
+- 仅在用户明确要求时创建 commit；仅在用户明确要求时 push。不要改 git config，不要强制推送 `main`/`master`。
+
 ## 功能开发流程 — Spec-Driven Development（SDD）硬门禁
 
 ### 核心 vs 工具（必须分清）
