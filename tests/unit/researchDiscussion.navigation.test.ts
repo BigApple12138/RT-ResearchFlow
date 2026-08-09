@@ -39,7 +39,7 @@ describe('研究讨论跨页导航', () => {
   it('返回产业研究时恢复项目与局部视图定位', () => {
     useAppStore.getState().returnFromResearchDiscussion({ tab: 'ai-analysis', subTab: 'industryResearch', entityId: 'project-1', stateKey: 'industry-research:changes' })
     expect(useAppStore.getState()).toMatchObject({
-      activeTab: 'ai-analysis', aiAnalysisSubTab: 'industryResearch', pendingIndustryResearchProjectId: 'project-1',
+      activeTab: 'ai-analysis', aiAnalysisSubTab: 'records', aiAnalysisWorkbench: 'industryResearch', pendingIndustryResearchProjectId: 'project-1',
       pendingResearchDiscussionReturnTarget: { tab: 'ai-analysis', subTab: 'industryResearch', entityId: 'project-1', stateKey: 'industry-research:changes' },
     })
   })
@@ -48,7 +48,8 @@ describe('研究讨论跨页导航', () => {
     useAppStore.getState().returnFromResearchDiscussion({ tab: 'ai-analysis', subTab: 'deepResearch', stateKey: 'deep-research' })
     expect(useAppStore.getState()).toMatchObject({
       activeTab: 'ai-analysis',
-      aiAnalysisSubTab: 'deepResearch',
+      aiAnalysisSubTab: 'records',
+      aiAnalysisWorkbench: 'deepResearch',
       pendingResearchDiscussionSessionId: null,
       pendingResearchDiscussionReturnTarget: { tab: 'ai-analysis', subTab: 'deepResearch', stateKey: 'deep-research' },
     })
