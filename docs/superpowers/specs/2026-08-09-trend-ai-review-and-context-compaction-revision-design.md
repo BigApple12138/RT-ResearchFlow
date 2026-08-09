@@ -1,6 +1,6 @@
 # 趋势 AI 复核 + 讨论上下文压缩——契约与落地修订设计
 
-**状态：** 已批准待执行  
+**状态：** 已批准并完成（实现与验收以修订版 plan 为准）  
 **日期：** 2026-08-09  
 **上游设计：** [`2026-08-09-trend-ai-review-and-context-compaction-design.md`](./2026-08-09-trend-ai-review-and-context-compaction-design.md)  
 **修订原因：** 上游设计已经有一轮实现，但发现词表、事实包、复核历史和讨论压缩仍存在契约偏差。本文件只记录必须落地的修订，不改写上游设计正文。
@@ -56,4 +56,3 @@
 ## 4. 验收证据
 
 必须有单测证明：新词表/边界校验、稳定事实 hash、旧 projection 保留、revision 不覆盖、批量 progress 串行、sequence 规范化、累计摘要、归档恢复、模型上下文不带全量旧文、busy/lock、requestId 重放、压缩失败继续追问、FR-239 sequence 回归。最后运行 typecheck、lint、unit、build、`verify`、Public Boundary，并更新三份组件 README 与 plan 检核表。
-
