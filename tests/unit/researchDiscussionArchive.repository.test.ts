@@ -88,7 +88,7 @@ describe('研究讨论消息归档 Repository', () => {
     ])
   })
 
-  it('恢复时跳过缺少 role 或 content 的非法归档 JSON', () => {
+  it('恢复时遇到缺少 role 或 content 的非法归档 JSON 会失败关闭', () => {
     const compaction = insertDiscussionCompaction(db, {
       sessionId,
       requestId: 'compaction-invalid-json',
@@ -111,6 +111,7 @@ describe('研究讨论消息归档 Repository', () => {
       VALUES (?, ?, ?, ?, ?)
     `).run(sessionId, 2, JSON.stringify({ role: 'user' }), compaction.id, Date.now())
 
-    expect(loadFullDiscussionMessages(db, sessionId, [])).toEqual([])
+    expect(() => loadFullDiscussionMessages(db, sessionId, []))
+      .toThrow('ARCHIVE_INTEGRITY_ERROR')
   })
 })

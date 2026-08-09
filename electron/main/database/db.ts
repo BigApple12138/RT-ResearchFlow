@@ -4778,6 +4778,41 @@ const MIGRATIONS: DatabaseMigration[] = [
           )
         BEGIN SELECT RAISE(ABORT, 'COMPACTION_SESSION_MISMATCH'); END;
     `
+  },
+  {
+    // Successful trend-review replays retain immutable request identity; busy checks use all session rows.
+    version: 143,
+    sql: `
+      CREATE INDEX idx_research_agent_runs_discussion_status
+        ON research_agent_runs(discussion_session_id, status);
+
+      CREATE UNIQUE INDEX idx_trend_structure_review_revisions_full_identity
+        ON trend_structure_review_revisions(id, ts_code, score_trade_date, facts_hash);
+      CREATE TABLE trend_structure_review_requests (
+        request_id          TEXT PRIMARY KEY,
+        ts_code             TEXT NOT NULL,
+        score_trade_date    TEXT NOT NULL,
+        facts_hash          TEXT NOT NULL CHECK (length(facts_hash) = 64),
+        revision_id         TEXT NOT NULL,
+        created_at          INTEGER NOT NULL CHECK (created_at > 0),
+        FOREIGN KEY (revision_id, ts_code, score_trade_date, facts_hash)
+          REFERENCES trend_structure_review_revisions(id, ts_code, score_trade_date, facts_hash)
+      );
+      CREATE INDEX idx_trend_structure_review_requests_revision
+        ON trend_structure_review_requests(revision_id, created_at, request_id);
+      INSERT INTO trend_structure_review_requests (
+        request_id, ts_code, score_trade_date, facts_hash, revision_id, created_at
+      )
+      SELECT request_id, ts_code, score_trade_date, facts_hash, id, created_at
+      FROM trend_structure_review_revisions;
+
+      CREATE TRIGGER trend_structure_review_requests_no_update
+        BEFORE UPDATE ON trend_structure_review_requests
+        BEGIN SELECT RAISE(ABORT, 'TREND_REVIEW_REQUEST_IMMUTABLE'); END;
+      CREATE TRIGGER trend_structure_review_requests_no_delete
+        BEFORE DELETE ON trend_structure_review_requests
+        BEGIN SELECT RAISE(ABORT, 'TREND_REVIEW_REQUEST_IMMUTABLE'); END;
+    `
   }
 ]
 

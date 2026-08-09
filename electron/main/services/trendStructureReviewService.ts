@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import {
   assertTrendStructureReviewRequestIdentity,
+  bindTrendStructureReviewRequest,
   getTrendStructureReviewByCodeDate,
   getTrendStructureReviewByRequestId,
   saveTrendStructureReview,
@@ -82,7 +83,9 @@ export async function reviewStructure(
   }
 
   const existing = getTrendStructureReviewByCodeDate(db, normalizedCode, facts.scoreDate)
-  if (existing?.factsHash === factsHash) return toResult(existing, facts)
+  if (existing?.factsHash === factsHash) {
+    return toResult(bindTrendStructureReviewRequest(db, existing, input.requestId, now), facts)
+  }
 
   const insufficient = facts.totalScore == null
     || facts.validWeight == null

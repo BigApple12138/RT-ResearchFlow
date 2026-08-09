@@ -189,4 +189,30 @@ describe('趋势结构复核服务', () => {
       auditText: () => createAudit(), now: () => 2_000,
     })).rejects.toThrow('TREND_REVIEW_REQUEST_CONFLICT')
   })
+
+  it('相同事实的成功快捷重放也会绑定新 requestId 并拒绝后续冲突', async () => {
+    const firstRequestId = randomUUID()
+    const replayRequestId = randomUUID()
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId: firstRequestId, tsCode: '600000.SH' }, dependencies)
+    const replay = await reviewStructure(db, { requestId: replayRequestId, tsCode: '600000.SH' }, dependencies)
+
+    expect(replay.review.revisionId).toBe(first.review.revisionId)
+    await expect(reviewStructure(db, { requestId: replayRequestId, tsCode: '600000.SH' }, {
+      ...dependencies,
+      getWorkbench: () => createSnapshot({ totalScore: 79 }),
+      now: () => 2_000,
+    })).rejects.toThrow('TREND_REVIEW_REQUEST_CONFLICT')
+    expect(callAI).toHaveBeenCalledTimes(1)
+  })
 })

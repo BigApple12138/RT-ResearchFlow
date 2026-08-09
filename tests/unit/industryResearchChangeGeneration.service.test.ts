@@ -99,6 +99,46 @@ describe('讨论语义变更包生成服务', () => {
     })
   })
 
+  it('归档损坏时不调用模型、不生成不完整变更且不推进 sequence 游标', async () => {
+    updateSessionMessages(db, sessionId, [
+      { role: 'user', content: '归档问题', sequence: 1 },
+      { role: 'assistant', content: '热回答', sequence: 2 },
+    ])
+    const compaction = insertDiscussionCompaction(db, {
+      sessionId,
+      requestId: '00000000-0000-4000-8000-000000000036',
+      sourceStartSequence: 1,
+      coveredThroughSequence: 1,
+      sourceMessagesHash: 'e'.repeat(64),
+      summary: '累计摘要',
+      summaryHash: 'f'.repeat(64),
+      provider: 'qwen',
+      model: 'test-model',
+    })
+    db.prepare(`
+      INSERT INTO ai_discussion_message_archives
+        (session_id, message_sequence, message_json, compaction_id, archived_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionId, 1, JSON.stringify({ sequence: 1, content: '缺少 role' }), compaction.id, Date.now())
+    updateSessionMessages(db, sessionId, [{ role: 'assistant', content: '热回答', sequence: 2 }])
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ noMaterialChange: true, summary: '不应生成', changeSets: [] }),
+    }))
+
+    await expect(prepareDiscussionChanges(db, {
+      requestId: '00000000-0000-4000-8000-000000000037',
+      sessionId,
+      throughMessageSequence: 2,
+    }, callAI)).rejects.toMatchObject({ code: 'ARCHIVE_INTEGRITY_ERROR' })
+    expect(callAI).not.toHaveBeenCalled()
+    expect(getResearchDiscussionContext(db, sessionId)).toMatchObject({
+      summarized_through_message_sequence: null,
+      latest_batch_id: null,
+    })
+  })
+
   it('相同消息范围和上下文哈希幂等复用结果', async () => {
     const callAI = vi.fn(async () => ({ provider: 'qwen' as const, model: 'test-model', text: JSON.stringify({
       noMaterialChange: false,

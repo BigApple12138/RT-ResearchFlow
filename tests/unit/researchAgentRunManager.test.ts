@@ -21,6 +21,7 @@ import {
   transitionResearchAgentRunStatus,
 } from '../../electron/main/database/researchAgentRunRepository'
 import {
+  isDiscussionSessionBusy,
   persistResearchAgentReport,
   ResearchAgentRunManager,
 } from '../../electron/main/services/researchAgentRunManager'
@@ -35,6 +36,8 @@ import { RESEARCH_AGENT_PROMPT_RULE_VERSION } from '../../electron/main/services
 import { RESEARCH_AGENT_EVIDENCE_GATE_RULE_VERSION } from '../../electron/main/services/researchAgentEvidenceGate'
 import { startResearchDiscussion } from '../../electron/main/services/researchDiscussionContextService'
 import { withDiscussionSessionLock } from '../../electron/main/services/discussionSessionLock'
+import { runDiscussionFollowUp } from '../../electron/main/services/discussionFollowUpService'
+import { compactDiscussionContext } from '../../electron/main/services/discussionContextCompactionService'
 import {
   getResearchEvidenceReferenceId,
   hashResearchEvidenceContrast,
@@ -206,6 +209,116 @@ describe('FR-256 research agent run manager', () => {
     })
     return { run, evidence, referenceId }
   }
+
+  it('detects an active run older than the newest 50 rows with the session-status index', () => {
+    const runs = Array.from({ length: 51 }, (_, index) => startResearchAgentRun(db, {
+      requestId: `00000000-0000-4000-8000-${String(3_000 + index).padStart(12, '0')}`,
+      discussionSessionId: sessionId,
+      question: `busy detection ${index}`,
+      contextSnapshot: { schemaVersion: 1, source: 'busy-regression' },
+      subjects: [{ kind: 'stock', tsCode: '600519.SH', label: '贵州茅台' }],
+      includePortfolio: false,
+      asOf: '20260730',
+      provider: CONFIG.provider,
+      model: CONFIG.model,
+      modelConfigFingerprint: CONFIG.fingerprint,
+      promptRuleVersion: RESEARCH_AGENT_PROMPT_RULE_VERSION,
+      toolRegistryVersion: RESEARCH_AGENT_TOOL_REGISTRY_VERSION,
+      now: NOW + index,
+    }).run)
+    db.prepare(`
+      UPDATE research_agent_runs SET status = 'failed'
+      WHERE discussion_session_id = ? AND id <> ?
+    `).run(sessionId, runs[0].id)
+
+    expect(isDiscussionSessionBusy(db, sessionId)).toBe(true)
+    expect(db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'index' AND name = 'idx_research_agent_runs_discussion_status'
+    `).get()).toEqual({ name: 'idx_research_agent_runs_discussion_status' })
+  })
+
+  it('queues contextual run creation behind an in-flight follow-up session lock', async () => {
+    let releaseFollowUp!: () => void
+    let markFollowUpStarted!: () => void
+    const followUpStarted = new Promise<void>((resolve) => { markFollowUpStarted = resolve })
+    const followUpGate = new Promise<void>((resolve) => { releaseFollowUp = resolve })
+    const followUp = runDiscussionFollowUp(db, {
+      requestId: '00000000-0000-4000-8000-000000003100',
+      sessionId,
+      message: '先完成追问',
+    }, {
+      isBusy: () => false,
+      callAI: async () => {
+        markFollowUpStarted()
+        await followUpGate
+        return { provider: 'deepseek', model: 'deepseek-chat', text: '追问回答已完成' }
+      },
+    })
+    await followUpStarted
+
+    const runtime = manager(async (database, { runId }) => getResearchAgentRun(database, runId)!)
+    const requestId = '00000000-0000-4000-8000-000000003101'
+    const starting = Promise.resolve(runtime.start({
+      requestId,
+      sessionId,
+      question: '基于刚完成的追问启动研究',
+      subjects: [{ kind: 'stock', tsCode: '600519.SH' }],
+      includePortfolio: false,
+      confirmedBudgetVersion: 'single-agent-unrestricted-v3',
+    }))
+    await Promise.resolve()
+    const rowBeforeRelease = db.prepare('SELECT id FROM research_agent_runs WHERE request_id = ?').get(requestId)
+    releaseFollowUp()
+    await followUp
+    const started = await starting
+    const stored = getResearchAgentRun(db, started.run.id)!
+    expect(rowBeforeRelease).toBeUndefined()
+    expect(JSON.parse(stored.context_snapshot_json).messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', content: '追问回答已完成' }),
+    ]))
+  })
+
+  it('queues contextual run creation behind an in-flight compaction session lock', async () => {
+    updateSessionMessages(db, sessionId, Array.from({ length: 24 }, (_, index) => ({
+      role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+      content: `待压缩消息 ${index + 1}`,
+    })))
+    let releaseCompaction!: () => void
+    let markCompactionStarted!: () => void
+    const compactionStarted = new Promise<void>((resolve) => { markCompactionStarted = resolve })
+    const compactionGate = new Promise<void>((resolve) => { releaseCompaction = resolve })
+    const compaction = compactDiscussionContext(db, {
+      sessionId,
+      requestId: '00000000-0000-4000-8000-000000003102',
+      mode: 'manual',
+    }, async () => {
+      markCompactionStarted()
+      await compactionGate
+      return { provider: 'deepseek', model: 'deepseek-chat', text: '累计摘要保留事实边界。' }
+    })
+    await compactionStarted
+
+    const runtime = manager(async (database, { runId }) => getResearchAgentRun(database, runId)!)
+    const requestId = '00000000-0000-4000-8000-000000003103'
+    const starting = Promise.resolve(runtime.start({
+      requestId,
+      sessionId,
+      question: '基于整理后的上下文启动研究',
+      subjects: [{ kind: 'stock', tsCode: '600519.SH' }],
+      includePortfolio: false,
+      confirmedBudgetVersion: 'single-agent-unrestricted-v3',
+    }))
+    await Promise.resolve()
+    const rowBeforeRelease = db.prepare('SELECT id FROM research_agent_runs WHERE request_id = ?').get(requestId)
+    releaseCompaction()
+    const compacted = await compaction
+    const started = await starting
+    const stored = getResearchAgentRun(db, started.run.id)!
+    expect(rowBeforeRelease).toBeUndefined()
+    expect(compacted.ok).toBe(true)
+    expect(JSON.parse(stored.context_snapshot_json).messages).toHaveLength(6)
+  })
 
   it('rebuilds preflight from SQLite without starting a model or tool and exposes no credential', () => {
     const run = vi.fn(async (database: Database.Database, input: { runId: string }) => getResearchAgentRun(database, input.runId)!)
@@ -426,8 +539,8 @@ describe('FR-256 research agent run manager', () => {
       includePortfolio: false,
       confirmedBudgetVersion: 'single-agent-unrestricted-v3',
     }
-    const first = runtime.start(request)
-    const replay = runtime.start(request)
+    const first = await runtime.start(request)
+    const replay = await runtime.start(request)
     await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
 
     expect(first.replayed).toBe(false)
@@ -446,8 +559,8 @@ describe('FR-256 research agent run manager', () => {
       confirmedBudgetVersion: 'multi-perspective-unrestricted-v2',
     }
 
-    const first = runtime.startReview(request)
-    const replay = runtime.startReview(request)
+    const first = await runtime.startReview(request)
+    const replay = await runtime.startReview(request)
     await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
 
     expect(first.replayed).toBe(false)
@@ -476,17 +589,17 @@ describe('FR-256 research agent run manager', () => {
     expect(JSON.stringify(runtime.get(first.run.id))).not.toContain('apiKey')
   })
 
-  it('rejects blocked or evidence-drifted source runs before creating a child or invoking the runner', () => {
+  it('rejects blocked or evidence-drifted source runs before creating a child or invoking the runner', async () => {
     const blocked = createEligibleSourceRun()
     db.prepare("UPDATE research_agent_runs SET outcome = 'blocked' WHERE id = ?").run(blocked.run.id)
     const run = vi.fn(async () => blocked.run)
     const runtime = manager(run)
 
-    expect(() => runtime.startReview({
+    await expect(runtime.startReview({
       requestId: '00000000-0000-4000-8000-000000002579',
       sourceRunId: blocked.run.id,
       confirmedBudgetVersion: 'multi-perspective-unrestricted-v2',
-    })).toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
+    })).rejects.toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
     expect(run).not.toHaveBeenCalled()
     expect(db.prepare("SELECT COUNT(*) AS count FROM research_agent_runs WHERE run_kind = 'multi_perspective'").get()).toEqual({ count: 0 })
 
@@ -496,16 +609,16 @@ describe('FR-256 research agent run manager', () => {
     artifact.evidenceContrast.subjects[0].supporting[0].detail = '证据已经被非预期修改。'
     db.prepare('UPDATE research_agent_steps SET artifact_json = ? WHERE id = ?').run(JSON.stringify(artifact), auditStep.id)
 
-    expect(() => runtime.startReview({
+    await expect(runtime.startReview({
       requestId: '00000000-0000-4000-8000-000000002580',
       sourceRunId: blocked.run.id,
       confirmedBudgetVersion: 'multi-perspective-unrestricted-v2',
-    })).toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
+    })).rejects.toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
     expect(run).not.toHaveBeenCalled()
     expect(db.prepare("SELECT COUNT(*) AS count FROM research_agent_runs WHERE run_kind = 'multi_perspective'").get()).toEqual({ count: 0 })
   })
 
-  it('rejects forged stable references and report drift even when the canonical evidence hash still matches', () => {
+  it('rejects forged stable references and report drift even when the canonical evidence hash still matches', async () => {
     const source = createEligibleSourceRun()
     const run = vi.fn(async () => source.run)
     const runtime = manager(run)
@@ -515,21 +628,21 @@ describe('FR-256 research agent run manager', () => {
     expect(hashResearchEvidenceContrast(artifact.evidenceContrast)).toBe(source.run.evidence_snapshot_sha256)
     db.prepare('UPDATE research_agent_steps SET artifact_json = ? WHERE id = ?').run(JSON.stringify(artifact), auditStep.id)
 
-    expect(() => runtime.startReview({
+    await expect(runtime.startReview({
       requestId: '00000000-0000-4000-8000-000000002590',
       sourceRunId: source.run.id,
       confirmedBudgetVersion: 'multi-perspective-unrestricted-v2',
-    })).toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
+    })).rejects.toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
 
     artifact.evidenceContrast.subjects[0].supporting[0].referenceId = source.referenceId
     db.prepare('UPDATE research_agent_steps SET artifact_json = ? WHERE id = ?').run(JSON.stringify(artifact), auditStep.id)
     db.prepare('UPDATE research_agent_runs SET report_markdown = ? WHERE id = ?').run('# 被替换的父报告', source.run.id)
 
-    expect(() => runtime.startReview({
+    await expect(runtime.startReview({
       requestId: '00000000-0000-4000-8000-000000002591',
       sourceRunId: source.run.id,
       confirmedBudgetVersion: 'multi-perspective-unrestricted-v2',
-    })).toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
+    })).rejects.toThrowError(expect.objectContaining({ code: 'SOURCE_RUN_NOT_ELIGIBLE' }))
     expect(run).not.toHaveBeenCalled()
   })
 
@@ -537,7 +650,7 @@ describe('FR-256 research agent run manager', () => {
     const source = createEligibleSourceRun()
     const execute = vi.fn(async (database: Database.Database, input: { runId: string }) => getResearchAgentRun(database, input.runId)!)
     const runtime = manager(execute)
-    const started = runtime.startReview({
+    const started = await runtime.startReview({
       requestId: '00000000-0000-4000-8000-000000002581',
       sourceRunId: source.run.id,
       confirmedBudgetVersion: 'multi-perspective-unrestricted-v2',
@@ -750,7 +863,7 @@ describe('FR-256 research agent run manager', () => {
       })
     ))
     const runtime = manager(run)
-    const started = runtime.start({
+    const started = await runtime.start({
       requestId: '00000000-0000-4000-8000-000000002563',
       sessionId,
       question: '取消测试需要确认持久状态早于网络中止信号。',
@@ -832,14 +945,14 @@ describe('FR-256 research agent run manager', () => {
     expect(() => runtime.resume(uncertain.id)).toThrowError(expect.objectContaining({ code: 'CALL_OUTCOME_UNKNOWN' }))
     expect(run).not.toHaveBeenCalled()
 
-    const retried = runtime.retry({
+    const retried = await runtime.retry({
       requestId: '00000000-0000-4000-8000-000000002599',
       sourceRunId: uncertain.id,
       confirmedBudgetVersion: 'single-agent-unrestricted-v3',
     })
     expect(retried).toMatchObject({ replayed: false, run: { parentRunId: uncertain.id, budgetVersion: 'single-agent-unrestricted-v3' } })
     expect(retried.run.id).not.toBe(uncertain.id)
-    const replayed = runtime.retry({
+    const replayed = await runtime.retry({
       requestId: '00000000-0000-4000-8000-000000002599',
       sourceRunId: uncertain.id,
       confirmedBudgetVersion: 'single-agent-unrestricted-v3',

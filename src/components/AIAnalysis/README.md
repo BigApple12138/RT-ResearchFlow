@@ -27,7 +27,7 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - `generatingStructured`: 控制手动重建结构化研判结果的按钮状态。
 - `showIndustryAnalysis/industryAnalysisText/industryChainId`: 控制产业分析抽屉及自动匹配的产业链。
 - 选择记录时调用 `ai:getSession`; 触发行情复核时调用 `ai:triggerRound2`; 发送追问时调用 `ai:followUp`, 成功后重新读取当前会话, 以接收后台刷新后的结构化结果。
-- 追问、自动/手动上下文整理、持仓简报和深度研究报告写回由主进程按 session 串行；深度研究处于 `queued/running/paused` 时，主进程拒绝追问和上下文整理，Renderer 的 busy 状态只负责展示/禁用。
+- 追问、自动/手动上下文整理、持仓简报、上下文化深度研究启动和研究报告写回由主进程按 session 串行；深度研究处于 `queued/running/paused` 时，主进程通过全量活动状态查询拒绝追问和上下文整理，Renderer 的 busy 状态只负责展示/禁用。
 - 点击“生成/重建结构化研判”时调用 `ai:generateStructuredResult`, 完成后刷新详情与左侧会话状态。
 - 研究讨论由 `ai:startResearchDiscussion` 创建或恢复，顶部 `ResearchDiscussionContextBar` 展示受限来源上下文、关联项目、基线和“返回来源”。首条真实消息发送前可移除可选上下文，隐藏上下文只在模型调用时注入，不写入 `messages`。
 - 绑定产业研究项目的讨论在每轮 `ai:followUp` 中强制使用 ChatGPT 原生网页搜索；普通文章追问和未绑定项目的讨论保持既有 Provider 行为。

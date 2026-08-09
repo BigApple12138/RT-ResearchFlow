@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { DATABASE_MIGRATIONS, runMigrations } from '../../electron/main/database/db'
 import {
   getTrendStructureReviewByCodeDate,
+  getTrendStructureReviewByRequestId,
   listTrendStructureReviewRevisionsByCodeDate,
   listTrendStructureReviewsByCodes,
   saveTrendStructureReview,
@@ -108,6 +109,85 @@ describe('趋势结构复核 Repository', () => {
 
     expect(() => saveTrendStructureReview(db, { ...base, factsHash: 'b'.repeat(64), now: 2_000 }))
       .toThrow('TREND_REVIEW_REQUEST_CONFLICT')
+  })
+
+  it('相同事实的每个成功重放 requestId 都不可变绑定到原 revision', () => {
+    const firstRequestId = randomUUID()
+    const replayRequestId = randomUUID()
+    const base = {
+      tsCode: '600000.SH', scoreDate: '20260808', factsHash: 'a'.repeat(64), requestId: firstRequestId,
+      localTrendState: 'strong' as const, localTotalScore: 78, verdict: 'agree' as const,
+      rationale: '结构完整。', focusPoints: [], provider: null, model: null, audit: { status: 'passed' }, now: 1_000,
+    }
+    const first = saveTrendStructureReview(db, base)
+    const replay = saveTrendStructureReview(db, { ...base, requestId: replayRequestId, now: 2_000 })
+
+    expect(replay.revisionId).toBe(first.revisionId)
+    expect(getTrendStructureReviewByRequestId(db, replayRequestId)?.revisionId).toBe(first.revisionId)
+    expect(db.prepare(`
+      SELECT request_id, ts_code, score_trade_date, facts_hash, revision_id
+      FROM trend_structure_review_requests ORDER BY created_at, request_id
+    `).all()).toEqual([
+      {
+        request_id: firstRequestId,
+        ts_code: '600000.SH',
+        score_trade_date: '20260808',
+        facts_hash: 'a'.repeat(64),
+        revision_id: first.revisionId,
+      },
+      {
+        request_id: replayRequestId,
+        ts_code: '600000.SH',
+        score_trade_date: '20260808',
+        facts_hash: 'a'.repeat(64),
+        revision_id: first.revisionId,
+      },
+    ])
+    expect(() => saveTrendStructureReview(db, {
+      ...base,
+      requestId: replayRequestId,
+      factsHash: 'b'.repeat(64),
+      now: 3_000,
+    })).toThrow('TREND_REVIEW_REQUEST_CONFLICT')
+  })
+
+  it('forward migration preserves existing revisions and backfills their request bindings', () => {
+    const upgradeDb = new Database(':memory:')
+    try {
+      runMigrations(upgradeDb, DATABASE_MIGRATIONS.filter((migration) => migration.version <= 142))
+      const revisionId = randomUUID()
+      const requestId = randomUUID()
+      upgradeDb.prepare(`
+        INSERT INTO trend_structure_review_revisions (
+          id, ts_code, score_trade_date, facts_hash, request_id, local_trend_state,
+          local_total_score, ai_verdict, rationale, focus_points_json, provider,
+          model, audit_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        revisionId, '600000.SH', '20260808', 'c'.repeat(64), requestId, 'strong',
+        78, 'agree', '迁移前 revision。', '[]', null, null, '{}', 1_000,
+      )
+
+      runMigrations(upgradeDb)
+
+      expect(upgradeDb.prepare('SELECT id, request_id FROM trend_structure_review_revisions').all())
+        .toEqual([{ id: revisionId, request_id: requestId }])
+      expect(upgradeDb.prepare(`
+        SELECT request_id, ts_code, score_trade_date, facts_hash, revision_id
+        FROM trend_structure_review_requests
+      `).get()).toEqual({
+        request_id: requestId,
+        ts_code: '600000.SH',
+        score_trade_date: '20260808',
+        facts_hash: 'c'.repeat(64),
+        revision_id: revisionId,
+      })
+      expect(upgradeDb.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trend_structure_reviews_legacy'
+      `).get()).toEqual({ name: 'trend_structure_reviews_legacy' })
+    } finally {
+      upgradeDb.close()
+    }
   })
 
   it('旧词表迁移到 legacy 表且不伪装成新词表结果', () => {

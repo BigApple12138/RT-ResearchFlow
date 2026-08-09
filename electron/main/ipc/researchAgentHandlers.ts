@@ -81,7 +81,7 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
     const value = exactRecord(payload ?? {}, ['projectId'])
     return requireManager().preflightDirect(nullableBoundedId(value.projectId, 'projectId'))
   }))
-  ipcMain.handle('researchAgent:startRun', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:startRun', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'sessionId', 'question', 'subjects', 'includePortfolio', 'confirmedBudgetVersion', 'parentRunId'])
     if (value.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前固定研究预算版本')
@@ -110,7 +110,7 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
       confirmedBudgetVersion: value.confirmedBudgetVersion,
     })
   }))
-  ipcMain.handle('researchAgent:startReview', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:startReview', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'sourceRunId', 'confirmedBudgetVersion'])
     if (value.confirmedBudgetVersion !== RESEARCH_AGENT_MULTI_PERSPECTIVE_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前多视角固定预算版本')
@@ -139,7 +139,7 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
     uuid(value.requestId, 'requestId')
     return requireManager().resume(uuid(value.runId, 'runId'))
   }))
-  ipcMain.handle('researchAgent:retryRun', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:retryRun', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'sourceRunId', 'confirmedBudgetVersion'])
     if (value.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前连续研究预算版本')

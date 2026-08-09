@@ -13,6 +13,18 @@ export interface ArchiveDiscussionMessagesInput {
   archivedAt?: number
 }
 
+export class DiscussionArchiveIntegrityError extends Error {
+  readonly code = 'ARCHIVE_INTEGRITY_ERROR' as const
+
+  constructor(
+    public readonly sessionId: number,
+    public readonly messageSequence: number,
+  ) {
+    super('ARCHIVE_INTEGRITY_ERROR')
+    this.name = 'DiscussionArchiveIntegrityError'
+  }
+}
+
 export function archiveDiscussionMessages(
   db: Database.Database,
   input: ArchiveDiscussionMessagesInput,
@@ -72,20 +84,27 @@ export function listArchivedDiscussionMessages(
 
 function parseArchivedMessage(
   row: DiscussionMessageArchiveRow,
-): DiscussionMessageForArchive | null {
+): DiscussionMessageForArchive {
+  let value: unknown
   try {
-    const value: unknown = JSON.parse(row.message_json)
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-    const message = value as Record<string, unknown>
-    if ((message.role !== 'user' && message.role !== 'assistant') || typeof message.content !== 'string') {
-      return null
-    }
-    return {
-      ...(message as unknown as ConversationMessage),
-      sequence: row.message_sequence,
-    }
+    value = JSON.parse(row.message_json)
   } catch {
-    return null
+    throw new DiscussionArchiveIntegrityError(row.session_id, row.message_sequence)
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new DiscussionArchiveIntegrityError(row.session_id, row.message_sequence)
+  }
+  const message = value as Record<string, unknown>
+  if (
+    (message.role !== 'user' && message.role !== 'assistant')
+    || typeof message.content !== 'string'
+    || message.sequence !== row.message_sequence
+  ) {
+    throw new DiscussionArchiveIntegrityError(row.session_id, row.message_sequence)
+  }
+  return {
+    ...(message as unknown as ConversationMessage),
+    sequence: row.message_sequence,
   }
 }
 
@@ -103,7 +122,7 @@ export function loadFullDiscussionMessages(
   const messages = new Map<number, DiscussionMessageForArchive>()
   for (const row of listArchivedDiscussionMessages(db, sessionId, throughSequence)) {
     const message = parseArchivedMessage(row)
-    if (message) messages.set(row.message_sequence, message)
+    messages.set(row.message_sequence, message)
   }
   for (const message of hotMessages) {
     if (!Number.isInteger(message.sequence)) continue

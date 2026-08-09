@@ -469,6 +469,20 @@ export function listResearchAgentRuns(
   `).all(limit) as ResearchAgentRunRow[]
 }
 
+export function hasActiveResearchAgentRunForDiscussionSession(
+  db: Database.Database,
+  discussionSessionId: number,
+): boolean {
+  if (!Number.isSafeInteger(discussionSessionId) || discussionSessionId <= 0) {
+    throw new ResearchAgentRunRepositoryError('INVALID_INPUT', 'discussionSessionId 必须是正整数')
+  }
+  return db.prepare(`
+    SELECT 1 FROM research_agent_runs INDEXED BY idx_research_agent_runs_discussion_status
+    WHERE discussion_session_id = ? AND status IN ('queued', 'running', 'paused')
+    LIMIT 1
+  `).get(discussionSessionId) != null
+}
+
 export function deleteResearchAgentRun(
   db: Database.Database,
   runId: string,

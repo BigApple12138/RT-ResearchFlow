@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from 'crypto'
 import type Database from 'better-sqlite3'
 import { getSession, getSessionMessages } from '../database/aiAnalysisSessionRepository'
-import { loadFullDiscussionMessages } from '../database/discussionMessageArchiveRepository'
+import {
+  DiscussionArchiveIntegrityError,
+  loadFullDiscussionMessages,
+} from '../database/discussionMessageArchiveRepository'
 import {
   getCandidateBatch,
   getCandidateBatchByIdempotencyKey,
@@ -280,7 +283,18 @@ export async function prepareDiscussionChanges(
   const session = getSession(db, input.sessionId)
   if (!session) throw new ResearchDiscussionError('NOT_FOUND', 'AI 会话不存在')
   const hotMessages = getSessionMessages(db, input.sessionId)
-  const messages = loadFullDiscussionMessages(db, input.sessionId, hotMessages)
+  let messages: ReturnType<typeof loadFullDiscussionMessages>
+  try {
+    messages = loadFullDiscussionMessages(db, input.sessionId, hotMessages)
+  } catch (error) {
+    if (error instanceof DiscussionArchiveIntegrityError) {
+      throw new ResearchDiscussionError(
+        error.code,
+        `讨论归档第 ${error.messageSequence} 条消息损坏，请修复归档后重试`,
+      )
+    }
+    throw error
+  }
   if (!messages.length) throw new ResearchDiscussionError('MESSAGE_RANGE_INVALID', '讨论暂无可整理消息')
 
   let throughMessageSequence = input.throughMessageSequence

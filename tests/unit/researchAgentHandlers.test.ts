@@ -104,33 +104,33 @@ describe('FR-256 research agent IPC', () => {
     expect(handleMock.mock.calls.map(([channel]) => channel)).not.toContain('researchAgent:callModel')
   })
 
-  it('rejects foreign senders and extra fields before invoking the manager', () => {
+  it('rejects foreign senders and extra fields before invoking the manager', async () => {
     expect(handler('researchAgent:preflight')({ sender: {} }, { sessionId: 1 })).toEqual({
       ok: false,
       code: 'UNAUTHORIZED',
       message: '研究运行请求来源无权访问',
     })
-    expect(handler('researchAgent:startRun')({ sender }, {
+    await expect(handler('researchAgent:startRun')({ sender }, {
       requestId: '00000000-0000-4000-8000-000000002565',
       sessionId: 1,
       question: '这个问题已经超过十个字符并且可用于研究。',
       subjects: [{ kind: 'stock', tsCode: '600519.SH' }],
       includePortfolio: false,
       apiKey: 'must-not-pass',
-    })).toMatchObject({ ok: false, code: 'INVALID_PARAM' })
+    })).resolves.toMatchObject({ ok: false, code: 'INVALID_PARAM' })
     expect(startMock).not.toHaveBeenCalled()
 
-    expect(handler('researchAgent:startRun')({ sender }, {
+    await expect(handler('researchAgent:startRun')({ sender }, {
       requestId: '00000000-0000-4000-8000-000000002565',
       sessionId: 1,
       question: '这个问题已经超过十个字符并且可用于研究。',
       subjects: [{ kind: 'stock', tsCode: '600519.SH', toolInput: { limit: 999 } }],
       includePortfolio: false,
-    })).toMatchObject({ ok: false, code: 'INVALID_PARAM' })
+    })).resolves.toMatchObject({ ok: false, code: 'INVALID_PARAM' })
     expect(startMock).not.toHaveBeenCalled()
   })
 
-  it('passes only confirmed subjects and lifecycle identifiers to the manager', () => {
+  it('passes only confirmed subjects and lifecycle identifiers to the manager', async () => {
     const payload = {
       requestId: '00000000-0000-4000-8000-000000002566',
       sessionId: 12,
@@ -140,7 +140,7 @@ describe('FR-256 research agent IPC', () => {
       confirmedBudgetVersion: 'single-agent-unrestricted-v3',
       parentRunId: null,
     }
-    expect(handler('researchAgent:startRun')({ sender }, payload)).toMatchObject({ ok: true })
+    await expect(handler('researchAgent:startRun')({ sender }, payload)).resolves.toMatchObject({ ok: true })
     expect(startMock).toHaveBeenCalledWith(payload)
     expect(JSON.stringify(startMock.mock.calls[0][0])).not.toContain('messages')
     expect(JSON.stringify(startMock.mock.calls[0][0])).not.toContain('toolInput')
@@ -165,13 +165,13 @@ describe('FR-256 research agent IPC', () => {
   })
 
   it('requires the fixed budget confirmation and UUIDs for lifecycle mutations', async () => {
-    expect(handler('researchAgent:startRun')({ sender }, {
+    await expect(handler('researchAgent:startRun')({ sender }, {
       requestId: '00000000-0000-4000-8000-000000002567',
       sessionId: 12,
       question: '贵州茅台基本面与趋势事实是否存在明显背离？',
       subjects: [{ kind: 'stock', tsCode: '600519.SH' }],
       includePortfolio: false,
-    })).toMatchObject({ ok: false, code: 'INVALID_PARAM' })
+    })).resolves.toMatchObject({ ok: false, code: 'INVALID_PARAM' })
     expect(startMock).not.toHaveBeenCalled()
 
     expect(handler('researchAgent:cancelRun')({ sender }, {
@@ -186,11 +186,11 @@ describe('FR-256 research agent IPC', () => {
     })).toMatchObject({ ok: false, code: 'INVALID_PARAM' })
     expect(resumeMock).not.toHaveBeenCalled()
 
-    expect(handler('researchAgent:retryRun')({ sender }, {
+    await expect(handler('researchAgent:retryRun')({ sender }, {
       requestId: '00000000-0000-4000-8000-000000002572',
       sourceRunId: '00000000-0000-4000-8000-000000002569',
       confirmedBudgetVersion: 'single-agent-unrestricted-v3',
-    })).toMatchObject({ ok: true })
+    })).resolves.toMatchObject({ ok: true })
     expect(retryMock).toHaveBeenCalledWith({
       requestId: '00000000-0000-4000-8000-000000002572',
       sourceRunId: '00000000-0000-4000-8000-000000002569',
@@ -204,17 +204,17 @@ describe('FR-256 research agent IPC', () => {
     expect(deleteMock).toHaveBeenCalledWith('00000000-0000-4000-8000-000000002569')
   })
 
-  it('starts review from only a source UUID and the fixed multi-perspective budget', () => {
+  it('starts review from only a source UUID and the fixed multi-perspective budget', async () => {
     const payload = {
       requestId: '00000000-0000-4000-8000-000000002570',
       sourceRunId: '00000000-0000-4000-8000-000000002571',
       confirmedBudgetVersion: 'multi-perspective-unrestricted-v2',
     }
-    expect(handler('researchAgent:startReview')({ sender }, payload)).toMatchObject({ ok: true })
+    await expect(handler('researchAgent:startReview')({ sender }, payload)).resolves.toMatchObject({ ok: true })
     expect(startReviewMock).toHaveBeenCalledWith(payload)
-    expect(handler('researchAgent:startReview')({ sender }, { ...payload, prompt: 'override' }))
-      .toMatchObject({ ok: false, code: 'INVALID_PARAM' })
-    expect(handler('researchAgent:startReview')({ sender }, { ...payload, confirmedBudgetVersion: 'single-agent-continuous-v2' }))
-      .toMatchObject({ ok: false, code: 'INVALID_PARAM' })
+    await expect(handler('researchAgent:startReview')({ sender }, { ...payload, prompt: 'override' }))
+      .resolves.toMatchObject({ ok: false, code: 'INVALID_PARAM' })
+    await expect(handler('researchAgent:startReview')({ sender }, { ...payload, confirmedBudgetVersion: 'single-agent-continuous-v2' }))
+      .resolves.toMatchObject({ ok: false, code: 'INVALID_PARAM' })
   })
 })

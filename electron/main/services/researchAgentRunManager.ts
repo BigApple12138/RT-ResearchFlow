@@ -7,6 +7,7 @@ import {
   getResearchAgentRun,
   getResearchAgentRunByRequestId,
   getResearchAgentRunLedger,
+  hasActiveResearchAgentRunForDiscussionSession,
   hashResearchAgentText,
   listResearchAgentRuns,
   pauseExpiredResearchAgentRuns,
@@ -105,8 +106,7 @@ export function isDiscussionSessionBusy(
   db: import('better-sqlite3').Database,
   sessionId: number,
 ): boolean {
-  return listResearchAgentRuns(db, { discussionSessionId: sessionId, limit: 50 })
-    .some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'paused')
+  return hasActiveResearchAgentRunForDiscussionSession(db, sessionId)
 }
 
 export interface ResearchAgentPreflightView {
@@ -408,7 +408,7 @@ export class ResearchAgentRunManager {
     })
     let started: { run: ResearchAgentRunSummaryView; replayed: boolean }
     try {
-      started = this.start({
+      started = await this.start({
         requestId: input.requestId,
         sessionId: discussion.discussion.sessionId,
         question: input.question,
@@ -433,7 +433,19 @@ export class ResearchAgentRunManager {
     }
   }
 
-  start(input: {
+  async start(input: {
+    requestId: string
+    sessionId: number
+    question: string
+    subjects: unknown[]
+    includePortfolio: boolean
+    confirmedBudgetVersion: string
+    parentRunId?: string | null
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean }> {
+    return withDiscussionSessionLock(input.sessionId, () => this.startWithinSessionLock(input))
+  }
+
+  private startWithinSessionLock(input: {
     requestId: string
     sessionId: number
     question: string
@@ -477,7 +489,23 @@ export class ResearchAgentRunManager {
     return { run: toRunSummary(getResearchAgentRun(this.db, started.run.id)!), replayed: started.replayed }
   }
 
-  startReview(input: {
+  async startReview(input: {
+    requestId: string
+    sourceRunId: string
+    confirmedBudgetVersion: string
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean }> {
+    if (input.confirmedBudgetVersion !== RESEARCH_AGENT_MULTI_PERSPECTIVE_BUDGET.id) {
+      throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前多视角固定预算版本')
+    }
+    const source = getResearchAgentRun(this.db, input.sourceRunId)
+    if (!source) throw new ResearchAgentRunManagerError('NOT_FOUND', '来源研究运行不存在')
+    const execute = () => this.startReviewWithinSessionLock(input)
+    return source.discussion_session_id == null
+      ? execute()
+      : withDiscussionSessionLock(source.discussion_session_id, execute)
+  }
+
+  private startReviewWithinSessionLock(input: {
     requestId: string
     sourceRunId: string
     confirmedBudgetVersion: string
@@ -564,11 +592,11 @@ export class ResearchAgentRunManager {
     return toRunSummary(requireRun(this.db, runId))
   }
 
-  retry(input: {
+  async retry(input: {
     requestId: string
     sourceRunId: string
     confirmedBudgetVersion: string
-  }): { run: ResearchAgentRunSummaryView; replayed: boolean } {
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean }> {
     if (input.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前连续研究预算版本')
     }

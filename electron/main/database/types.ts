@@ -1291,6 +1291,15 @@ export interface TrendStructureReviewRevisionRow {
   created_at: number
 }
 
+export interface TrendStructureReviewRequestRow {
+  request_id: string
+  ts_code: string
+  score_trade_date: string
+  facts_hash: string
+  revision_id: string
+  created_at: number
+}
+
 export interface DiscussionCompactionRow {
   id: string
   session_id: number

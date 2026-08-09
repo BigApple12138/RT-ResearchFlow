@@ -34,7 +34,7 @@
 
 复核成功且未过期时，行内和 K 线抽屉提供「带着复核去讨论」。Renderer 只调用 `trend:openStructureReviewDiscussion` 提交复核身份；主进程重新校验 `scoreDate/factsHash`，恢复或创建带 `trend_review` 快照的研究讨论，并固定返回趋势雷达。返回状态保存 `dashboard` 子页签、`tsCode` 与 `trend-radar` identity，确保不会落回持仓总览。首条问题只预填，不自动触发 followUp；事实变化后必须先重新复核。趋势雷达抽屉仅保存选中 `tsCode`，每次渲染从最新 workbench snapshot 派生 item，因此过期复核不会继续显示讨论动作。
 
-AI 复核只允许 `agree`、`possible_false_break`、`possible_false_hold`、`evidence_weak`、`need_more_data` 五个第二意见词。每次成功复核写入不可变 revision，列表只展示按代码/评分日的最新 projection；140 迁移保留旧词表原文到 legacy 表，不把旧结论伪装成新词表。AI 复核不修改本地 `trendState`，评分日或白名单事实 `factsHash` 变化时必须显示「需重核」。
+AI 复核只允许 `agree`、`possible_false_break`、`possible_false_hold`、`evidence_weak`、`need_more_data` 五个第二意见词。每次成功复核写入不可变 revision，列表只展示按代码/评分日的最新 projection；相同事实的成功重放不新增 revision，但每个 requestId 都会不可变绑定到代码、评分日、`factsHash` 和原 revision，后续身份冲突必须拒绝。140 迁移保留旧词表原文到 legacy 表，不把旧结论伪装成新词表。AI 复核不修改本地 `trendState`，评分日或白名单事实 `factsHash` 变化时必须显示「需重核」。
 
 ## 边界
 

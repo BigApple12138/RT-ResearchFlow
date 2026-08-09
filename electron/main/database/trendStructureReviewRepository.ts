@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type Database from 'better-sqlite3'
 import type {
+  TrendStructureReviewRequestRow,
   TrendStructureReviewRevisionRow,
   TrendStructureReviewRow,
 } from './types'
@@ -131,12 +132,71 @@ export function getTrendStructureReviewByRequestId(
   requestId: string,
 ): TrendStructureReview | null {
   const row = db.prepare(`
-    SELECT * FROM trend_structure_review_revisions
-    WHERE request_id = ?
+    SELECT revision.*
+    FROM trend_structure_review_requests request
+    JOIN trend_structure_review_revisions revision ON revision.id = request.revision_id
+    WHERE request.request_id = ?
   `).get(requestId) as TrendStructureReviewRevisionRow | undefined
   if (!row) return null
   const projection = getTrendStructureReviewByCodeDate(db, row.ts_code, row.score_trade_date)
   return projection?.revisionId === row.id ? projection : mapRevision(row)
+}
+
+function getTrendStructureReviewRequest(
+  db: Database.Database,
+  requestId: string,
+): TrendStructureReviewRequestRow | null {
+  return (db.prepare(`
+    SELECT * FROM trend_structure_review_requests WHERE request_id = ?
+  `).get(requestId) as TrendStructureReviewRequestRow | undefined) ?? null
+}
+
+export function bindTrendStructureReviewRequest(
+  db: Database.Database,
+  review: Pick<TrendStructureReview, 'revisionId' | 'tsCode' | 'scoreDate' | 'factsHash'>,
+  requestId: string,
+  now = Date.now(),
+): TrendStructureReview {
+  const input = {
+    tsCode: review.tsCode,
+    scoreDate: review.scoreDate,
+    factsHash: review.factsHash,
+  }
+  const existing = getTrendStructureReviewRequest(db, requestId)
+  if (existing) {
+    assertTrendStructureReviewRequestIdentity({
+      tsCode: existing.ts_code,
+      scoreDate: existing.score_trade_date,
+      factsHash: existing.facts_hash,
+    }, input)
+    if (existing.revision_id !== review.revisionId) throw new Error('TREND_REVIEW_REQUEST_CONFLICT')
+    return getTrendStructureReviewByRequestId(db, requestId)!
+  }
+
+  try {
+    db.prepare(`
+      INSERT INTO trend_structure_review_requests (
+        request_id, ts_code, score_trade_date, facts_hash, revision_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      requestId,
+      review.tsCode,
+      review.scoreDate,
+      review.factsHash,
+      review.revisionId,
+      now,
+    )
+  } catch (error) {
+    const replay = getTrendStructureReviewRequest(db, requestId)
+    if (!replay) throw error
+    assertTrendStructureReviewRequestIdentity({
+      tsCode: replay.ts_code,
+      scoreDate: replay.score_trade_date,
+      factsHash: replay.facts_hash,
+    }, input)
+    if (replay.revision_id !== review.revisionId) throw new Error('TREND_REVIEW_REQUEST_CONFLICT')
+  }
+  return getTrendStructureReviewByRequestId(db, requestId)!
 }
 
 export function getTrendStructureReviewByCodeDateFactsHash(
@@ -198,7 +258,9 @@ export function saveTrendStructureReview(
     input.scoreDate,
     input.factsHash,
   )
-  if (sameFacts) return sameFacts
+  if (sameFacts) {
+    return bindTrendStructureReviewRequest(db, sameFacts, input.requestId, input.now ?? Date.now())
+  }
 
   const now = input.now ?? Date.now()
   const revisionId = randomUUID()
@@ -208,6 +270,11 @@ export function saveTrendStructureReview(
       local_total_score, ai_verdict, rationale, focus_points_json, provider,
       model, audit_json, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const insertRequest = db.prepare(`
+    INSERT INTO trend_structure_review_requests (
+      request_id, ts_code, score_trade_date, facts_hash, revision_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
   `)
   const upsertProjection = db.prepare(`
     INSERT INTO trend_structure_reviews (
@@ -245,6 +312,14 @@ export function saveTrendStructureReview(
       input.provider,
       input.model,
       JSON.stringify(input.audit),
+      now,
+    )
+    insertRequest.run(
+      input.requestId,
+      input.tsCode,
+      input.scoreDate,
+      input.factsHash,
+      revisionId,
       now,
     )
     upsertProjection.run(
