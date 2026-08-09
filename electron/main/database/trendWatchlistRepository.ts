@@ -152,3 +152,10 @@ export function countTrendWatchStocks(db: Database.Database): number {
   return row.cnt
 }
 
+/** 清空观察池全部登记（不删评分/日线） */
+export function clearTrendWatchlist(db: Database.Database): { removedRows: number; removedStocks: number } {
+  const removedStocks = countTrendWatchStocks(db)
+  const result = db.prepare('DELETE FROM trend_watchlist').run()
+  return { removedRows: Number(result.changes ?? 0), removedStocks }
+}
+

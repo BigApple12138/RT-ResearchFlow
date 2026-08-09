@@ -16,6 +16,7 @@ import type Database from 'better-sqlite3'
 import { getDb } from '../database/db'
 import {
   batchAddTrendWatchStocks,
+  clearTrendWatchlist,
   removeTrendWatchStock,
   getAllTrendWatchStocks,
   updateTrendWatchGroupTag,
@@ -341,6 +342,19 @@ export function registerTrendHandlers(): void {
       }
     }
   )
+
+  // ──────────────────────────────────────────────────────────────────────
+  // trend:clearWatchlist — 清空观察池全部登记
+  // ──────────────────────────────────────────────────────────────────────
+  ipcMain.handle('trend:clearWatchlist', () => {
+    try {
+      const result = clearTrendWatchlist(getDb())
+      return { ok: true, ...result }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
 
   // ──────────────────────────────────────────────────────────────────────
   // trend:updateNotes — 更新指定 (tsCode, subCategory) 条目的备注
