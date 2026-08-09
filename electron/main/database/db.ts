@@ -4557,6 +4557,95 @@ const MIGRATIONS: DatabaseMigration[] = [
         )
         BEGIN SELECT RAISE(ABORT, 'INDUSTRY_RESEARCH_FACT_IMMUTABLE'); END;
     `
+  },
+  {
+    // Trend AI review: one immutable-by-date result slot per workbench security and score date.
+    version: 136,
+    sql: `
+      CREATE TABLE trend_structure_reviews (
+        ts_code             TEXT NOT NULL CHECK (length(trim(ts_code)) BETWEEN 3 AND 20),
+        score_trade_date    TEXT NOT NULL CHECK (
+          (length(score_trade_date) = 8 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]')
+          OR
+          (length(score_trade_date) = 10 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+        ),
+        facts_hash          TEXT NOT NULL CHECK (length(facts_hash) = 64),
+        request_id          TEXT NOT NULL UNIQUE,
+        verdict             TEXT NOT NULL CHECK (verdict IN ('trend_intact', 'trend_improving', 'trend_deteriorating', 'trend_broken', 'need_more_data')),
+        rationale           TEXT NOT NULL CHECK (length(trim(rationale)) BETWEEN 1 AND 16000),
+        focus_points_json   TEXT NOT NULL CHECK (json_valid(focus_points_json) AND json_type(focus_points_json) = 'array'),
+        provider            TEXT DEFAULT NULL,
+        model               TEXT DEFAULT NULL,
+        audit_json          TEXT NOT NULL CHECK (json_valid(audit_json) AND json_type(audit_json) = 'object'),
+        created_at          INTEGER NOT NULL CHECK (created_at > 0),
+        updated_at          INTEGER NOT NULL CHECK (updated_at > 0),
+        PRIMARY KEY (ts_code, score_trade_date)
+      );
+      CREATE INDEX idx_trend_structure_reviews_code_date
+        ON trend_structure_reviews(ts_code, score_trade_date DESC, updated_at DESC);
+    `
+  },
+  {
+    // Discussion compaction keeps a cumulative summary separate from the hot message tail.
+    version: 137,
+    sql: `
+      CREATE TABLE ai_discussion_context_compactions (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id            INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        request_id            TEXT NOT NULL UNIQUE,
+        source_start_sequence INTEGER NOT NULL CHECK (source_start_sequence >= 0),
+        covered_through_sequence INTEGER NOT NULL CHECK (covered_through_sequence >= source_start_sequence),
+        source_messages_hash  TEXT NOT NULL CHECK (length(source_messages_hash) = 64),
+        summary               TEXT NOT NULL CHECK (length(trim(summary)) > 0),
+        summary_hash          TEXT NOT NULL CHECK (length(summary_hash) = 64),
+        provider              TEXT DEFAULT NULL,
+        model                 TEXT DEFAULT NULL,
+        created_at            INTEGER NOT NULL CHECK (created_at > 0)
+      );
+      CREATE INDEX idx_ai_discussion_context_compactions_session_sequence
+        ON ai_discussion_context_compactions(session_id, covered_through_sequence DESC, id DESC);
+    `
+  },
+  {
+    // Archived messages are recoverable by stable sequence and belong to the compaction that moved them out of hot storage.
+    version: 138,
+    sql: `
+      CREATE TABLE ai_discussion_message_archives (
+        session_id       INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        message_sequence INTEGER NOT NULL CHECK (message_sequence >= 0),
+        message_json     TEXT NOT NULL CHECK (json_valid(message_json) AND json_type(message_json) = 'object'),
+        compaction_id    INTEGER NOT NULL REFERENCES ai_discussion_context_compactions(id) ON DELETE CASCADE,
+        archived_at      INTEGER NOT NULL CHECK (archived_at > 0),
+        PRIMARY KEY (session_id, message_sequence)
+      );
+      CREATE INDEX idx_ai_discussion_message_archives_session_sequence
+        ON ai_discussion_message_archives(session_id, message_sequence);
+      CREATE INDEX idx_ai_discussion_message_archives_compaction
+        ON ai_discussion_message_archives(compaction_id, message_sequence);
+    `
+  },
+  {
+    // Follow-up request receipts make retries safe and expose an opt-out for automatic discussion compaction.
+    version: 139,
+    sql: `
+      ALTER TABLE ai_config
+        ADD COLUMN autoCompactDiscussion INTEGER NOT NULL DEFAULT 1
+        CHECK (autoCompactDiscussion IN (0, 1));
+
+      CREATE TABLE ai_discussion_turn_requests (
+        request_id     TEXT PRIMARY KEY,
+        session_id     INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        status         TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
+        user_message   TEXT NOT NULL CHECK (length(trim(user_message)) > 0),
+        response_text  TEXT DEFAULT NULL,
+        error_message  TEXT DEFAULT NULL,
+        created_at     INTEGER NOT NULL CHECK (created_at > 0),
+        updated_at     INTEGER NOT NULL CHECK (updated_at > 0),
+        completed_at   INTEGER DEFAULT NULL
+      );
+      CREATE INDEX idx_ai_discussion_turn_requests_session
+        ON ai_discussion_turn_requests(session_id, created_at DESC, request_id);
+    `
   }
 ]
 

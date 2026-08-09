@@ -1246,6 +1246,58 @@ export interface AIConfigRow {
   customSkillPaths: string        // JSON array e.g. '["D:\\mySkills"]'
   skillsForTrend: number          // 0 or 1
   maxSkillChars: number           // default 30000
+  autoCompactDiscussion: number   // 0 or 1; default 1
+}
+
+export interface TrendStructureReviewRow {
+  ts_code: string
+  score_trade_date: string
+  facts_hash: string
+  request_id: string
+  verdict: 'trend_intact' | 'trend_improving' | 'trend_deteriorating' | 'trend_broken' | 'need_more_data'
+  rationale: string
+  focus_points_json: string
+  provider: string | null
+  model: string | null
+  audit_json: string
+  created_at: number
+  updated_at: number
+}
+
+export interface DiscussionCompactionRow {
+  id: number
+  session_id: number
+  request_id: string
+  source_start_sequence: number
+  covered_through_sequence: number
+  source_messages_hash: string
+  summary: string
+  summary_hash: string
+  provider: string | null
+  model: string | null
+  created_at: number
+}
+
+export interface DiscussionMessageArchiveRow {
+  session_id: number
+  message_sequence: number
+  message_json: string
+  compaction_id: number
+  archived_at: number
+}
+
+export type DiscussionTurnRequestStatus = 'pending' | 'completed' | 'failed'
+
+export interface DiscussionTurnRequestRow {
+  request_id: string
+  session_id: number
+  status: DiscussionTurnRequestStatus
+  user_message: string
+  response_text: string | null
+  error_message: string | null
+  created_at: number
+  updated_at: number
+  completed_at: number | null
 }
 
 export interface ProviderConfigRow {

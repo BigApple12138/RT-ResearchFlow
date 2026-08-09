@@ -22,6 +22,7 @@ export interface AIConfigUpdate {
   customSkillPaths?: string | null
   skillsForTrend?: number
   maxSkillChars?: number
+  autoCompactDiscussion?: number
 }
 
 export function getAIConfig(db: Database): AIConfigRow {
