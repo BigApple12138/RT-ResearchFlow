@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import type Database from 'better-sqlite3'
 import type { DiscussionCompactionRow } from './types'
 
@@ -9,8 +10,8 @@ export interface InsertDiscussionCompactionInput {
   sourceMessagesHash: string
   summary: string
   summaryHash: string
-  provider: string | null
-  model: string | null
+  provider: string
+  model: string
   now?: number
 }
 
@@ -45,10 +46,11 @@ export function insertDiscussionCompaction(
 
   db.prepare(`
     INSERT INTO ai_discussion_context_compactions (
-      session_id, request_id, source_start_sequence, covered_through_sequence,
-      source_messages_hash, summary, summary_hash, provider, model, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, session_id, request_id, source_start_sequence, covered_through_sequence,
+      source_messages_hash, summary_text, summary_hash, provider, model, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
+    randomUUID(),
     input.sessionId,
     input.requestId,
     input.sourceStartSequence,

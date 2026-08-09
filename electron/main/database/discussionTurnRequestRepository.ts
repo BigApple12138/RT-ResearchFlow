@@ -29,7 +29,7 @@ export function insertDiscussionTurnRequest(
     INSERT INTO ai_discussion_turn_requests (
       request_id, session_id, status, user_message, response_text,
       error_message, created_at, updated_at, completed_at
-    ) VALUES (?, ?, 'pending', ?, NULL, NULL, ?, ?, NULL)
+    ) VALUES (?, ?, 'running', ?, NULL, NULL, ?, ?, NULL)
   `).run(input.requestId, input.sessionId, input.userMessage, now, now)
   return getDiscussionTurnRequest(db, input.requestId)!
 }
@@ -42,10 +42,10 @@ export function completeDiscussionTurnRequest(
 ): DiscussionTurnRequestRow {
   const existing = getDiscussionTurnRequest(db, requestId)
   if (!existing) throw new Error(`讨论 turn request 不存在：${requestId}`)
-  if (existing.status === 'completed') return existing
+  if (existing.status === 'succeeded') return existing
   db.prepare(`
     UPDATE ai_discussion_turn_requests
-    SET status = 'completed', response_text = ?, error_message = NULL,
+    SET status = 'succeeded', response_text = ?, error_message = NULL,
         updated_at = ?, completed_at = ?
     WHERE request_id = ?
   `).run(responseText, completedAt, completedAt, requestId)
@@ -60,7 +60,7 @@ export function failDiscussionTurnRequest(
 ): DiscussionTurnRequestRow {
   const existing = getDiscussionTurnRequest(db, requestId)
   if (!existing) throw new Error(`讨论 turn request 不存在：${requestId}`)
-  if (existing.status === 'completed') return existing
+  if (existing.status === 'succeeded') return existing
   db.prepare(`
     UPDATE ai_discussion_turn_requests
     SET status = 'failed', error_message = ?, updated_at = ?, completed_at = NULL

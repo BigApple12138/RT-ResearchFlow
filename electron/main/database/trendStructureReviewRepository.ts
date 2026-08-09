@@ -1,13 +1,15 @@
 import type Database from 'better-sqlite3'
 import type { TrendStructureReviewRow } from './types'
 
-export type TrendStructureReviewVerdict = TrendStructureReviewRow['verdict']
+export type TrendStructureReviewVerdict = TrendStructureReviewRow['ai_verdict']
 
 export interface UpsertTrendStructureReviewInput {
   tsCode: string
   scoreDate: string
   factsHash: string
   requestId: string
+  localTrendState: TrendStructureReview['localTrendState']
+  localTotalScore: number | null
   verdict: TrendStructureReviewVerdict
   rationale: string
   focusPoints: string[]
@@ -22,6 +24,8 @@ export interface TrendStructureReview {
   scoreDate: string
   factsHash: string
   requestId: string
+  localTrendState: TrendStructureReviewRow['local_trend_state']
+  localTotalScore: number | null
   verdict: TrendStructureReviewVerdict
   rationale: string
   focusPoints: string[]
@@ -39,7 +43,9 @@ function mapReview(row: TrendStructureReviewRow | undefined): TrendStructureRevi
     scoreDate: row.score_trade_date,
     factsHash: row.facts_hash,
     requestId: row.request_id,
-    verdict: row.verdict,
+    localTrendState: row.local_trend_state,
+    localTotalScore: row.local_total_score,
+    verdict: row.ai_verdict,
     rationale: row.rationale,
     focusPoints: JSON.parse(row.focus_points_json) as string[],
     provider: row.provider,
@@ -98,13 +104,16 @@ export function upsertTrendStructureReview(
   const now = input.now ?? Date.now()
   db.prepare(`
     INSERT INTO trend_structure_reviews (
-      ts_code, score_trade_date, facts_hash, request_id, verdict, rationale,
-      focus_points_json, provider, model, audit_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ts_code, score_trade_date, facts_hash, request_id, local_trend_state,
+      local_total_score, ai_verdict, rationale, focus_points_json, provider,
+      model, audit_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(ts_code, score_trade_date) DO UPDATE SET
       facts_hash = excluded.facts_hash,
       request_id = excluded.request_id,
-      verdict = excluded.verdict,
+      local_trend_state = excluded.local_trend_state,
+      local_total_score = excluded.local_total_score,
+      ai_verdict = excluded.ai_verdict,
       rationale = excluded.rationale,
       focus_points_json = excluded.focus_points_json,
       provider = excluded.provider,
@@ -116,6 +125,8 @@ export function upsertTrendStructureReview(
     input.scoreDate,
     input.factsHash,
     input.requestId,
+    input.localTrendState,
+    input.localTotalScore,
     input.verdict,
     input.rationale,
     JSON.stringify(input.focusPoints),

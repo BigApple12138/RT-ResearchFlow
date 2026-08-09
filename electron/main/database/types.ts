@@ -1254,7 +1254,9 @@ export interface TrendStructureReviewRow {
   score_trade_date: string
   facts_hash: string
   request_id: string
-  verdict: 'trend_intact' | 'trend_improving' | 'trend_deteriorating' | 'trend_broken' | 'need_more_data'
+  local_trend_state: 'strengthening' | 'strong' | 'stable' | 'weakening' | 'broken' | 'insufficient'
+  local_total_score: number | null
+  ai_verdict: 'trend_intact' | 'trend_improving' | 'trend_deteriorating' | 'trend_broken' | 'need_more_data'
   rationale: string
   focus_points_json: string
   provider: string | null
@@ -1265,16 +1267,16 @@ export interface TrendStructureReviewRow {
 }
 
 export interface DiscussionCompactionRow {
-  id: number
+  id: string
   session_id: number
   request_id: string
   source_start_sequence: number
   covered_through_sequence: number
   source_messages_hash: string
-  summary: string
+  summary_text: string
   summary_hash: string
-  provider: string | null
-  model: string | null
+  provider: string
+  model: string
   created_at: number
 }
 
@@ -1282,11 +1284,11 @@ export interface DiscussionMessageArchiveRow {
   session_id: number
   message_sequence: number
   message_json: string
-  compaction_id: number
+  compaction_id: string
   archived_at: number
 }
 
-export type DiscussionTurnRequestStatus = 'pending' | 'completed' | 'failed'
+export type DiscussionTurnRequestStatus = 'running' | 'succeeded' | 'failed'
 
 export interface DiscussionTurnRequestRow {
   request_id: string

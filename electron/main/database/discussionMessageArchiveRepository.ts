@@ -8,7 +8,7 @@ export interface DiscussionMessageForArchive {
 
 export interface ArchiveDiscussionMessagesInput {
   sessionId: number
-  compactionId: number
+  compactionId: string
   messages: DiscussionMessageForArchive[]
   archivedAt?: number
 }

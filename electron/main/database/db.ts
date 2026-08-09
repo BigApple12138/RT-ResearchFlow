@@ -4571,7 +4571,9 @@ const MIGRATIONS: DatabaseMigration[] = [
         ),
         facts_hash          TEXT NOT NULL CHECK (length(facts_hash) = 64),
         request_id          TEXT NOT NULL UNIQUE,
-        verdict             TEXT NOT NULL CHECK (verdict IN ('trend_intact', 'trend_improving', 'trend_deteriorating', 'trend_broken', 'need_more_data')),
+        local_trend_state   TEXT NOT NULL CHECK (local_trend_state IN ('strengthening', 'strong', 'stable', 'weakening', 'broken', 'insufficient')),
+        local_total_score   REAL DEFAULT NULL,
+        ai_verdict          TEXT NOT NULL CHECK (ai_verdict IN ('trend_intact', 'trend_improving', 'trend_deteriorating', 'trend_broken', 'need_more_data')),
         rationale           TEXT NOT NULL CHECK (length(trim(rationale)) BETWEEN 1 AND 16000),
         focus_points_json   TEXT NOT NULL CHECK (json_valid(focus_points_json) AND json_type(focus_points_json) = 'array'),
         provider            TEXT DEFAULT NULL,
@@ -4590,16 +4592,16 @@ const MIGRATIONS: DatabaseMigration[] = [
     version: 137,
     sql: `
       CREATE TABLE ai_discussion_context_compactions (
-        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        id                    TEXT PRIMARY KEY,
         session_id            INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
         request_id            TEXT NOT NULL UNIQUE,
         source_start_sequence INTEGER NOT NULL CHECK (source_start_sequence >= 0),
         covered_through_sequence INTEGER NOT NULL CHECK (covered_through_sequence >= source_start_sequence),
         source_messages_hash  TEXT NOT NULL CHECK (length(source_messages_hash) = 64),
-        summary               TEXT NOT NULL CHECK (length(trim(summary)) > 0),
+        summary_text          TEXT NOT NULL CHECK (length(trim(summary_text)) > 0),
         summary_hash          TEXT NOT NULL CHECK (length(summary_hash) = 64),
-        provider              TEXT DEFAULT NULL,
-        model                 TEXT DEFAULT NULL,
+        provider              TEXT NOT NULL,
+        model                 TEXT NOT NULL,
         created_at            INTEGER NOT NULL CHECK (created_at > 0)
       );
       CREATE INDEX idx_ai_discussion_context_compactions_session_sequence
@@ -4614,7 +4616,7 @@ const MIGRATIONS: DatabaseMigration[] = [
         session_id       INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
         message_sequence INTEGER NOT NULL CHECK (message_sequence >= 0),
         message_json     TEXT NOT NULL CHECK (json_valid(message_json) AND json_type(message_json) = 'object'),
-        compaction_id    INTEGER NOT NULL REFERENCES ai_discussion_context_compactions(id) ON DELETE CASCADE,
+        compaction_id    TEXT NOT NULL REFERENCES ai_discussion_context_compactions(id) ON DELETE CASCADE,
         archived_at      INTEGER NOT NULL CHECK (archived_at > 0),
         PRIMARY KEY (session_id, message_sequence)
       );
@@ -4635,7 +4637,7 @@ const MIGRATIONS: DatabaseMigration[] = [
       CREATE TABLE ai_discussion_turn_requests (
         request_id     TEXT PRIMARY KEY,
         session_id     INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
-        status         TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
+        status         TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
         user_message   TEXT NOT NULL CHECK (length(trim(user_message)) > 0),
         response_text  TEXT DEFAULT NULL,
         error_message  TEXT DEFAULT NULL,

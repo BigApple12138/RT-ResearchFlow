@@ -114,11 +114,11 @@ describe('讨论上下文归档相关数据库契约', () => {
     })
     const completed = completeDiscussionTurnRequest(db, requestId, '已完成', 3_000)
 
-    expect(first.status).toBe('pending')
+    expect(first.status).toBe('running')
     expect(replay).toEqual(first)
     expect(completed).toMatchObject({
       request_id: requestId,
-      status: 'completed',
+      status: 'succeeded',
       response_text: '已完成',
       created_at: 1_000,
       completed_at: 3_000,
