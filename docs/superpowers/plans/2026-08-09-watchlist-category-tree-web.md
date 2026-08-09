@@ -18,7 +18,7 @@
 
 
 
-**状态：** 已完成（实现 + 聚焦单测/typecheck + 设计初衷检核）；待 commit/push
+**状态：** 已完成并 push（`4e21815` → `origin/dev`）
 
 
 
