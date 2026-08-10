@@ -22,6 +22,8 @@ export interface SaveTrendStructureReviewInput {
   model: string | null
   audit: unknown
   now?: number
+  /** When true, skip same-facts bind and INSERT a new revision (force model refresh path). */
+  forceNewRevision?: boolean
 }
 
 export type UpsertTrendStructureReviewInput = SaveTrendStructureReviewInput
@@ -208,6 +210,8 @@ export function getTrendStructureReviewByCodeDateFactsHash(
   const row = db.prepare(`
     SELECT * FROM trend_structure_review_revisions
     WHERE ts_code = ? AND score_trade_date = ? AND facts_hash = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
   `).get(tsCode, scoreDate, factsHash) as TrendStructureReviewRevisionRow | undefined
   if (!row) return null
   const projection = getTrendStructureReviewByCodeDate(db, tsCode, scoreDate)
@@ -252,14 +256,16 @@ export function saveTrendStructureReview(
     return requestReplay
   }
 
-  const sameFacts = getTrendStructureReviewByCodeDateFactsHash(
-    db,
-    input.tsCode,
-    input.scoreDate,
-    input.factsHash,
-  )
-  if (sameFacts) {
-    return bindTrendStructureReviewRequest(db, sameFacts, input.requestId, input.now ?? Date.now())
+  if (!input.forceNewRevision) {
+    const sameFacts = getTrendStructureReviewByCodeDateFactsHash(
+      db,
+      input.tsCode,
+      input.scoreDate,
+      input.factsHash,
+    )
+    if (sameFacts) {
+      return bindTrendStructureReviewRequest(db, sameFacts, input.requestId, input.now ?? Date.now())
+    }
   }
 
   const now = input.now ?? Date.now()

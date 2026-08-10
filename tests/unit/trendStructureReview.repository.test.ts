@@ -209,4 +209,74 @@ describe('趋势结构复核 Repository', () => {
     expect(legacyDb.prepare('SELECT COUNT(*) AS count FROM trend_structure_reviews_legacy').get()).toEqual({ count: 1 })
     expect(legacyDb.prepare('SELECT COUNT(*) AS count FROM trend_structure_reviews').get()).toEqual({ count: 0 })
   })
+
+  it('forceNewRevision 允许同 factsHash 多条模型 revision，lookup 取最新', () => {
+    const base = {
+      tsCode: '600000.SH',
+      scoreDate: '20260808',
+      factsHash: 'a'.repeat(64),
+      localTrendState: 'strong' as const,
+      localTotalScore: 78,
+      verdict: 'agree' as const,
+      rationale: '第一次。',
+      focusPoints: [] as string[],
+      provider: 'qwen',
+      model: 'test-model',
+      audit: { status: 'passed' },
+    }
+    const first = saveTrendStructureReview(db, { ...base, requestId: randomUUID(), now: 1_000 })
+    const second = saveTrendStructureReview(db, {
+      ...base,
+      requestId: randomUUID(),
+      rationale: '第二次。',
+      forceNewRevision: true,
+      now: 2_000,
+    })
+
+    expect(second.revisionId).not.toBe(first.revisionId)
+    expect(getTrendStructureReviewByCodeDate(db, '600000.SH', '20260808')?.revisionId).toBe(second.revisionId)
+    expect(listTrendStructureReviewRevisionsByCodeDate(db, '600000.SH', '20260808')).toHaveLength(2)
+    expect(db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type = 'index' AND name = 'idx_trend_structure_review_revisions_code_date_hash'
+    `).get()).toEqual(expect.objectContaining({
+      sql: expect.not.stringContaining('UNIQUE'),
+    }))
+  })
+
+  it('migration 147 去掉 code-date-hash UNIQUE 且保留既有 revision', () => {
+    const upgradeDb = new Database(':memory:')
+    try {
+      runMigrations(upgradeDb, DATABASE_MIGRATIONS.filter((migration) => migration.version <= 146))
+      const before = upgradeDb.prepare(`
+        SELECT sql FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_trend_structure_review_revisions_code_date_hash'
+      `).get() as { sql: string }
+      expect(before.sql.toUpperCase()).toContain('UNIQUE')
+
+      const revisionId = randomUUID()
+      upgradeDb.prepare(`
+        INSERT INTO trend_structure_review_revisions (
+          id, ts_code, score_trade_date, facts_hash, request_id, local_trend_state,
+          local_total_score, ai_verdict, rationale, focus_points_json, provider,
+          model, audit_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        revisionId, '600000.SH', '20260808', 'e'.repeat(64), randomUUID(), 'strong',
+        78, 'agree', '迁移前。', '[]', 'qwen', 'm', '{}', 1_000,
+      )
+
+      runMigrations(upgradeDb)
+
+      const after = upgradeDb.prepare(`
+        SELECT sql FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_trend_structure_review_revisions_code_date_hash'
+      `).get() as { sql: string }
+      expect(after.sql.toUpperCase()).not.toContain('UNIQUE')
+      expect(upgradeDb.prepare('SELECT id FROM trend_structure_review_revisions').get())
+        .toEqual({ id: revisionId })
+    } finally {
+      upgradeDb.close()
+    }
+  })
 })

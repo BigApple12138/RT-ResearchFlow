@@ -27,6 +27,8 @@ const MIN_VALID_WEIGHT = 0.7
 export interface ReviewStructureInput {
   requestId: string
   tsCode: string
+  /** When true, skip same-hash early bind and force a new model revision (if gate passes). */
+  forceModelRefresh?: boolean
 }
 
 export interface TrendStructureReviewDependencies {
@@ -83,7 +85,7 @@ export async function reviewStructure(
   }
 
   const existing = getTrendStructureReviewByCodeDate(db, normalizedCode, facts.scoreDate)
-  if (existing?.factsHash === factsHash) {
+  if (!input.forceModelRefresh && existing?.factsHash === factsHash) {
     return toResult(bindTrendStructureReviewRequest(db, existing, input.requestId, now), facts)
   }
 
@@ -129,6 +131,7 @@ export async function reviewStructure(
     model,
     audit,
     now,
+    forceNewRevision: Boolean(input.forceModelRefresh) && !insufficient,
   })
   return toResult(review, facts)
 }

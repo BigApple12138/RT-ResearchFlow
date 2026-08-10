@@ -8,6 +8,7 @@ import {
 } from '../database/settingsRepository'
 import { getDataSourceConfig } from '../database/dataSourceRepository'
 import { decryptApiKey } from '../utils/apiKeyEncryption'
+import { resolveCanonicalTsCode, tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 import {
   runAfterCloseDailySyncJob,
   runTopListSyncJob,
@@ -45,6 +46,7 @@ import {
 } from '../services/dipBuyRadarService'
 import {
   fetchDailyForCandidates,
+  fetchDailyAmountForTradeDate,
   fetchStockMinuteDaily,
   fetchStkFactorPro,
   fetchStkFactorProHistory
@@ -74,6 +76,7 @@ import {
   getLatestMonitorResults,
 } from '../database/chipMonitorRepository'
 import { listPortfolioStocks } from '../database/portfolioRepository'
+import { insertPricesIfMissing, patchMissingAmounts } from '../database/stockPriceCacheRepository'
 import { BrowserWindow } from 'electron'
 import type { ShortTermSubTab } from '../database/types'
 import {
@@ -401,7 +404,7 @@ export function registerShortTermHandlers(): void {
    */
   ipcMain.handle('shortTerm:getStockMiniKline', async (_e, payload: { tsCode: string }) => {
     if (!payload?.tsCode) return { ok: false as const, error: 'INVALID_PARAM' as const }
-    const { tsCode } = payload
+    const tsCode = resolveCanonicalTsCode(payload.tsCode)
     const db = getDb()
     // 270 日历日前起始日期（≈ 180 个交易日）
     const startDate = (() => {
@@ -412,14 +415,25 @@ export function registerShortTermHandlers(): void {
     const cached = queryStockOHLCV(db, tsCode, startDate)
     const ohlcvRows = cached.filter((r) => r.open != null)
 
-    // 合并 stock_price_cache 中的成交额（千元），tsCode 如 "000001.SZ" → stockCode "000001"
-    const stockCode = tsCode.split('.')[0]
+    // 合并 stock_price_cache 成交额（千元）；兼容裸六位与带后缀主键
+    const stockCodeCandidates = tsCodeLookupCandidates(tsCode)
     const withAmt = (rows: ReturnType<typeof queryStockOHLCV>) => {
-      interface AR { tradeDate: string; amount: number | null }
+      interface AR { stockCode: string; tradeDate: string; amount: number | null }
+      if (stockCodeCandidates.length === 0) {
+        return rows.map((r) => ({ ...r, amount: null as number | null }))
+      }
+      const placeholders = stockCodeCandidates.map(() => '?').join(',')
       const amtRows = db.prepare(
-        'SELECT tradeDate, amount FROM stock_price_cache WHERE stockCode = ? AND tradeDate >= ?'
-      ).all(stockCode, startDate) as AR[]
-      const map = new Map(amtRows.map((r) => [r.tradeDate, r.amount]))
+        `SELECT stockCode, tradeDate, amount FROM stock_price_cache
+          WHERE stockCode IN (${placeholders}) AND tradeDate >= ?`,
+      ).all(...stockCodeCandidates, startDate) as AR[]
+      // 同一交易日多码命中时优先非 null amount
+      const map = new Map<string, number | null>()
+      for (const r of amtRows) {
+        const prev = map.get(r.tradeDate)
+        if (prev == null && r.amount != null) map.set(r.tradeDate, r.amount)
+        else if (!map.has(r.tradeDate)) map.set(r.tradeDate, r.amount)
+      }
       return rows.map((r) => ({ ...r, amount: map.get(r.tradeDate) ?? null }))
     }
 
@@ -453,20 +467,22 @@ export function registerShortTermHandlers(): void {
     // 从 DB 取最终 OHLCV 数据，并合并 stock_price_cache 中的成交额
     const finalRows = withAmt(queryStockOHLCV(db, tsCode, startDate))
 
-    // 若 DB 最新交易日不是今日（日线接口尚未更新），尝试用 rt_k 缓存合成今日 bar
+    // 若 DB 最新交易日不是今日（日线接口尚未更新），尝试用 rt_k 缓存合成今日 bar；
+    // 若今日已在日线中但 stock_price_cache 缺额，仍可用 rt_k 补 amount（千元）。
     const todayYmd = (() => {
       const d = new Date(Date.now() + 8 * 60 * 60 * 1000)
       return d.toISOString().slice(0, 10).replace(/-/g, '')
     })()
     const latestTradeDate = finalRows.length > 0 ? finalRows[finalRows.length - 1].tradeDate : null
+    // rt_k tsCode 格式带后缀（如 000001.SZ），handler 入参可能已带，也可能没带
+    const rtTsCode = tsCode.includes('.') ? tsCode : (() => {
+      if (/^(43|83|87|88|430|831|832|835|836|837|838|839|870|871|872|873|874|875|876|877|878|879|880|881|882|883|884|885|886|887|888|889|890|891|892|893|894|895|896|897|898|899|900)/.test(tsCode)) return `${tsCode}.BJ`
+      if (tsCode.startsWith('6') || tsCode.startsWith('5') || tsCode.startsWith('9')) return `${tsCode}.SH`
+      return `${tsCode}.SZ`
+    })()
+    const rtEntry = getRtKCache()?.get(rtTsCode)
+    const rtAmountQian = rtEntry && rtEntry.amount > 0 ? rtEntry.amount / 1000 : null
     if (latestTradeDate !== todayYmd) {
-      // rt_k tsCode 格式带后缀（如 000001.SZ），handler 入参可能已带，也可能没带
-      const rtTsCode = tsCode.includes('.') ? tsCode : (() => {
-        if (/^(43|83|87|88|430|831|832|835|836|837|838|839|870|871|872|873|874|875|876|877|878|879|880|881|882|883|884|885|886|887|888|889|890|891|892|893|894|895|896|897|898|899|900)/.test(tsCode)) return `${tsCode}.BJ`
-        if (tsCode.startsWith('6') || tsCode.startsWith('5') || tsCode.startsWith('9')) return `${tsCode}.SH`
-        return `${tsCode}.SZ`
-      })()
-      const rtEntry = getRtKCache()?.get(rtTsCode)
       if (rtEntry && rtEntry.preClose > 0 && rtEntry.price > 0) {
         // 用 preClose 近似 open，high/low 取 price 与 preClose 的极值，体现今日价格方向
         const open = rtEntry.preClose
@@ -484,8 +500,56 @@ export function registerShortTermHandlers(): void {
           vol: rtEntry.vol,
           turnoverRate: null,
           // 合成 bar 成交额单位与 stock_price_cache 保持一致（千元），rt_k amount 为元
-          amount: rtEntry.amount > 0 ? rtEntry.amount / 1000 : null,
+          amount: rtAmountQian,
         })
+      }
+    } else if (finalRows.length > 0) {
+      const last = finalRows[finalRows.length - 1]
+      if (last.amount == null && rtAmountQian != null) {
+        last.amount = rtAmountQian
+      }
+    }
+
+    // 盘后 / 重启后 rt_k 常为空：最新交易日仍缺额时，按单股 daily 补真实 amount（千元），禁止 close*vol 伪造
+    if (finalRows.length > 0) {
+      const last = finalRows[finalRows.length - 1]
+      if (last.amount == null) {
+        const dsConfig = getDataSourceConfig(db)
+        if (dsConfig.tushareEnabled && dsConfig.tushareTokenEncrypted) {
+          const token = decryptApiKey(dsConfig.tushareTokenEncrypted)
+          if (token) {
+            try {
+              const amount = await fetchDailyAmountForTradeDate(token, tsCode, last.tradeDate)
+              if (amount != null && amount > 0) {
+                last.amount = amount
+                const cacheCode = stockCodeCandidates.find((c) => !c.includes('.')) ?? stockCodeCandidates[0] ?? tsCode.split('.')[0]
+                const nowMs = Date.now()
+                // 先尝试补写空额；若该日无行则插入仅含 close/amount 的占位（ohlcv 仍以 daily_close 为准）
+                const patched = patchMissingAmounts(db, [{
+                  stockCode: cacheCode,
+                  tradeDate: last.tradeDate,
+                  amount,
+                  fetchedAt: nowMs,
+                }])
+                if (patched === 0) {
+                  insertPricesIfMissing(db, [{
+                    stockCode: cacheCode,
+                    tradeDate: last.tradeDate,
+                    open: last.open,
+                    high: last.high,
+                    low: last.low,
+                    close: last.close,
+                    volume: last.vol,
+                    amount,
+                    fetchedAt: nowMs,
+                  }])
+                }
+              }
+            } catch (err) {
+              console.warn(`[getStockMiniKline] amount backfill failed for ${tsCode} ${last.tradeDate}:`, err)
+            }
+          }
+        }
       }
     }
 
@@ -497,7 +561,7 @@ export function registerShortTermHandlers(): void {
    */
   ipcMain.handle('shortTerm:getStockIntraday', async (_e, payload: { tsCode: string }) => {
     if (!payload?.tsCode) return { ok: false as const, error: 'INVALID_PARAM' as const }
-    const { tsCode } = payload
+    const tsCode = resolveCanonicalTsCode(payload.tsCode)
     const db = getDb()
     const dsConfig = getDataSourceConfig(db)
     if (!dsConfig.tushareEnabled || !dsConfig.tushareTokenEncrypted) {
@@ -526,7 +590,7 @@ export function registerShortTermHandlers(): void {
     'shortTerm:getStockChips',
     async (_e, payload: { tsCode: string; tradeDate?: string }) => {
       if (!payload?.tsCode) return { ok: false as const, code: 'INVALID_PARAM' as const }
-      const { tsCode } = payload
+      const tsCode = resolveCanonicalTsCode(payload.tsCode)
       const isDefaultLoad = !payload.tradeDate
       const tradeDate = payload.tradeDate ?? getBjTodayYmd()
       const db = getDb()
@@ -585,7 +649,7 @@ export function registerShortTermHandlers(): void {
     'shortTerm:getStockFactor',
     async (_e, payload: { tsCode: string; tradeDate?: string }) => {
       if (!payload?.tsCode) return { ok: false as const, code: 'INVALID_PARAM' as const }
-      const { tsCode } = payload
+      const tsCode = resolveCanonicalTsCode(payload.tsCode)
       const isDefaultLoad = !payload.tradeDate
       const tradeDate = payload.tradeDate ?? getBjTodayYmd()
       const db = getDb()
@@ -646,7 +710,8 @@ export function registerShortTermHandlers(): void {
     async (_e, payload: { tsCode: string; startDate: string; dbOnly?: boolean }) => {
       if (!payload?.tsCode || !payload?.startDate)
         return { ok: false as const, code: 'INVALID_PARAM' as const }
-      const { tsCode, startDate } = payload
+      const tsCode = resolveCanonicalTsCode(payload.tsCode)
+      const { startDate } = payload
       const db = getDb()
 
       // DB-first：有足够历史直接返回（≥20 条）
@@ -765,10 +830,11 @@ export function registerShortTermHandlers(): void {
   // 查询单只股票所属题材列表（供走势图标题行展示）
   ipcMain.handle('shortTerm:getStockConcepts', (_e, payload: { tsCode: string }) => {
     if (!payload?.tsCode) return { ok: false as const, error: 'INVALID_PARAM' as const }
+    const tsCode = resolveCanonicalTsCode(payload.tsCode)
     const db2 = getDb()
     const conceptSource = getConceptSource()
     try {
-      const entries = getConceptsByStockRouted(db2, payload.tsCode, conceptSource)
+      const entries = getConceptsByStockRouted(db2, tsCode, conceptSource)
       const names = entries.slice(0, 8).map(e => e.conceptName)
       return { ok: true as const, names }
     } catch {

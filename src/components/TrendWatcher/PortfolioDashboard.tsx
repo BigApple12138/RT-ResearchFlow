@@ -4,6 +4,7 @@ import { StockKlineChipDrawer } from '../shared/StockMiniChart'
 import { useAppStore } from '../../store/appStore'
 import { getConclusion } from '../../utils/chipColors'
 import { LocalTrendSummaryPanel } from './LocalTrendSummaryPanel'
+import { sixDigitToTsCode } from './trendWatchlistAddResolve'
 import {
   MetricCell,
   ScoreSparkline,
@@ -82,6 +83,14 @@ interface BackfillProgress {
   detail: string
 }
 
+interface ForecastProgress {
+  current: number
+  total: number
+  detail: string
+  failed: number
+  lastError: string | null
+}
+
 const ADVICE_META: Record<PositionAdvice, { label: string; className: string }> = {
   STOP_LOSS: { label: '风险复核', className: 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' },
   TAKE_PROFIT: { label: '止盈观察', className: 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300' },
@@ -96,6 +105,7 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
   const [savingCode, setSavingCode] = useState<string | null>(null)
   const [forecasting, setForecasting] = useState(false)
+  const [forecastProgress, setForecastProgress] = useState<ForecastProgress | null>(null)
   const [backfillRunning, setBackfillRunning] = useState(false)
   const [backfillProgress, setBackfillProgress] = useState<BackfillProgress | null>(null)
   const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null)
@@ -145,6 +155,74 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
       offProgress()
       offDone()
     }
+  }, [loadPortfolio, onRefresh])
+
+  useEffect(() => {
+    let failedCount = 0
+    let lastError: string | null = null
+
+    const offForecast = window.api.portfolio.onForecastProgress((progress) => {
+      if (progress.total === 0) {
+        failedCount = 0
+        lastError = null
+        setForecasting(false)
+        setForecastProgress({
+          current: 0,
+          total: 0,
+          detail: progress.error === 'ALREADY_DONE_TODAY'
+            ? '今日持仓均已有预测，无需重复执行'
+            : '没有待预测的持仓',
+          failed: 0,
+          lastError: null,
+        })
+        return
+      }
+
+      if (progress.current === 1) {
+        failedCount = progress.ok ? 0 : 1
+        lastError = progress.ok ? null : (progress.error ?? null)
+      } else if (!progress.ok) {
+        failedCount += 1
+        lastError = progress.error ?? lastError
+      }
+
+      const done = progress.current >= progress.total
+      const code = stripCode(progress.stockCode)
+      let detail: string
+      if (!done) {
+        detail = progress.ok
+          ? `${code} · 预测完成（${progress.current}/${progress.total}）`
+          : `${code} · 失败（${progress.current}/${progress.total}）`
+      } else if (failedCount >= progress.total) {
+        detail = `全部失败（${failedCount}/${progress.total}）`
+      } else if (failedCount > 0) {
+        detail = `完成：成功 ${progress.total - failedCount} · 失败 ${failedCount}`
+      } else {
+        detail = `全部完成（${progress.total}只）`
+      }
+
+      setForecastProgress({
+        current: progress.current,
+        total: progress.total,
+        detail,
+        failed: failedCount,
+        lastError,
+      })
+
+      if (!done) return
+
+      setForecasting(false)
+      void loadPortfolio()
+      onRefresh()
+      if (failedCount >= progress.total) {
+        setPortfolioError(formatForecastFailure(lastError, failedCount, progress.total))
+      } else if (failedCount > 0) {
+        setPortfolioError(`批量预测部分失败：成功 ${progress.total - failedCount} 只，失败 ${failedCount} 只${lastError ? `（例如 ${humanizeForecastError(lastError)}）` : ''}`)
+      } else {
+        setPortfolioError('')
+      }
+    })
+    return () => { offForecast() }
   }, [loadPortfolio, onRefresh])
 
   const items = useMemo<PortfolioViewItem[]>(() => {
@@ -210,12 +288,24 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
   }
 
   const forecastAll = async () => {
+    if (forecasting) return
+    setPortfolioError('')
+    setForecastProgress({ current: 0, total: items.length, detail: '正在启动批量预测…', failed: 0, lastError: null })
     setForecasting(true)
     try {
       const response = await window.api.portfolio.forecastNow()
-      if (!response.ok) setPortfolioError(response.code === 'ALREADY_RUNNING' ? '持仓预测正在进行中' : '预测任务启动失败')
-    } finally {
+      if (!response.ok) {
+        setForecasting(false)
+        setForecastProgress(null)
+        if (response.code === 'ALREADY_RUNNING') setPortfolioError('持仓预测正在进行中')
+        else if (response.code === 'NO_STOCKS') setPortfolioError('暂无持仓股票，无法批量预测')
+        else setPortfolioError('预测任务启动失败')
+      }
+      // ok：fire-and-forget，由 onForecastProgress 维持/结束 loading
+    } catch {
       setForecasting(false)
+      setForecastProgress(null)
+      setPortfolioError('预测任务启动失败，请稍后重试')
     }
   }
 
@@ -273,10 +363,11 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
             )}
             <button
               type="button"
+              data-testid="portfolio-forecast-all"
               onClick={() => { void forecastAll() }}
               disabled={forecasting || items.length === 0}
               className="min-h-11 rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition-colors hover:bg-cyan-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-cyan-500 dark:text-slate-950 dark:hover:bg-cyan-400"
-            >{forecasting ? '任务启动中…' : '批量预测'}</button>
+            >{forecasting ? (forecastProgress && forecastProgress.total > 0 ? `预测中 ${forecastProgress.current}/${forecastProgress.total}` : '任务启动中…') : '批量预测'}</button>
           </div>
         )}
       />
@@ -289,6 +380,23 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
         <Summary label="相对稳定" value={summary.stable} tone="normal" />
         <Summary label="数据待补" value={summary.missing} tone="warning" />
       </div>
+
+      {forecastProgress && (
+        <section data-testid="portfolio-forecast-status" aria-live="polite" className="border-b border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/40 sm:px-5">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className="font-medium text-slate-700 dark:text-slate-200">持仓批量预测</span>
+            <span className="text-slate-500 dark:text-slate-400">{forecastProgress.detail}</span>
+          </div>
+          {forecastProgress.total > 0 && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800" role="progressbar" aria-label="持仓批量预测进度" aria-valuemin={0} aria-valuemax={forecastProgress.total} aria-valuenow={forecastProgress.current}>
+              <div className="h-full rounded-full bg-slate-700 transition-[width] motion-reduce:transition-none dark:bg-cyan-400" style={{ width: `${Math.min(100, forecastProgress.current / forecastProgress.total * 100)}%` }} />
+            </div>
+          )}
+          {forecastProgress.lastError && forecastProgress.failed > 0 && (
+            <div className="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{humanizeForecastError(forecastProgress.lastError)}</div>
+          )}
+        </section>
+      )}
 
       {(backfillProgress || backfillResult) && (
         <section data-testid="portfolio-backfill-status" aria-live="polite" className="border-b border-slate-200 bg-cyan-50/60 px-4 py-3 dark:border-slate-800 dark:bg-cyan-950/20 sm:px-5">
@@ -444,7 +552,11 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
 
       {chartStock && (
         <StockKlineChipDrawer
-          tsCode={chartStock.tsCode}
+          tsCode={
+            chartStock.trendItem?.tsCode
+            ?? sixDigitToTsCode(chartStock.tsCode)
+            ?? chartStock.tsCode
+          }
           stockName={chartStock.stockName}
           onClose={() => setChartStock(null)}
           onNavigate={() => {
@@ -499,6 +611,20 @@ function directionLabel(direction: string | null): string {
 
 function stripCode(tsCode: string): string {
   return tsCode.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/i, '')
+}
+
+function humanizeForecastError(raw: string): string {
+  if (raw.includes('AI_NOT_CONFIGURED')) return '尚未配置可用的 AI 厂商或 API Key，请先到 AI 配置页完成设置'
+  if (raw.includes('TIMEOUT')) return '单只预测超时，已跳过'
+  if (raw.includes('INTRADAY_EMPTY')) return '当日暂无分时数据，无法预测'
+  if (raw === 'ALREADY_DONE_TODAY' || raw === 'NO_PENDING') return raw
+  const trimmed = raw.replace(/^[A-Z_]+:\s*/, '').trim()
+  return trimmed || raw
+}
+
+function formatForecastFailure(lastError: string | null, failed: number, total: number): string {
+  const reason = lastError ? humanizeForecastError(lastError) : '预测失败'
+  return `批量预测全部失败（${failed}/${total}）：${reason}`
 }
 
 function providerLabel(provider: BackfillProvider | undefined): string {

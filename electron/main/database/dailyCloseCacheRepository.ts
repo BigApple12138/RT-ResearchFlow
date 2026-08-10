@@ -7,6 +7,7 @@
 
 import type Database from 'better-sqlite3'
 import type { DailyBasicRow, DailyRow } from '../services/tushareService'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 export const DAILY_CLOSE_RETENTION_TRADE_DAYS = 520
 
@@ -136,18 +137,8 @@ export function queryDailyClose(
   const result = new Map<string, DailyRow[]>()
   if (tsCodes.length === 0) return result
 
-  const aliasToRequested = new Map<string, string[]>()
-  for (const tsCode of tsCodes) {
-    const aliases = new Set<string>([tsCode])
-    const bareCode = tsCode.split('.')[0]
-    if (bareCode) aliases.add(bareCode)
-    for (const alias of aliases) {
-      const requested = aliasToRequested.get(alias) ?? []
-      requested.push(tsCode)
-      aliasToRequested.set(alias, requested)
-    }
-  }
-  const queryCodes = [...aliasToRequested.keys()]
+  const queryCodes = [...new Set(tsCodes.flatMap((code) => tsCodeLookupCandidates(code)))]
+  if (queryCodes.length === 0) return result
   const placeholders = queryCodes.map(() => '?').join(', ')
   const rows = db
     .prepare(
@@ -165,10 +156,11 @@ export function queryDailyClose(
   }
 
   for (const requestedCode of tsCodes) {
-    const bareCode = requestedCode.split('.')[0]
-    const exactRows = rowsByCode.get(requestedCode) ?? []
-    const fallbackRows = bareCode && bareCode !== requestedCode ? (rowsByCode.get(bareCode) ?? []) : []
-    const mergedRows = mergeDailyRows(requestedCode, exactRows, fallbackRows)
+    // 候选顺序为 canonical → raw → bare；从后往前折叠，使带后缀行覆盖裸六位
+    let mergedRows: DailyRow[] = []
+    for (const code of [...tsCodeLookupCandidates(requestedCode)].reverse()) {
+      mergedRows = mergeDailyRows(requestedCode, rowsByCode.get(code) ?? [], mergedRows)
+    }
     if (mergedRows.length > 0) result.set(requestedCode, mergedRows)
   }
   return result
@@ -183,7 +175,8 @@ export function queryDailyCloseExact(
   const result = new Map<string, DailyRow[]>()
   if (tsCodes.length === 0) return result
 
-  const aliases = [...new Set(tsCodes.flatMap((tsCode) => [tsCode, tsCode.split('.')[0]]))]
+  const aliases = [...new Set(tsCodes.flatMap((tsCode) => tsCodeLookupCandidates(tsCode)))]
+  if (aliases.length === 0) return result
   const placeholders = aliases.map(() => '?').join(', ')
   const rows = db.prepare(
     `SELECT ts_code, trade_date, open, high, low, close, pct_chg, vol, turnover_rate
@@ -198,12 +191,10 @@ export function queryDailyCloseExact(
     rowsByCode.set(row.ts_code, mapped)
   }
   for (const tsCode of tsCodes) {
-    const bareCode = tsCode.split('.')[0]
-    const mergedRows = mergeDailyRows(
-      tsCode,
-      rowsByCode.get(tsCode) ?? [],
-      bareCode === tsCode ? [] : rowsByCode.get(bareCode) ?? [],
-    )
+    let mergedRows: DailyRow[] = []
+    for (const code of [...tsCodeLookupCandidates(tsCode)].reverse()) {
+      mergedRows = mergeDailyRows(tsCode, rowsByCode.get(code) ?? [], mergedRows)
+    }
     if (mergedRows.length > 0) result.set(tsCode, mergedRows)
   }
   return result
@@ -212,21 +203,37 @@ export function queryDailyCloseExact(
 /**
  * FR-139: 查单只股票近 60 日全量 OHLCV，按 trade_date 升序。
  * 供 shortTerm:getStockMiniKline IPC 使用。
+ * 兼容裸六位与带后缀 tsCode（持仓常存 601016，缓存多为 601016.SH）。
  */
 export function queryStockOHLCV(
   db: Database.Database,
   tsCode: string,
   startDate: string
 ): DailyRow[] {
+  const candidates = tsCodeLookupCandidates(tsCode)
+  if (candidates.length === 0) return []
+  const placeholders = candidates.map(() => '?').join(',')
   const rows = db
     .prepare(
       `SELECT ts_code, trade_date, open, high, low, close, pct_chg, vol, turnover_rate
        FROM daily_close_cache
-       WHERE ts_code = ? AND trade_date >= ?
-       ORDER BY trade_date ASC`
+       WHERE ts_code IN (${placeholders}) AND trade_date >= ?
+       ORDER BY trade_date ASC,
+         CASE
+           WHEN ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ' OR ts_code LIKE '%.BJ' THEN 0
+           ELSE 1
+         END ASC`
     )
-    .all(tsCode, startDate) as CacheRow[]
-  return rows.map(fromDbRow)
+    .all(...candidates, startDate) as CacheRow[]
+
+  // 同一交易日优先保留带后缀行
+  const byDate = new Map<string, CacheRow>()
+  for (const row of rows) {
+    if (!byDate.has(row.trade_date)) byDate.set(row.trade_date, row)
+  }
+  return [...byDate.values()]
+    .sort((a, b) => a.trade_date.localeCompare(b.trade_date))
+    .map(fromDbRow)
 }
 
 /**
@@ -266,12 +273,15 @@ export function countByTsCode(
   tsCode: string,
   startDate: string
 ): number {
+  const candidates = tsCodeLookupCandidates(tsCode)
+  if (candidates.length === 0) return 0
+  const placeholders = candidates.map(() => '?').join(',')
   const row = db
     .prepare(
-      `SELECT COUNT(*) AS cnt FROM daily_close_cache
-       WHERE ts_code = ? AND trade_date >= ?`
+      `SELECT COUNT(DISTINCT trade_date) AS cnt FROM daily_close_cache
+       WHERE ts_code IN (${placeholders}) AND trade_date >= ?`
     )
-    .get(tsCode, startDate) as { cnt: number }
+    .get(...candidates, startDate) as { cnt: number }
   return row?.cnt ?? 0
 }
 

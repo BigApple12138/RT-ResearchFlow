@@ -83,4 +83,38 @@ describe('趋势结构复核 IPC 批量校验', () => {
     await expect(runTrendReviewStructureBatch(db, { requestId: randomUUID(), tsCodes: [] })).rejects.toThrow('INVALID_PARAM')
     await expect(runTrendReviewStructureBatch(db, { requestId: randomUUID(), tsCodes: Array.from({ length: 21 }, () => '600001.SH') })).rejects.toThrow('INVALID_PARAM')
   })
+
+  it('批量透传 forceModelRefresh 给逐条 reviewStructure', async () => {
+    const review = vi.fn(async (_db: Database.Database, input: { requestId: string; tsCode: string; forceModelRefresh?: boolean }) => ({
+      review: {
+        revisionId: 'revision-1',
+        tsCode: input.tsCode, scoreDate: '20260808', factsHash: 'a'.repeat(64), requestId: input.requestId,
+        localTrendState: 'strong' as const, localTotalScore: 80, verdict: 'agree' as const,
+        rationale: '结构仍完整。', focusPoints: [], provider: 'qwen', model: 'test-model',
+        audit: { status: 'passed' }, createdAt: 1_000, updatedAt: 1_000,
+      },
+      facts: {} as never, factsHash: 'a'.repeat(64), stale: false,
+    }))
+    await runTrendReviewStructureBatch(new Database(':memory:'), {
+      requestId: randomUUID(),
+      tsCodes: ['600001.SH'],
+      forceModelRefresh: true,
+    }, {
+      getWorkbench: () => ({ items: [{ tsCode: '600001.SH' }] } as never),
+      reviewStructure: review,
+    })
+    expect(review).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ tsCode: '600001.SH', forceModelRefresh: true }),
+      expect.anything(),
+    )
+  })
+
+  it('拒绝非 boolean 的 forceModelRefresh', async () => {
+    await expect(runTrendReviewStructureBatch(new Database(':memory:'), {
+      requestId: randomUUID(),
+      tsCodes: ['600001.SH'],
+      forceModelRefresh: 'yes',
+    })).rejects.toThrow('INVALID_PARAM')
+  })
 })

@@ -10,7 +10,7 @@ FR-204 起, 组件在单股研判摘要下方展示当前股票近 7/30/90 天�
 
 ## 实现思路
 
-组件以 `window.api.datasource` 读取本地行情缓存, 日 K 使用 `lightweight-charts` 渲染蜡烛图和成交额柱, 分时图优先使用本地分钟 OHLCV 缓存并在缺失时回退到东财分时数据。MA5/10/20/60与BOLL(20,2)直接基于完整日K本地滚动计算，不受技术因子缓存保留期影响；BOLL本地公式与Tushare因子口径一致。BOLL中轨与MA20复用同一条紫色曲线，避免完全重合的灰色线遮盖MA20。日 K 十字准线通过 `subscribeCrosshairMove` 同步更新鼠标旁的不透明浮动行情卡。
+组件以 `window.api.datasource` 读取本地行情缓存, 日 K 使用 `lightweight-charts` 渲染蜡烛图和**成交量(手)**柱（成交额仅作 hover 辅信息）, 分时图优先使用本地分钟 OHLCV 缓存并在缺失时回退到东财分时数据。MA5/10/20/60与BOLL(20,2)直接基于完整日K本地滚动计算，不受技术因子缓存保留期影响；BOLL本地公式与Tushare因子口径一致。BOLL中轨与MA20复用同一条紫色曲线，避免完全重合的灰色线遮盖MA20。日 K 十字准线通过 `subscribeCrosshairMove` 同步更新鼠标旁的不透明浮动行情卡。
 筹码结构摘要通过只读 `chipStructure:getSummaries` 获取。普通最新视图以最后一根日 K 为参考日并显式使用 `latest_complete`, 优先展示最近的 `cyq_perf + cyq_chips + daily_close` 同日完整快照及其真实事实日; 较旧快照标记“历史参考”。点击日 K 蜡烛后固定到该交易日并精确查询, 点击摘要日期可恢复最新视图, 历史查询不跨日回退。缺失、部分或历史快照可由用户点击“补齐最新/补齐该日”, 固定当前单股、结构范围和强制刷新; 页面加载与切换仍只读本地。现有价格级筹码 Canvas 继续使用独立数据路径, 不由结构摘要替代。
 左侧列表排序保留预置指数固定顶部, 普通股票区根据 `portfolio:list` 返回的持仓集合分组, 持仓股按 `addedAt` 倒序置顶, 非持仓股保持原有手动排序。
 今日看板跳转会通过 Zustand `pendingStockContext` 携带信号快照, `stockDecisionContextModel` 将信号来源、持仓状态、成本价、浮盈亏、预测记录、筹码和技术因子状态整理为顶部研判摘要。普通搜索或左侧列表切换不会复用旧信号上下文。
@@ -25,7 +25,7 @@ FR-235 起, 从组合空态进入走势图时会显示紧凑的首次持仓任�
 - `prices`: 当前股票已加载日线窗口, 由 `datasource:getStockPricePage` 分页返回, 包含 `stock_price_cache` 字段以及从 `daily_close_cache` 合并的 `pctChg` 和 `turnoverRate`; 旧全量接口只供其他既有消费者使用。
 - `historyRangeSelection/visibleHistoryBars`: 日K当前分段选择与真实可见根数。滚轮形成非30/60/90档位时选择状态为自定义, 标题仍按图表逻辑范围显示真实日数。
 - `chartMode`: 控制日线与分时视图切换。
-- `legendData`: 日 K 鼠标悬停时展示日期, 开高低收, 涨跌幅, 振幅, 换手率和成交额。
+- `legendData`: 日 K 鼠标悬停时展示日期, 开高低收, 涨跌幅, 振幅, 换手率、成交量(手)与可选成交额。
 - `legendPosition`: 日 K 浮动行情卡位置, 根据十字准线鼠标坐标计算, 靠近右侧或底部时自动翻转到可视区域内。
 - `chipsOpen/factorOpen`: 控制右侧筹码面板与底部技术因子栏展开状态。
 - `selectedChipTradeDate`: 记录用户点击日 K 固定的股票代码和精确交易日; 股票不匹配时自动使用当前股票最后一根日 K。

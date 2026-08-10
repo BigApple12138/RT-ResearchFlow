@@ -44,6 +44,16 @@ export async function runPortfolioForecastJob(
     const stocks = listPortfolioStocks(db)
     if (stocks.length === 0) {
       console.log('[Portfolio] 持仓列表为空，跳过批量预测')
+      // total=0：通知渲染进程结束 loading（持仓为空时 IPC 通常已提前返回）
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('portfolio:forecastProgress', {
+          current: 0,
+          total: 0,
+          stockCode: '',
+          ok: true,
+          error: 'NO_PENDING',
+        })
+      }
       return
     }
 
@@ -63,6 +73,16 @@ export async function runPortfolioForecastJob(
 
     if (pending.length === 0) {
       console.log('[Portfolio] 所有持仓股票今日均已预测')
+      // total=0：无可执行项时也必须推送，否则前端会一直停在「任务启动中」
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('portfolio:forecastProgress', {
+          current: 0,
+          total: 0,
+          stockCode: '',
+          ok: true,
+          error: 'ALREADY_DONE_TODAY',
+        })
+      }
       return
     }
 

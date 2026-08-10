@@ -1,4 +1,5 @@
 import type { ChipProfileSummary } from '../../utils/drawChipsCanvas'
+import { computeNear5dVolumeChangePercent } from '../../utils/volumeEnergy'
 
 export interface StockStructureRow {
   tradeDate: string
@@ -7,6 +8,9 @@ export interface StockStructureRow {
   low: number | null
   close: number
   pctChg: number | null
+  /** 成交量（手）；「近5日量能」主输入 */
+  vol: number | null
+  /** 成交额（千元）；辅信息，不参与量能计算 */
   amount: number | null
 }
 
@@ -55,7 +59,8 @@ export interface StockStructureInsight {
     resistanceDistancePercent: number | null
     atrPercent: number | null
     maxDrawdownPercent: number | null
-    amountChangePercent: number | null
+    /** 近5日成交量均值相对前5日的变化百分比 */
+    volumeChangePercent: number | null
     observation: string
     invalidation: string
   }
@@ -142,18 +147,6 @@ function calculateMaxDrawdown(rows: StockStructureRow[]): number | null {
     if (peak > 0) drawdown = Math.max(drawdown, (peak - row.close) / peak * 100)
   }
   return drawdown
-}
-
-function calculateAmountChange(rows: StockStructureRow[]): number | null {
-  if (rows.length < 6) return null
-  const latest = rows.slice(-5).map((row) => row.amount).filter(finite)
-  const previous = rows.slice(-10, -5).map((row) => row.amount).filter(finite)
-  if (latest.length < 3 || previous.length < 3) return null
-  const latestAverage = average(latest)
-  const previousAverage = average(previous)
-  return latestAverage != null && previousAverage != null && previousAverage > 0
-    ? (latestAverage - previousAverage) / previousAverage * 100
-    : null
 }
 
 function findNearestLevels(rows: StockStructureRow[], close: number): { support: number | null; resistance: number | null } {
@@ -353,7 +346,7 @@ export function buildStockStructureInsight({
     : null
   const atrPercent = close != null ? calculateAtrPercent(activeWindow, close) : null
   const maxDrawdownPercent = calculateMaxDrawdown(activeWindow)
-  const amountChangePercent = calculateAmountChange(activeWindow)
+  const volumeChangePercent = computeNear5dVolumeChangePercent(activeWindow.map((row) => row.vol))
   const riskTone: StockStructureTone = supportDistancePercent != null && supportDistancePercent < 2
     ? 'negative'
     : resistanceDistancePercent != null && resistanceDistancePercent < 2
@@ -389,7 +382,7 @@ export function buildStockStructureInsight({
       resistanceDistancePercent,
       atrPercent,
       maxDrawdownPercent,
-      amountChangePercent,
+      volumeChangePercent,
       observation: levels.resistance != null
         ? `观察收盘能否有效站上 ${levels.resistance.toFixed(2)}，并由量能配合确认。`
         : '当前接近观察区间上沿，继续关注新高后的量能是否能够延续。',

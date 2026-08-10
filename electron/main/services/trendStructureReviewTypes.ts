@@ -12,6 +12,9 @@ export const AI_TREND_VERDICTS = [
 
 export type AiTrendVerdict = typeof AI_TREND_VERDICTS[number]
 
+/** 确定性门槛短路（未调模型）vs 模型第二意见；由落库 provider/model 派生，不改 revision 语义。 */
+export type TrendReviewSource = 'gate' | 'model'
+
 export interface TrendStructureReviewSummary {
   verdict: AiTrendVerdict
   rationale: string
@@ -20,6 +23,14 @@ export interface TrendStructureReviewSummary {
   scoreDate: string
   factsHash: string
   createdAt: number
+  source: TrendReviewSource
+}
+
+export function deriveTrendReviewSource(
+  provider: string | null | undefined,
+  model: string | null | undefined,
+): TrendReviewSource {
+  return provider == null && model == null ? 'gate' : 'model'
 }
 
 export interface AiTrendReviewPayload {

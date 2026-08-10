@@ -1912,6 +1912,32 @@ export async function fetchDailyForCandidates(
 }
 
 /**
+ * 按单股 + 交易日取成交额（千元）。用于 mini K 今日缺额时补数，避免全市场重拉。
+ */
+export async function fetchDailyAmountForTradeDate(
+  token: string,
+  tsCode: string,
+  tradeDate: string,
+): Promise<number | null> {
+  const json = await callTushareApi(
+    token,
+    'daily',
+    { ts_code: tsCode, trade_date: tradeDate },
+    'ts_code,trade_date,amount',
+  )
+  if (!json.data?.items?.length) return null
+  const { fields: fs, items } = json.data
+  const idx = (n: string) => fs.indexOf(n)
+  const amountIdx = idx('amount')
+  if (amountIdx < 0) return null
+  for (const it of items) {
+    const amount = parseNumOrNull(it[amountIdx])
+    if (amount != null && amount > 0) return amount
+  }
+  return null
+}
+
+/**
  * FR-139: 按交易日拉取全市场 OHLCV（api_name=daily，不传 ts_code）。
  * 约返回 4700-5000 行，覆盖当日全 A 股。
  * 用于 18:00 统一盘后批次全量写入 daily_close_cache，为 hover 微缩蜡烛图提供数据。

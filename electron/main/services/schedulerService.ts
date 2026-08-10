@@ -40,8 +40,9 @@ import {
   upsertDailyClose
 } from '../database/dailyCloseCacheRepository'
 import { runDailyCloseMaintenance } from './dailyCloseMaintenanceService'
-import { listStockInfos, insertPricesIfMissing } from '../database/stockPriceCacheRepository'
+import { listStockInfos, insertPricesIfMissing, patchMissingAmounts } from '../database/stockPriceCacheRepository'
 import type { StockPriceCacheRow } from '../database/types'
+import { indexRowsByWatchlistStockCode } from '../utils/tsCodeLookup'
 import { cleanupChipsCache } from '../database/cyqChipsCacheRepository'
 import { cleanupCyqPerfCache } from '../database/cyqPerfCacheRepository'
 import { cleanupTopInstDaily } from '../database/topInstDailyRepository'
@@ -1023,7 +1024,8 @@ export async function runDailyOHLCVSyncJob(tradeDate: string): Promise<boolean> 
 
 /**
  * 每日 OHLCV 写完 daily_close_cache 后，自动将自选股当日数据同步到 stock_price_cache。
- * - 普通 A 股：直接从刚写好的 mergedRows 取数，INSERT OR IGNORE（不覆盖已有记录的 amount 等字段）
+ * - 普通 A 股：直接从刚写好的 mergedRows 取数，INSERT OR IGNORE（不覆盖已有精确 amount）
+ * - 若行已存在但 amount IS NULL：用日线 amount 补写（INSERT OR IGNORE 无法覆盖空额）
  * - 预设指数：调 Eastmoney Kline API（fetchIndexPrices），无 Tushare 积分消耗
  */
 async function syncWatchlistToStockPriceCache(dailyRows: DailyRow[], tradeDate: string): Promise<void> {
@@ -1032,15 +1034,16 @@ async function syncWatchlistToStockPriceCache(dailyRows: DailyRow[], tradeDate: 
   const watchlist = listStockInfos(db)
   if (watchlist.length === 0) return
 
-  // 构建当日快速查找 Map（tsCode → DailyRow）
-  const dailyMap = new Map(dailyRows.map((r) => [r.tsCode, r]))
+  // daily 行 tsCode 带后缀；stock_info 常为裸六位 — 双向索引
+  const dailyMap = indexRowsByWatchlistStockCode(dailyRows)
 
   const toInsert: StockPriceCacheRow[] = []
+  const toPatchAmount: Array<{ stockCode: string; tradeDate: string; amount: number; fetchedAt: number }> = []
   const nowMs = Date.now()
 
   for (const { stockCode } of watchlist) {
     if (PRESET_INDICES.includes(stockCode)) continue // 指数走 Eastmoney 路径
-    const daily = dailyMap.get(stockCode)
+    const daily = dailyMap.get(stockCode.trim().toUpperCase())
     if (!daily) continue // 当日停牌或未在 daily 数据中
     toInsert.push({
       stockCode,
@@ -1050,14 +1053,27 @@ async function syncWatchlistToStockPriceCache(dailyRows: DailyRow[], tradeDate: 
       low: daily.low ?? null,
       close: daily.close,
       volume: daily.vol ?? null,
-      amount: null, // daily API 未拉 amount；INSERT OR IGNORE 保留已有精确值
+      // fetchDailyByDate 已含 amount（千元）；INSERT OR IGNORE 不覆盖已有精确值
+      amount: daily.amount ?? null,
       fetchedAt: nowMs,
     })
+    if (daily.amount != null && daily.amount > 0) {
+      toPatchAmount.push({
+        stockCode,
+        tradeDate: daily.tradeDate,
+        amount: daily.amount,
+        fetchedAt: nowMs,
+      })
+    }
   }
 
   if (toInsert.length > 0) {
     insertPricesIfMissing(db, toInsert)
-    console.log(`[SyncWatchlist] ${tradeDate}: filled ${toInsert.length} row(s) in stock_price_cache`)
+    const patched = toPatchAmount.length > 0 ? patchMissingAmounts(db, toPatchAmount) : 0
+    console.log(
+      `[SyncWatchlist] ${tradeDate}: filled ${toInsert.length} row(s) in stock_price_cache` +
+        (patched > 0 ? `, patched amount on ${patched} row(s)` : ''),
+    )
   }
 
   // 预设指数：调 Eastmoney API 更新，增量模式（force=false）

@@ -1,5 +1,10 @@
 import type Database from 'better-sqlite3'
-import { getAIConfig, getProviderApiKey, getProviderConfig } from '../database/aiConfigRepository'
+import {
+  getAIConfig,
+  getConfiguredProviders,
+  getProviderApiKey,
+  getProviderConfig,
+} from '../database/aiConfigRepository'
 import type { AIProvider } from '../database/types'
 import { decryptApiKey } from '../utils/apiKeyEncryption'
 import { callAIProvider, PROVIDER_MODELS, type AIProviderUsage, type AIWebSearchTrace, type ConversationTurn } from './aiProvider'
@@ -25,30 +30,52 @@ export interface AIFallbackResult {
   webSearchTrace?: AIWebSearchTrace
 }
 
-export function resolveProviderCredentials(db: Database.Database): ResolvedProviderCredentials | null {
+/** Priority order first, then any remaining configured vendors (same spirit as ai:getConfig). */
+function listProviderCandidates(db: Database.Database): string[] {
   const aiConfig = getAIConfig(db)
   const priority: string[] = aiConfig.providerPriority
     ? JSON.parse(aiConfig.providerPriority)
     : (aiConfig.provider ? [aiConfig.provider] : [])
-  for (const provider of priority) {
-    const providerConfig = getProviderConfig(db, provider)
-    if (!providerConfig?.apiKeyEncrypted) continue
-    const apiKey = decryptApiKey(providerConfig.apiKeyEncrypted)
-    if (!apiKey) continue
-    const model = providerConfig.model || (PROVIDER_MODELS as Record<string, string[]>)[provider]?.[0] || ''
-    if (!model) continue
-    return {
-      provider: provider as AIProvider,
-      model,
-      apiKey,
-      baseUrl: providerConfig.baseUrl ?? undefined,
-      maxTokens: providerConfig.maxTokens ?? undefined,
-      presetPrompt: providerConfig.presetPrompt ?? undefined,
-      trendForecastPrompt: providerConfig.trendForecastPrompt ?? undefined,
-      trendForecastMorrowPrompt: providerConfig.trendForecastMorrowPrompt ?? undefined,
-    }
+  const configured = getConfiguredProviders(db)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const provider of [...priority, ...configured]) {
+    if (!provider || seen.has(provider)) continue
+    seen.add(provider)
+    out.push(provider)
+  }
+  return out
+}
+
+function credentialsFromProvider(
+  db: Database.Database,
+  provider: string,
+): ResolvedProviderCredentials | null {
+  const providerConfig = getProviderConfig(db, provider)
+  if (!providerConfig?.apiKeyEncrypted) return null
+  const apiKey = decryptApiKey(providerConfig.apiKeyEncrypted)
+  if (!apiKey) return null
+  const model = providerConfig.model || (PROVIDER_MODELS as Record<string, string[]>)[provider]?.[0] || ''
+  if (!model) return null
+  return {
+    provider: provider as AIProvider,
+    model,
+    apiKey,
+    baseUrl: providerConfig.baseUrl ?? undefined,
+    maxTokens: providerConfig.maxTokens ?? undefined,
+    presetPrompt: providerConfig.presetPrompt ?? undefined,
+    trendForecastPrompt: providerConfig.trendForecastPrompt ?? undefined,
+    trendForecastMorrowPrompt: providerConfig.trendForecastMorrowPrompt ?? undefined,
+  }
+}
+
+export function resolveProviderCredentials(db: Database.Database): ResolvedProviderCredentials | null {
+  for (const provider of listProviderCandidates(db)) {
+    const creds = credentialsFromProvider(db, provider)
+    if (creds) return creds
   }
 
+  const aiConfig = getAIConfig(db)
   if (aiConfig.provider && aiConfig.model) {
     const apiKey = decryptApiKey(getProviderApiKey(db, aiConfig.provider))
     if (apiKey) {
@@ -63,6 +90,20 @@ export function resolveProviderCredentials(db: Database.Database): ResolvedProvi
   return null
 }
 
+/**
+ * Providers for batch / multi-model trend forecast.
+ * Prefer explicit multiModelProviders; otherwise reuse the same credential resolution as AI discussion.
+ */
+export function resolveForecastProviderIds(db: Database.Database): string[] {
+  const aiConfig = getAIConfig(db)
+  const multiModelProviders: string[] = aiConfig.multiModelProviders
+    ? (JSON.parse(aiConfig.multiModelProviders) as string[])
+    : []
+  if (multiModelProviders.length > 0) return multiModelProviders
+  const creds = resolveProviderCredentials(db)
+  return creds ? [creds.provider] : []
+}
+
 export async function callWithFallback(
   db: Database.Database,
   params: {
@@ -73,15 +114,12 @@ export async function callWithFallback(
     nativeWebSearchOnly?: boolean
   },
 ): Promise<AIFallbackResult> {
-  const aiConfig = getAIConfig(db)
-  const priority: string[] = aiConfig.providerPriority
-    ? JSON.parse(aiConfig.providerPriority)
-    : (aiConfig.provider ? [aiConfig.provider] : [])
+  const candidates = listProviderCandidates(db)
 
   let lastError: Error | null = null
   let encryptedCredentialCount = 0
   let unavailableCredentialCount = 0
-  for (const provider of priority) {
+  for (const provider of candidates) {
     if (params.nativeWebSearchOnly && provider !== 'chatgpt') continue
     const providerConfig = getProviderConfig(db, provider)
     if (!providerConfig?.apiKeyEncrypted) continue

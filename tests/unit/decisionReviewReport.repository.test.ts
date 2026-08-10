@@ -9,6 +9,7 @@ import {
   getReviewReport,
   listReviewReports,
   saveReviewReport,
+  updateReviewReportSnapshot,
 } from '../../electron/main/database/decisionReviewReportRepository'
 
 function report(generatedAt: number, headline = '今日组合风险可控') {
@@ -119,5 +120,37 @@ describe('复盘报告快照仓库', () => {
     expect(deleteReviewReport(db, first.id)).toEqual({ id: first.id })
     expect(getReviewReport(db, second.id)).toMatchObject({ id: second.id, versionNumber: 2, versionCount: 1 })
     expect(listReviewReports(db).items[0]).toMatchObject({ id: second.id, versionNumber: 2, versionCount: 1 })
+  })
+
+  it('旧快照无 aiNarrative 可读；同 version 可补写 AI 段落', () => {
+    const saved = saveReviewReport(db, {
+      requestId: randomUUID(),
+      periodStart: '2026-07-15',
+      periodEnd: '2026-07-15',
+      report: report(now),
+    }, now)
+    expect(getReviewReport(db, saved.id).snapshot.aiNarrative).toBeUndefined()
+    expect(saved.versionNumber).toBe(1)
+
+    const patched = updateReviewReportSnapshot(db, {
+      id: saved.id,
+      report: {
+        ...report(now),
+        aiNarrative: {
+          status: 'ready',
+          text: '需继续验证证据缺口与开放风险。',
+          generatedAt: now,
+          provider: 'qwen',
+          model: 'qwen-plus',
+        },
+      },
+    }, now + 1)
+
+    expect(patched).toMatchObject({ id: saved.id, versionNumber: 1, versionCount: 1 })
+    expect(getReviewReport(db, saved.id).snapshot.aiNarrative).toEqual(expect.objectContaining({
+      status: 'ready',
+      text: '需继续验证证据缺口与开放风险。',
+    }))
+    expect(listReviewReports(db, { includeAllVersions: true }).items).toHaveLength(1)
   })
 })

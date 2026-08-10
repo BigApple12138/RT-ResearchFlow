@@ -86,6 +86,7 @@ export interface TrendWorkbenchItem {
     scoreDate: string
     factsHash: string
     createdAt: number
+    source: 'gate' | 'model'
   } | null
 }
 

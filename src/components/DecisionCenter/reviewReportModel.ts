@@ -74,6 +74,21 @@ export interface ReviewReportSummaryBar {
   followUpCount: number
 }
 
+/** FR-250: 报告内嵌 AI 研判段落（可选；旧快照无此字段视为未生成） */
+export type ReviewAiNarrativeStatus = 'pending' | 'ready' | 'error' | 'skipped'
+
+export interface ReviewAiNarrative {
+  status: ReviewAiNarrativeStatus
+  text: string | null
+  generatedAt?: number
+  provider?: string
+  model?: string
+  errorCode?: string
+  errorMessage?: string
+}
+
+export const REVIEW_AI_NARRATIVE_MAX_CHARS = 2500
+
 export interface ReviewReport {
   kind: ReviewReportKind
   rangeDays: number
@@ -87,6 +102,7 @@ export interface ReviewReport {
   followUps: ReviewReportFollowUpItem[]
   disclaimer: string
   emptyDay: boolean
+  aiNarrative?: ReviewAiNarrative | null
 }
 
 /** @deprecated 使用 ReviewReport; 保留别名兼容 P1 调用 */
@@ -528,6 +544,20 @@ export function formatReviewReportText(report: ReviewReport): string {
     for (const item of report.followUps) {
       lines.push(`- ${item.stockName} · ${item.tagLabel} · ${item.title}${item.note ? ` · ${item.note}` : ''}`)
     }
+  }
+  lines.push('')
+  lines.push('## AI 研判')
+  const ai = report.aiNarrative
+  if (!ai || ai.status === 'skipped') {
+    lines.push('- AI 研判未生成')
+  } else if (ai.status === 'pending') {
+    lines.push('- AI 研判生成中…')
+  } else if (ai.status === 'error') {
+    lines.push(`- AI 研判未生成：${ai.errorMessage || ai.errorCode || '调用失败'}`)
+  } else if (ai.text?.trim()) {
+    lines.push(ai.text.trim())
+  } else {
+    lines.push('- AI 研判未生成')
   }
   lines.push('')
   lines.push(report.disclaimer)

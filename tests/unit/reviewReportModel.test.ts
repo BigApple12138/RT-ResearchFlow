@@ -205,3 +205,24 @@ describe('buildWeeklyReviewReport', () => {
     expect(formatDailyReviewReportText(report)).toContain('近 7 个自然日')
   })
 })
+
+describe('formatReviewReportText AI 节', () => {
+  it('成功时包含 AI 研判正文，失败时写明未生成原因', () => {
+    const base = buildDailyReviewReport({
+      holdings: [{ tsCode: '600000.SH', stockName: '浦发银行', addedAt: 1, costPrice: 10 }],
+      signals: [],
+    })
+    const ready = formatDailyReviewReportText({
+      ...base,
+      aiNarrative: { status: 'ready', text: '证据仍不足，需继续验证持仓风险。', generatedAt: 1, provider: 'qwen', model: 'x' },
+    })
+    expect(ready).toContain('## AI 研判')
+    expect(ready).toContain('证据仍不足，需继续验证持仓风险。')
+
+    const failed = formatDailyReviewReportText({
+      ...base,
+      aiNarrative: { status: 'error', text: null, errorCode: 'AI_NOT_CONFIGURED', errorMessage: '尚未配置可用的 AI' },
+    })
+    expect(failed).toContain('AI 研判未生成：尚未配置可用的 AI')
+  })
+})

@@ -62,6 +62,10 @@ describe('FR-240 第二轮真实行情上下文', () => {
     expect(result.markdown).toContain('近20日最低价')
     expect(result.markdown).toContain('近20日最高价')
     expect(result.markdown).toContain('不是预测目标、止损位或交易指令')
+    expect(result.markdown).toContain('量能摘要')
+    expect(result.markdown).toContain('成交量')
+    expect(result.markdown).toContain('观察事实、非买卖信号')
+    expect(result.markdown).toContain('近5日量能变化')
   })
 
   it('合并个股行情缓存中的较新交易日并限制为最近30个有效样本', async () => {

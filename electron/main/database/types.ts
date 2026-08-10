@@ -2312,6 +2312,19 @@ export interface DecisionSignalEventRow {
 
 export type DecisionReviewReportKind = 'daily' | 'weekly'
 
+export type DecisionReviewAiNarrativeStatus = 'pending' | 'ready' | 'error' | 'skipped'
+
+/** FR-250: 可选；旧快照无字段视为无 AI */
+export interface DecisionReviewAiNarrative {
+  status: DecisionReviewAiNarrativeStatus
+  text: string | null
+  generatedAt?: number
+  provider?: string
+  model?: string
+  errorCode?: string
+  errorMessage?: string
+}
+
 export interface DecisionReviewReportSnapshot {
   kind: DecisionReviewReportKind
   rangeDays: number
@@ -2332,6 +2345,7 @@ export interface DecisionReviewReportSnapshot {
   followUps: unknown[]
   disclaimer: string
   emptyDay: boolean
+  aiNarrative?: DecisionReviewAiNarrative | null
 }
 
 export interface DecisionReviewReportRow {

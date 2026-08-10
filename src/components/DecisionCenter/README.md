@@ -30,11 +30,13 @@ FR-231 实现批 2 起, 组合模式指挥区四指标改为“持仓数 / 持�
 FR-231 实现批 3 起, 组合模式左侧队列改为按 `tsCode` 聚合的组合待办; 同票多来源合并为一条主任务并展示来源数。缺成本且无开放信号时生成仅可跳转走势图的合成待办 (负 id, 禁止 markRead/dismiss)。进度面板使用 `progress.title/description`, 组合模式文案区分“尚未添加持仓 / 组合待办已清空 / 组合还有 N 条待处理”。无持仓时展示 `PortfolioNoHoldingEmptyState`, 主 CTA 去添加持仓。
 FR-232 起, 组合待办主按钮「研判」打开 `StockJudgmentPanel` (为何出现 / 证据缺口 / 结论标签); 原信号生命周期抽屉降级为「事件明细」, 再次触发默认折叠为 ×N。FR-237 起, `applyStockJudgment` 只调用一次 `decision:saveJudgment`, 主进程在同一事务内追加不可变判断版本并投影来源信号状态与兼容备注; 保存后仍基于**刷新后的**信号列表选下一条组合待办。单股走势图「按股研判」复用同一接口和证据快照语义。
 FR-238 起, 组合模式左栏在普通信号待办上方展示已到期判断回访。回访任务由最新判断版本的 `reviewDueAt` 与只追加完成事实派生, 用户可维持判断、修正判断或结束观察; 完成动作由主进程事务同时追加下一版判断与回访事实, 并可安排 3/7/14 天后的下一次回访。判断记录同时展示计划回访和已到期状态。日/周复盘的已处理区消费事务生成的下一版判断, 待验证区只展示真实到期任务, 不再按观察标签推测待办。
-FR-233 起, 组合模式指挥区提供「生成今日复盘」(`data-testid: decision-generate-daily-review`)。`reviewReportModel.ts` 从前端已有 signals/holdings/portfolioRisk 即时派生日报告 (摘要 / 已处理 / 未处理风险 / 证据缺口 / 待验证 / 弱声明), 由 `ReviewReportPanel` 抽屉展示并可复制纯文本; 首版不落库、不新增 IPC。无信号日也生成「持仓平稳」短报告。
-FR-233 P2 起, 同区增加「生成本周复盘」(`data-testid: decision-generate-weekly-review`)。周报固定近 7 个自然日, 通过既有 `decision:getHistorySignals({ rangeDays: 7, portfolioOnly: true, limit: 100 })` 拉历史, 已处理/待验证来自历史, 未处理风险与证据缺口优先用今日开放信号, 避免历史已结案项冒充当前风险。
+FR-250 起, 一键复盘 / 生成本周复盘在本地事实报告展示后**自动**调用一次模型, 在报告内写入「AI 研判」单段落并同轮补写到同一 `version` 快照 (`decision:generateReviewAiNarrative` + `decision:updateReviewReportSnapshot`)。AI 失败或未配置为软失败: 本地段落与保存保留, 抽屉内展示错误并可「仅重试 AI」; 关闭抽屉取消 in-flight 回调且不后台补写。输出约束禁止荐股/买卖点/收益承诺/仓位指令。「和 AI 讨论」(FR-239) 仍要求报告已保存后可用, 不被自动研判替代。
+FR-233 起, 指挥区常显「一键复盘」(`data-testid: decision-generate-daily-review`, 组合与全部信号视图均可见), 行为等同原「生成今日复盘」: `reviewReportModel.ts` 从前端已有 signals/holdings/portfolioRisk 即时派生日报告 (摘要 / 已处理 / 未处理风险 / 证据缺口 / 待验证 / 弱声明), 由 `ReviewReportPanel` 抽屉展示并可复制纯文本; 无信号日也生成「持仓平稳」短报告。组合视图另保留「生成本周复盘」「历史复盘」「判断记录」; 市场视图不强制露出周报/判断记录。
+持仓风险迷你面板「建议入口」为「看复盘」时可点 (`data-testid: decision-suggest-open-review`) 打开历史复盘抽屉; 为「补成本价」时保持静态文案, 不误开历史。关键指标「复盘积压」可点 (`data-testid: decision-metric-review-backlog`) 打开同一历史复盘抽屉; 高优先级 / 持仓风险 / 短线机会本批仍只读。
+FR-233 P2 起, 组合模式同区增加「生成本周复盘」(`data-testid: decision-generate-weekly-review`)。周报固定近 7 个自然日, 通过既有 `decision:getHistorySignals({ rangeDays: 7, portfolioOnly: true, limit: 100 })` 拉历史, 已处理/待验证来自历史, 未处理风险与证据缺口优先用今日开放信号, 避免历史已结案项冒充当前风险。
 FR-236 起, 日报和周报生成后会按北京时间周期自动保存不可变本地快照。保存失败不影响当前报告展示, 抽屉会显示独立错误并用同一 `requestId` 重试, 避免重试产生重复版本。
 FR-239 起, 已成功保存的日/周复盘、信号行、信号详情、按股研判和判断详情可进入同一 AI 研究讨论。报告保存成功前“和 AI 讨论”保持禁用，避免把未持久化的临时报告冒充受信来源。返回后按 `stateKey/entityId/scrollTop` 恢复原报告、信号抽屉或判断详情，并继续保留决策中心筛选与局部滚动位置。
-组合指挥区的「历史复盘」打开 `ReviewReportHistoryPanel`, 默认每个周期只显示最新版本, 支持日报/周报筛选、分页、进入同周期版本列表、打开任一历史快照和二次确认删除单个版本。打开旧报告只读取保存时快照, 不按当前持仓重新计算。
+组合指挥区的「历史复盘」与看复盘/复盘积压入口打开同一 `ReviewReportHistoryPanel`, 默认每个周期只显示最新版本, 支持日报/周报筛选、分页、进入同周期版本列表、打开任一历史快照和二次确认删除单个版本。打开旧报告只读取保存时快照, 不按当前持仓重新计算。
 FR-234 起, 右侧「复盘与持仓风险」增加「事后对照」页签 (`data-testid: decision-outcome-tab`)。主进程只读 `decision:getOutcomeMemory` 聚合带 `[judgment:tag]` 的结案样本与本地日线 T+5 窗口收益, 输出 aligned/mixed/misaligned/blocked 与按标签偏差画像; noise/insufficient 不参与方向评估; 不改历史结论、不触发全市场日线同步。
 FR-235 起, 组合空态的「去添加持仓」会启动当前渲染会话内的首次持仓任务并进入走势图。普通导航进入走势图不会启动该任务, 避免干扰已有用户的日常看盘路径。
 筛选器视觉上与今日看板首屏指标区同属工作台控制层, 使用 segmented control 和独立优先级滑块; 不应回退为重边框后台表单。状态筛选优先展示“待处理 / 全部 / 未读 / 关注中”, 来源筛选优先展示“全部来源 / 趋势 / 短线 / 资讯”, 其它低频来源可收纳到轻量下拉。
@@ -72,8 +74,9 @@ FR-180 起, 今日看板支持“我的持仓”筛选。该筛选不依赖新�
 - `SignalFilters.tsx`: FR-231 起首行提供 `组合 / 全部信号` 主切换 (`data-testid`: `decision-view-mode-portfolio` / `decision-view-mode-market`); 类型下拉不再承载“我的持仓”主入口。
 - `portfolioCommandModel.ts`: 组合模式摘要、四指标、按股聚合待办与组合进度派生; 输入为当前信号、`portfolio:list` 持仓行和持仓风险复盘。
 - `stockJudgmentModel.ts` / `StockJudgmentPanel.tsx`: FR-232 按股研判主路径; FR-237 提交原始备注、相关信号和证据快照到独立判断账本, 生命周期仅作高级事件明细。
-- `reviewReportModel.ts` / `ReviewReportPanel.tsx`: FR-233 日复盘报告即时派生与抽屉展示; FR-236 增加本地快照保存状态和幂等重试反馈; 解析 `[judgment:tag]`, 失败降级纯文本。
+- `reviewReportModel.ts` / `ReviewReportPanel.tsx`: FR-233 日复盘报告即时派生与抽屉展示; FR-236 增加本地快照保存状态和幂等重试反馈; FR-250 增加「AI 研判」独立区块、loading/error、「仅重试 AI」与复制文本中的 AI 节; 解析 `[judgment:tag]`, 失败降级纯文本。
 - `ReviewReportHistoryPanel.tsx`: FR-236 历史报告入口, 维护类型筛选、分页、周期版本下钻、详情读取和单版本删除确认。
+- `decision:generateReviewAiNarrative` / `decision:updateReviewReportSnapshot`: FR-250 主进程窄 IPC; 前者复用 `callWithFallback` 生成单段落, 后者同 version 补写快照。
 - `JudgmentHistoryPanel.tsx`: FR-237 判断账本入口, 支持标签筛选、分页、不可变版本详情和基于同一判断组追加修正版; 来源信号失效时仍保留并可修正判断链。
 - `useResearchDiscussionNavigation`: FR-239 的统一来源启动入口；信号使用 `decision_signal`，判断详情使用 `judgment`，持久化日报/周报分别使用 `daily_review/weekly_review`。所有入口默认恢复同来源进行中讨论，不自动整理候选。
 - `ActionQueuePanel.tsx`: 支持组合模式标题/副标题/空态覆盖, 以及聚合后的 `displayTitle`/`sourceCount`; `judgmentMode` 下 lifecycle 显示为「研判」。

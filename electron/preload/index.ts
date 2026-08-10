@@ -962,6 +962,15 @@ interface ReviewReportSnapshot {
   followUps: unknown[]
   disclaimer: string
   emptyDay: boolean
+  aiNarrative?: {
+    status: 'pending' | 'ready' | 'error' | 'skipped'
+    text: string | null
+    generatedAt?: number
+    provider?: string
+    model?: string
+    errorCode?: string
+    errorMessage?: string
+  } | null
 }
 
 interface SavedReviewReportSummary {
@@ -1188,6 +1197,7 @@ interface TrendStructureReviewDto {
   scoreDate: string
   factsHash: string
   createdAt: number
+  source: 'gate' | 'model'
 }
 
 interface TrendWorkbenchItem {
@@ -2409,7 +2419,7 @@ const api = {
       >,
     getStockMiniKline: (tsCode: string) =>
       ipcRenderer.invoke('shortTerm:getStockMiniKline', { tsCode }) as Promise<
-        | { ok: true; rows: Array<{ tsCode: string; tradeDate: string; open: number | null; high: number | null; low: number | null; close: number; pctChg: number; amount: number | null }> }
+        | { ok: true; rows: Array<{ tsCode: string; tradeDate: string; open: number | null; high: number | null; low: number | null; close: number; pctChg: number; vol: number | null; amount: number | null }> }
         | { ok: false; error: string }
       >,
     getStockIntraday: (tsCode: string) =>
@@ -3421,14 +3431,14 @@ const api = {
         error?: string
         message?: string
       }>,
-    reviewStructure: (payload: { requestId: string; tsCode: string }) =>
+    reviewStructure: (payload: { requestId: string; tsCode: string; forceModelRefresh?: boolean }) =>
       ipcRenderer.invoke('trend:reviewStructure', payload) as Promise<{
         ok: boolean
         data?: TrendStructureReviewDto
         error?: string
         message?: string
       }>,
-    reviewStructureBatch: (payload: { requestId: string; tsCodes: string[] }) =>
+    reviewStructureBatch: (payload: { requestId: string; tsCodes: string[]; forceModelRefresh?: boolean }) =>
       ipcRenderer.invoke('trend:reviewStructureBatch', payload) as Promise<{
         ok: boolean
         data?: Array<{
@@ -3615,6 +3625,23 @@ const api = {
         ok: boolean
         data?: SavedReviewReportSummary
         error?: string
+        message?: string
+      }>,
+    updateReviewReportSnapshot: (payload: {
+      id: string
+      report: ReviewReportSnapshot
+    }) =>
+      ipcRenderer.invoke('decision:updateReviewReportSnapshot', payload) as Promise<{
+        ok: boolean
+        data?: SavedReviewReportSummary
+        error?: string
+        message?: string
+      }>,
+    generateReviewAiNarrative: (payload: { report: ReviewReportSnapshot }) =>
+      ipcRenderer.invoke('decision:generateReviewAiNarrative', payload) as Promise<{
+        ok: boolean
+        data?: ReviewReportSnapshot['aiNarrative']
+        error?: { code: string; message: string } | string
         message?: string
       }>,
     listReviewReports: (filters?: ReviewReportListFilters) =>

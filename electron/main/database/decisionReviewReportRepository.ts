@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type Database from 'better-sqlite3'
 import type {
+  DecisionReviewAiNarrative,
   DecisionReviewReportKind,
   DecisionReviewReportSnapshot,
   SavedReviewReportDetail,
@@ -74,6 +75,24 @@ function validateDate(value: unknown, field: string): string {
   return date
 }
 
+function validateAiNarrative(value: unknown): DecisionReviewAiNarrative | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (!isRecord(value)) invalid('report.aiNarrative 必须为对象')
+  const status = value.status
+  if (status !== 'pending' && status !== 'ready' && status !== 'error' && status !== 'skipped') {
+    invalid('report.aiNarrative.status 无效')
+  }
+  if (value.text != null && typeof value.text !== 'string') invalid('report.aiNarrative.text 无效')
+  if (value.generatedAt != null && (!Number.isInteger(value.generatedAt) || (value.generatedAt as number) < 0)) {
+    invalid('report.aiNarrative.generatedAt 无效')
+  }
+  for (const field of ['provider', 'model', 'errorCode', 'errorMessage'] as const) {
+    if (value[field] != null && typeof value[field] !== 'string') invalid(`report.aiNarrative.${field} 无效`)
+  }
+  return value as unknown as DecisionReviewAiNarrative
+}
+
 function validateSnapshot(value: unknown, now: number): DecisionReviewReportSnapshot {
   if (!isRecord(value)) invalid('report 必须为对象')
   if (value.kind !== 'daily' && value.kind !== 'weekly') invalid('report.kind 无效')
@@ -94,7 +113,18 @@ function validateSnapshot(value: unknown, now: number): DecisionReviewReportSnap
       if (!isRecord(item)) invalid(`report.${field} 包含无效条目`)
     }
   }
-  return value as unknown as DecisionReviewReportSnapshot
+  const aiNarrative = validateAiNarrative(value.aiNarrative)
+  const snapshot = { ...value } as Record<string, unknown>
+  if (aiNarrative === undefined) {
+    delete snapshot.aiNarrative
+  } else {
+    snapshot.aiNarrative = aiNarrative
+  }
+  return snapshot as unknown as DecisionReviewReportSnapshot
+}
+
+export function assertValidReviewReportSnapshot(value: unknown, now = Date.now()): DecisionReviewReportSnapshot {
+  return validateSnapshot(value, now)
 }
 
 function validatePeriod(kind: DecisionReviewReportKind, periodStart: string, periodEnd: string, rangeDays: number): void {
@@ -179,6 +209,58 @@ export function saveReviewReport(
   })
 
   const id = save()
+  return getReviewReportSummary(db, id)
+}
+
+export interface UpdateReviewReportSnapshotInput {
+  id: string
+  report: unknown
+}
+
+/**
+ * FR-250: 同轮补写 AI 研判等到同一 version 行；不新增 version_number。
+ */
+export function updateReviewReportSnapshot(
+  db: Database.Database,
+  input: UpdateReviewReportSnapshotInput,
+  now = Date.now(),
+): SavedReviewReportSummary {
+  const id = requireText(input.id, 'id')
+  const existing = db.prepare('SELECT id, kind, period_start, period_end FROM decision_review_reports WHERE id = ?')
+    .get(id) as { id: string; kind: DecisionReviewReportKind; period_start: string; period_end: string } | undefined
+  if (!existing) throw new DecisionReviewReportRepositoryError('NOT_FOUND', '复盘报告不存在')
+
+  const report = validateSnapshot(input.report, now)
+  validatePeriod(report.kind, existing.period_start, existing.period_end, report.rangeDays)
+  if (report.kind !== existing.kind) invalid('report.kind 与已保存报告不一致')
+
+  const snapshotJson = JSON.stringify(report)
+  if (Buffer.byteLength(snapshotJson, 'utf8') > REVIEW_REPORT_MAX_BYTES) {
+    throw new DecisionReviewReportRepositoryError('PAYLOAD_TOO_LARGE', '报告快照超过 512 KiB')
+  }
+
+  db.prepare(`
+    UPDATE decision_review_reports
+    SET snapshot_json = ?,
+        title = ?,
+        headline = ?,
+        open_risk_count = ?,
+        evidence_gap_count = ?,
+        follow_up_count = ?,
+        generated_at = ?,
+        saved_at = ?
+    WHERE id = ?
+  `).run(
+    snapshotJson,
+    report.title,
+    report.headline,
+    report.summary.openRiskCount,
+    report.summary.evidenceGapCount,
+    report.summary.followUpCount,
+    report.generatedAt,
+    now,
+    id,
+  )
   return getReviewReportSummary(db, id)
 }
 

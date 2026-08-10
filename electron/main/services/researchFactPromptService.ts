@@ -12,6 +12,7 @@ import {
   type StockPriceHistoryData,
   type StockTrendSnapshotData,
 } from './researchFactToolRegistry'
+import { summarizeVolumeEnergy } from './volumeContextSummary'
 import {
   buildContextResearchEvidenceContrast,
   buildStockResearchEvidenceContrast,
@@ -388,8 +389,15 @@ function formatStockFacts(
   const priceLine = priceHistory
     ? `- 日线工具：${priceHistory.status}；事实日=${formatDate(priceHistory.data.bars.at(-1)?.tradeDate)}；覆盖=${priceHistory.coverage.available}/${priceHistory.coverage.required ?? '--'}根；最新收盘=${formatNumber(priceHistory.data.bars.at(-1)?.close)}\n`
     : ''
+  const volumeLine = priceHistory && priceHistory.data.bars.length > 0
+    ? `${summarizeVolumeEnergy(priceHistory.data.bars.map((bar) => ({
+        tradeDate: bar.tradeDate,
+        volume: bar.volume,
+        amount: bar.amount,
+      })))}\n`
+    : ''
   return `### ${stockCode}｜${name}
-${priceLine}- 趋势工具：${trend.status}；事实日=${formatDate(trend.data.tradeDate)}；覆盖=${trend.coverage.available}/${trend.coverage.required ?? '--'}根；综合分=${formatNumber(trend.data.totalScore)}；有效权重=${formatPercentRatio(trend.data.validWeight)}；状态=${trend.data.trendState}
+${priceLine}${volumeLine}- 趋势工具：${trend.status}；事实日=${formatDate(trend.data.tradeDate)}；覆盖=${trend.coverage.available}/${trend.coverage.required ?? '--'}根；综合分=${formatNumber(trend.data.totalScore)}；有效权重=${formatPercentRatio(trend.data.validWeight)}；状态=${trend.data.trendState}
 - 趋势事实：个股20日收益=${formatPercent(trend.data.facts?.stockReturn20d)}；沪深300同期=${formatPercent(trend.data.facts?.benchmarkReturn20d)}；超额=${formatPercent(trend.data.facts?.excessReturn20d)}；20日最大回撤=${formatPercent(trend.data.facts?.maxDrawdown20d)}
 - 基本面工具：${fundamentals.status}；来源=${formatSources(fundamentals)}
 - 公司身份：${profile

@@ -5,6 +5,7 @@ import {
   type ResearchPriceBar,
   type StockPriceHistoryData,
 } from './researchFactToolRegistry'
+import { formatVolumeHand, summarizeVolumeEnergy } from './volumeContextSummary'
 
 const MAX_MARKET_BARS = 30
 const MIN_MARKET_BARS = 10
@@ -74,8 +75,14 @@ function buildStockSection(data: StockPriceHistoryData): string {
   const range20 = priceRange(rows, 20)
 
   const tableRows = rows.map((row) => (
-    `| ${formatTradeDate(row.tradeDate)} | ${formatPrice(row.open)} | ${formatPrice(row.high)} | ${formatPrice(row.low)} | ${formatPrice(row.close)} | ${row.volume == null ? '--' : formatPrice(row.volume)} |`
+    `| ${formatTradeDate(row.tradeDate)} | ${formatPrice(row.open)} | ${formatPrice(row.high)} | ${formatPrice(row.low)} | ${formatPrice(row.close)} | ${formatVolumeHand(row.volume)} |`
   )).join('\n')
+
+  const volumeSummary = summarizeVolumeEnergy(rows.map((row) => ({
+    tradeDate: row.tradeDate,
+    volume: row.volume,
+    amount: row.amount,
+  })))
 
   return `### ${code}｜${name}
 - 样本：${formatTradeDate(first.tradeDate)} 至 ${formatTradeDate(latest.tradeDate)}，${rows.length} 个有效交易日
@@ -84,6 +91,7 @@ function buildStockSection(data: StockPriceHistoryData): string {
 - 收盘均线：MA5 ${formatPrice(movingAverage(rows, 5))}；MA10 ${formatPrice(movingAverage(rows, 10))}；MA20 ${formatPrice(movingAverage(rows, 20))}
 - 支撑观察参考：近5日最低价 ${formatPrice(range5?.low ?? null)}；近20日最低价 ${formatPrice(range20?.low ?? null)}
 - 压力观察参考：近5日最高价 ${formatPrice(range5?.high ?? null)}；近20日最高价 ${formatPrice(range20?.high ?? null)}
+${volumeSummary}
 
 | 日期 | 开盘 | 最高 | 最低 | 收盘 | 成交量(手) |
 |---|---:|---:|---:|---:|---:|

@@ -11,6 +11,8 @@ interface ReviewReportPanelProps {
   saveError?: string | null
   savedMeta?: { versionNumber: number; versionCount: number; savedAt: number } | null
   onRetrySave?: () => void
+  onRetryAi?: () => void
+  aiBusy?: boolean
   onDiscuss?: () => void
   discussLabel?: string
   discussLoading?: boolean
@@ -30,7 +32,7 @@ function formatGeneratedAt(ms: number): string {
 }
 
 /**
- * FR-233/FR-236: 日/周复盘报告抽屉与快照保存反馈。
+ * FR-233/FR-236/FR-250: 日/周复盘报告抽屉、快照保存反馈与 AI 研判段落。
  */
 export function ReviewReportPanel({
   open,
@@ -41,6 +43,8 @@ export function ReviewReportPanel({
   saveError = null,
   savedMeta = null,
   onRetrySave,
+  onRetryAi,
+  aiBusy = false,
   onDiscuss,
   discussLabel = '和 AI 讨论',
   discussLoading = false,
@@ -234,6 +238,61 @@ export function ReviewReportPanel({
               />
             ))}
           </ReportSection>
+
+          <section className="mt-5" data-testid="review-report-ai-narrative">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">AI 研判</h3>
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">辅助研判，非投资建议</span>
+            </div>
+            <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/70 px-3 py-2 text-sm leading-6 text-slate-800 dark:border-violet-900/50 dark:bg-violet-950/30 dark:text-slate-100">
+              {(aiBusy || report.aiNarrative?.status === 'pending') && (
+                <p data-testid="review-report-ai-loading">AI 研判生成中…</p>
+              )}
+              {!aiBusy && report.aiNarrative?.status === 'ready' && report.aiNarrative.text && (
+                <p data-testid="review-report-ai-text" className="whitespace-pre-wrap">{report.aiNarrative.text}</p>
+              )}
+              {!aiBusy && (!report.aiNarrative || report.aiNarrative.status === 'skipped') && (
+                <p data-testid="review-report-ai-missing" className="text-slate-500 dark:text-slate-400">AI 研判未生成</p>
+              )}
+              {!aiBusy && report.aiNarrative?.status === 'error' && (
+                <div data-testid="review-report-ai-error" className="space-y-2">
+                  <p className="text-red-700 dark:text-red-300">
+                    {report.aiNarrative.errorMessage || report.aiNarrative.errorCode || 'AI 研判失败'}
+                  </p>
+                  {onRetryAi && (
+                    <button
+                      type="button"
+                      data-testid="review-report-ai-retry"
+                      onClick={onRetryAi}
+                      className="text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+                    >
+                      仅重试 AI
+                    </button>
+                  )}
+                </div>
+              )}
+              {!aiBusy && report.aiNarrative?.status === 'ready' && !report.aiNarrative.text && onRetryAi && (
+                <button
+                  type="button"
+                  data-testid="review-report-ai-retry"
+                  onClick={onRetryAi}
+                  className="text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+                >
+                  仅重试 AI
+                </button>
+              )}
+              {!aiBusy && (!report.aiNarrative || report.aiNarrative.status === 'skipped') && onRetryAi && (
+                <button
+                  type="button"
+                  data-testid="review-report-ai-retry"
+                  onClick={onRetryAi}
+                  className="mt-2 text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+                >
+                  仅重试 AI
+                </button>
+              )}
+            </div>
+          </section>
 
           <p className="mt-5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
             {report.disclaimer}

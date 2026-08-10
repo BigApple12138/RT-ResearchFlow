@@ -215,4 +215,90 @@ describe('趋势结构复核服务', () => {
     })).rejects.toThrow('TREND_REVIEW_REQUEST_CONFLICT')
     expect(callAI).toHaveBeenCalledTimes(1)
   })
+
+  it('forceModelRefresh 时同 hash 仍调模型并产生新 revision', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '第二次意见。', focusPoints: ['再看量价'] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId: randomUUID(), tsCode: '600000.SH' }, dependencies)
+    const forced = await reviewStructure(db, {
+      requestId: randomUUID(),
+      tsCode: '600000.SH',
+      forceModelRefresh: true,
+    }, { ...dependencies, now: () => 2_000 })
+
+    expect(forced.review.revisionId).not.toBe(first.review.revisionId)
+    expect(forced.factsHash).toBe(first.factsHash)
+    expect(forced.review.rationale).toBe('第二次意见。')
+    expect(callAI).toHaveBeenCalledTimes(2)
+  })
+
+  it('forceModelRefresh=false 时同 hash 不调模型', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId: randomUUID(), tsCode: '600000.SH' }, dependencies)
+    const reused = await reviewStructure(db, {
+      requestId: randomUUID(),
+      tsCode: '600000.SH',
+      forceModelRefresh: false,
+    }, dependencies)
+
+    expect(reused.review.revisionId).toBe(first.review.revisionId)
+    expect(callAI).toHaveBeenCalledTimes(1)
+  })
+
+  it('forceModelRefresh 不能推翻门闸，仍不调 LLM', async () => {
+    const callAI = vi.fn()
+    await reviewStructure(db, {
+      requestId: randomUUID(),
+      tsCode: '600000.SH',
+      forceModelRefresh: true,
+    }, {
+      getWorkbench: () => createSnapshot({
+        totalScore: null,
+        validWeight: 0.5,
+        dataCoverage: { bars: 20, requiredBars: 60, latestTradeDate: '20260808', state: 'partial' },
+      }),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+    expect(callAI).not.toHaveBeenCalled()
+  })
+
+  it('同一 requestId 重放优先于 forceModelRefresh，不二次调模型', async () => {
+    const requestId = randomUUID()
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId, tsCode: '600000.SH', forceModelRefresh: true }, dependencies)
+    const replay = await reviewStructure(db, { requestId, tsCode: '600000.SH', forceModelRefresh: true }, dependencies)
+    expect(replay.review.revisionId).toBe(first.review.revisionId)
+    expect(callAI).toHaveBeenCalledTimes(1)
+  })
 })

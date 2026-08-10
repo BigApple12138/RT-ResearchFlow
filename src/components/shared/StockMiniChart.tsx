@@ -13,6 +13,7 @@ import {
   createChart,
   ColorType,
   CandlestickSeries,
+  HistogramSeries,
   LineSeries,
   LineStyle,
 } from 'lightweight-charts'
@@ -48,7 +49,18 @@ interface Props {
 }
 
 type OhlcvRow = StockStructureRow
-type CandleTooltip = { x: number; y: number; date: string; open: number | null; high: number | null; low: number | null; close: number; pctChg: number | null; amount: number | null }
+type CandleTooltip = {
+  x: number
+  y: number
+  date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number
+  pctChg: number | null
+  vol: number | null
+  amount: number | null
+}
 type ChipProfileTooltip = { y: number; price: number; selectedPercent: number; latestPercent: number | null }
 
 const CANDLE_HEIGHT = 460
@@ -262,6 +274,28 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
           }))
           candleSeries.setData(data)
 
+          // 成交量柱（手）：独立 volume 轴，涨跌半透明着色；缺 vol 跳过，不用 0 充数
+          const histSeries = candleChart.addSeries(HistogramSeries, {
+            priceScaleId: 'volume',
+            priceFormat: { type: 'volume' },
+            priceLineVisible: false,
+            lastValueVisible: false,
+          })
+          candleChart.priceScale('volume').applyOptions({
+            scaleMargins: { top: 0.72, bottom: 0 },
+          })
+          histSeries.setData(
+            ohlcvRows
+              .filter((r) => r.vol != null && Number.isFinite(r.vol))
+              .map((r) => ({
+                time: `${r.tradeDate.slice(0, 4)}-${r.tradeDate.slice(4, 6)}-${r.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
+                value: r.vol as number,
+                color: (r.close >= (r.open ?? r.close))
+                  ? 'rgba(239, 68, 68, 0.5)'
+                  : 'rgba(34, 197, 94, 0.5)',
+              })),
+          )
+
           const addChartLine = (
             lineData: Array<{ time: import('lightweight-charts').Time; value: number }>,
             color: string,
@@ -312,6 +346,7 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
             low: r.low ?? null,
             close: r.close,
             pctChg: r.pctChg ?? null,
+            vol: r.vol ?? null,
             amount: r.amount ?? null,
           }))
           ohlcvRowsRef.current = normalizedRows
@@ -326,7 +361,7 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
             setSelectedDate(isLatest ? null : ymd)
           })
 
-          // 十字线移动时展示 OHLC + 成交额 tooltip
+          // 十字线移动时展示 OHLC + 成交量(手) + 可选成交额
           candleChart.subscribeCrosshairMove((param) => {
             if (!param.time || !param.point) { setCandleTooltip(null); return }
             const ymd = (param.time as string).replace(/-/g, '')
@@ -341,6 +376,7 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
               low: row.low,
               close: row.close,
               pctChg: row.pctChg,
+              vol: row.vol,
               amount: row.amount,
             })
           })
@@ -632,9 +668,14 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
                   {candleTooltip.pctChg != null && (
                     <div className={`mt-1 font-mono ${tooltipPctColor}`}>
                       {candleTooltip.pctChg > 0 ? '+' : ''}{candleTooltip.pctChg.toFixed(2)}%
-                      {candleTooltip.amount != null && <span className="ml-2 text-slate-400">{(candleTooltip.amount / 100000).toFixed(2)}亿</span>}
                     </div>
                   )}
+                  <div className="mt-1 font-mono text-slate-400">
+                    量 {candleTooltip.vol != null ? `${Number(candleTooltip.vol.toFixed(0)).toLocaleString('zh-CN')}手` : '—'}
+                    {candleTooltip.amount != null && (
+                      <span className="ml-2">额 {(candleTooltip.amount / 100000).toFixed(2)}亿</span>
+                    )}
+                  </div>
                 </div>
               )
             })()}

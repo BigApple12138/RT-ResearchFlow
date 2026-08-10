@@ -22,7 +22,7 @@ import {
   resolveArticleAnalysisPrompt,
   runCandidateRecovery,
 } from '../aiPromptDefaults'
-import { callWithFallback, resolveProviderCredentials } from '../services/aiFallbackService'
+import { callWithFallback, resolveForecastProviderIds, resolveProviderCredentials } from '../services/aiFallbackService'
 import { CandidateRecoveryError, recoverSessionCandidates } from '../services/aiCandidateRecoveryService'
 import { buildSkillsBlock } from '../services/aiSkillsPromptService'
 import {
@@ -67,6 +67,10 @@ import {
   buildRound2MarketBlockedResponse,
   prepareArticleRound2MarketContext,
 } from '../services/aiRound2MarketContextService'
+import {
+  formatDailyCsvVolumeCell,
+  summarizeVolumeEnergy,
+} from '../services/volumeContextSummary'
 import { buildArticleRound2ResearchFactContext } from '../services/researchFactPromptService'
 import {
   discussionContextPreview,
@@ -195,6 +199,21 @@ const DEFAULT_TREND_MORROW_PROMPT =
   '并结合当前时政热点及该股票所属板块是否处于市场热点，综合预测明日09:30至15:00的价格走势。' +
   '跳过11:30至13:00的午休时段。' +
   '当各指标出现矛盾信号时（如MACD趋势向上但RSI6或KDJ已进入超买区），必须明确指出矛盾并倾向于保守判断，不得凭借单一指标的信号主导结论。'
+
+/** 近30日日线 CSV 块：量=成交量(手) + 紧凑量能摘要 */
+function buildRecentDailyOhlcvPromptBlock(
+  rows: Array<{ tradeDate: string; open: number | null; high: number | null; low: number | null; close: number | null; volume: number | null; amount?: number | null }>,
+): string {
+  const dailyCsv = rows.map((r) =>
+    `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${formatDailyCsvVolumeCell(r.volume)}`,
+  ).join('\n')
+  const volumeSummary = summarizeVolumeEnergy(rows.map((r) => ({
+    tradeDate: r.tradeDate,
+    volume: r.volume,
+    amount: r.amount,
+  })))
+  return `近30日日线数据（日期,开,高,低,收,量=成交量手）：\n${dailyCsv}\n${volumeSummary}`
+}
 
 function refreshStructuredResultInBackground(db: import('better-sqlite3').Database, sessionId: number, reason: string): void {
   void generateStructuredResult(db, sessionId, { force: true }).catch((err) => {
@@ -674,12 +693,8 @@ export async function performPredictTrendToday(
   stockCode: string
 ): Promise<{ ok: boolean; successCount: number; error?: { code: string; message: string } }> {
   const aiConfig = getAIConfig(db)
-  // 优先使用 multiModelProviders 列表，否则 fallback 到单个 provider
-  const multiModelProviders: string[] = aiConfig.multiModelProviders
-    ? (JSON.parse(aiConfig.multiModelProviders) as string[])
-    : []
-  const providersToUse: string[] =
-    multiModelProviders.length > 0 ? multiModelProviders : aiConfig.provider ? [aiConfig.provider] : []
+  // Prefer explicit multiModelProviders; otherwise same credential resolution as AI discussion / single-stock forecast.
+  const providersToUse = resolveForecastProviderIds(db)
 
   if (providersToUse.length === 0) {
     return { ok: false, successCount: 0, error: { code: 'AI_NOT_CONFIGURED', message: '未配置 AI 厂商' } }
@@ -2512,9 +2527,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       try {
         const allPrices = getCachedPrices(db, data.stockCode)
         const recent30 = allPrices.slice(-30)
-        const dailyCsv = recent30.map(r =>
-          `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${r.volume ?? ''}`
-        ).join('\n')
+        const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
         // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线
         const { getLatestTradeDateForStock } = await import('../database/stockMinuteCacheRepository')
         const latestMDateM = getLatestTradeDateForStock(db, data.stockCode)
@@ -2547,7 +2560,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
           const model = pc.model || (PROVIDER_MODELS as Record<string, string[]>)[p]?.[0] || ''
           if (!model) return null
           const morrowPrompt = injectTimePrefix(pc.trendForecastMorrowPrompt || aiConfig.trendForecastMorrowPrompt || DEFAULT_TREND_MORROW_PROMPT) + buildSkillsBlock(db, true)
-          const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n近30日日线数据（日期,开,高,低,收,量）：\n${dailyCsv}${intradayPart}${boardSuffix}${extraContextMM ? '\n\n' + extraContextMM : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+          const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMM ? '\n\n' + extraContextMM : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
           return { provider: p, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, prompt }
         }).filter(Boolean) as { provider: string; model: string; apiKey: string; baseUrl?: string; maxTokens?: number | null; prompt: string }[]
 
@@ -2625,9 +2638,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     try {
       const allPrices = getCachedPrices(db, data.stockCode)
       const recent30 = allPrices.slice(-30)
-      const dailyCsv = recent30.map(r =>
-        `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${r.volume ?? ''}`
-      ).join('\n')
+      const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
       // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线
       const { getLatestTradeDateForStock: getLatestDate2 } = await import('../database/stockMinuteCacheRepository')
       const latestMDateFb = getLatestDate2(db, data.stockCode)
@@ -2652,7 +2663,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       const sectorSummaryMF = buildSectorFlowSummary(db, data.stockCode)
       const smcSummaryMF = buildSMCSummary(db, data.stockCode)
       const extraContextMF = [techSummaryMF, limitSummaryMF, sectorSummaryMF, smcSummaryMF].filter(Boolean).join('\n\n')
-      const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n近30日日线数据（日期,开,高,低,收,量）：\n${dailyCsv}${intradayPart}${boardSuffix}${extraContextMF ? '\n\n' + extraContextMF : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+      const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMF ? '\n\n' + extraContextMF : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
       const aiResult = await callWithFallback(db, { messages: [{ role: 'user', content: prompt }] })
       const { points, aiReason, direction, confidence, keySupport, keyResistance } = parseForecastResponse(aiResult.text)
       if (points.length === 0) {
@@ -2833,14 +2844,14 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       } else {
         const allPrices = getCachedPrices(db, stockCode)
         const recent30 = allPrices.slice(-30)
-        const dailyCsv = recent30.map(r => `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${r.volume ?? ''}`).join('\n')
+        const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
         const { getLatestTradeDateForStock } = await import('../database/stockMinuteCacheRepository')
         const latestMinuteDate = getLatestTradeDateForStock(db, stockCode)
         const minuteRows = latestMinuteDate ? getStockMinuteByDate(db, stockCode, latestMinuteDate) : []
         const minutePart = minuteRows.length > 0
           ? `\n\n最新交易日(${latestMinuteDate})1分钟K线：${JSON.stringify(minuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))}`
           : ''
-        marketDataPart = `近30日日线数据（日期,开,高,低,收,量）：\n${dailyCsv}${minutePart}`
+        marketDataPart = `${dailyBlock}${minutePart}`
       }
 
       const timeRange = sourceForecast.type === 'today'

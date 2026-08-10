@@ -111,6 +111,8 @@ export interface ResearchPriceBar {
   low: number
   close: number
   volume: number | null
+  /** 成交额（千元），辅信息；量能主口径仍为 volume */
+  amount?: number | null
   turnoverRate: number | null
 }
 
@@ -1111,6 +1113,7 @@ function loadPriceBars(
       low: row.low,
       close: row.close,
       volume: row.vol,
+      amount: null,
       turnoverRate: row.turnoverRate,
     })
     if (bar) barsByDate.set(bar.tradeDate, bar)
@@ -1124,6 +1127,7 @@ function loadPriceBars(
       low: finiteNumber(row.low) ?? existing?.low ?? null,
       close: finiteNumber(row.close) ?? existing?.close ?? null,
       volume: finiteNumber(row.volume) ?? existing?.volume ?? null,
+      amount: finiteNumber(row.amount) ?? existing?.amount ?? null,
       turnoverRate: existing?.turnoverRate ?? null,
     })
     if (bar) barsByDate.set(bar.tradeDate, bar)
@@ -1152,6 +1156,7 @@ function completePriceBar(input: {
   low: number | null | undefined
   close: number | null | undefined
   volume: number | null | undefined
+  amount?: number | null | undefined
   turnoverRate: number | null | undefined
 }): ResearchPriceBar | null {
   const open = finiteNumber(input.open)
@@ -1166,6 +1171,7 @@ function completePriceBar(input: {
     low,
     close,
     volume: finiteNumber(input.volume),
+    amount: finiteNumber(input.amount),
     turnoverRate: finiteNumber(input.turnoverRate),
   }
 }

@@ -22,6 +22,7 @@ import {
 import { inspectTrendBenchmarkHealth, type TrendBenchmarkHealth } from './trendBenchmarkFreshness'
 import {
   buildTrendReviewFactsFromItem,
+  deriveTrendReviewSource,
   hashTrendReviewFacts,
   normalizeTrendTsCode,
   type TrendStructureReviewSummary,
@@ -143,6 +144,7 @@ function attachStructureReviews(
         scoreDate: review.scoreDate,
         factsHash: review.factsHash,
         createdAt: review.createdAt,
+        source: deriveTrendReviewSource(review.provider, review.model),
       },
     }
   })

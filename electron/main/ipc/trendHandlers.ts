@@ -59,6 +59,7 @@ import {
   type TrendStructureReviewResult,
 } from '../services/trendStructureReviewService'
 import {
+  deriveTrendReviewSource,
   normalizeTrendTsCode,
   type AiTrendVerdict,
 } from '../services/trendStructureReviewTypes'
@@ -83,6 +84,7 @@ export interface TrendReviewDto {
   scoreDate: string
   factsHash: string
   createdAt: number
+  source: 'gate' | 'model'
 }
 
 export interface TrendReviewBatchResult {
@@ -95,6 +97,7 @@ export interface TrendReviewBatchResult {
 export interface TrendReviewBatchPayload {
   requestId: string
   tsCodes: string[]
+  forceModelRefresh?: boolean
 }
 
 export type TrendReviewProgressStatus = 'running' | 'succeeded' | 'failed'
@@ -121,7 +124,7 @@ export async function runTrendReviewStructureBatch(
   payload: unknown,
   dependencies: TrendReviewBatchDependencies = {},
 ): Promise<TrendReviewBatchResult[]> {
-  const { requestId, tsCodes } = validateBatchPayload(payload)
+  const { requestId, tsCodes, forceModelRefresh } = validateBatchPayload(payload)
   const snapshot = (dependencies.getWorkbench ?? getTrendWorkbench)(db)
   const workbenchCodes = new Set(snapshot.items.map((item) => normalizeTrendTsCode(item.tsCode)))
   const runReview = dependencies.reviewStructure ?? reviewStructure
@@ -153,7 +156,7 @@ export async function runTrendReviewStructureBatch(
     try {
       const result = await runReview(
         db,
-        { requestId: `${requestId}:${tsCode}`, tsCode },
+        { requestId: `${requestId}:${tsCode}`, tsCode, forceModelRefresh },
         {
           ...(dependencies.reviewDependencies ?? {}),
           getWorkbench: () => snapshot,
@@ -193,24 +196,31 @@ function validateBatchPayload(payload: unknown): TrendReviewBatchPayload {
     || !Array.isArray(payload.tsCodes)
     || payload.tsCodes.length < 1
     || payload.tsCodes.length > 20
-    || payload.tsCodes.some((value) => typeof value !== 'string' || !TS_CODE_PATTERN.test(value.trim()))) {
+    || payload.tsCodes.some((value) => typeof value !== 'string' || !TS_CODE_PATTERN.test(value.trim()))
+    || (payload.forceModelRefresh !== undefined && typeof payload.forceModelRefresh !== 'boolean')) {
     throw new Error('INVALID_PARAM')
   }
   return {
     requestId: payload.requestId,
     tsCodes: payload.tsCodes.map((value) => value.trim().toUpperCase()),
+    forceModelRefresh: payload.forceModelRefresh === true,
   }
 }
 
-function validateSinglePayload(payload: unknown): { requestId: string; tsCode: string } {
+function validateSinglePayload(payload: unknown): { requestId: string; tsCode: string; forceModelRefresh?: boolean } {
   if (!isRecord(payload)
     || typeof payload.requestId !== 'string'
     || !UUID_PATTERN.test(payload.requestId)
     || typeof payload.tsCode !== 'string'
-    || !TS_CODE_PATTERN.test(payload.tsCode.trim())) {
+    || !TS_CODE_PATTERN.test(payload.tsCode.trim())
+    || (payload.forceModelRefresh !== undefined && typeof payload.forceModelRefresh !== 'boolean')) {
     throw new Error('INVALID_PARAM')
   }
-  return { requestId: payload.requestId, tsCode: normalizeTrendTsCode(payload.tsCode) }
+  return {
+    requestId: payload.requestId,
+    tsCode: normalizeTrendTsCode(payload.tsCode),
+    forceModelRefresh: payload.forceModelRefresh === true,
+  }
 }
 
 function toTrendReviewDto(result: TrendStructureReviewResult): TrendReviewDto {
@@ -222,6 +232,7 @@ function toTrendReviewDto(result: TrendStructureReviewResult): TrendReviewDto {
     scoreDate: result.review.scoreDate,
     factsHash: result.review.factsHash,
     createdAt: result.review.createdAt,
+    source: deriveTrendReviewSource(result.review.provider, result.review.model),
   }
 }
 

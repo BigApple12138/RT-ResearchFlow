@@ -14,11 +14,14 @@ import { getDecisionHistorySignals, getDecisionPortfolioRiskReview, getDecisionR
 import { getDecisionOutcomeMemory } from '../services/decisionOutcomeMemory'
 import {
   DecisionReviewReportRepositoryError,
+  assertValidReviewReportSnapshot,
   deleteReviewReport,
   getReviewReport,
   listReviewReports,
   saveReviewReport,
+  updateReviewReportSnapshot,
 } from '../database/decisionReviewReportRepository'
+import { generateReviewAiNarrative } from '../services/reviewAiNarrativeService'
 import {
   getDecisionJudgment,
   listDecisionJudgments,
@@ -106,6 +109,8 @@ const DECISION_CHANNELS = [
   'decision:getPortfolioRiskReview',
   'decision:getOutcomeMemory',
   'decision:saveReviewReport',
+  'decision:updateReviewReportSnapshot',
+  'decision:generateReviewAiNarrative',
   'decision:listReviewReports',
   'decision:getReviewReport',
   'decision:deleteReviewReport',
@@ -227,6 +232,44 @@ export function registerDecisionHandlers(): void {
       periodEnd: payload.periodEnd as string,
       report: payload.report,
     }))
+  })
+
+  ipcMain.handle('decision:updateReviewReportSnapshot', (_event, payload: { id?: unknown; report?: unknown } = {}) => {
+    return handleReviewReportRepositoryCall(() => updateReviewReportSnapshot(getDb(), {
+      id: payload.id as string,
+      report: payload.report,
+    }))
+  })
+
+  ipcMain.handle('decision:generateReviewAiNarrative', async (_event, payload: { report?: unknown } = {}) => {
+    try {
+      const report = assertValidReviewReportSnapshot(payload.report)
+      return await generateReviewAiNarrative(getDb(), { report })
+    } catch (err) {
+      if (err instanceof DecisionReviewReportRepositoryError) {
+        return {
+          ok: false,
+          error: { code: err.code, message: err.message },
+          data: {
+            status: 'error' as const,
+            text: null,
+            errorCode: err.code,
+            errorMessage: err.message,
+          },
+        }
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      return {
+        ok: false,
+        error: { code: 'DB_ERROR', message },
+        data: {
+          status: 'error' as const,
+          text: null,
+          errorCode: 'DB_ERROR',
+          errorMessage: message,
+        },
+      }
+    }
   })
 
   ipcMain.handle('decision:listReviewReports', (_event, payload: ListReviewReportsPayload = {}) => {

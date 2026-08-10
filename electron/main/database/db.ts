@@ -4951,6 +4951,15 @@ const MIGRATIONS: DatabaseMigration[] = [
     sql: `
       ALTER TABLE data_source_config ADD COLUMN tushareApiUrl TEXT;
     `
+  },
+  {
+    // Allow multiple model revisions for the same ts_code+score_date+facts_hash (force refresh).
+    version: 147,
+    sql: `
+      DROP INDEX IF EXISTS idx_trend_structure_review_revisions_code_date_hash;
+      CREATE INDEX idx_trend_structure_review_revisions_code_date_hash
+        ON trend_structure_review_revisions(ts_code, score_trade_date, facts_hash);
+    `
   }
 ]
 

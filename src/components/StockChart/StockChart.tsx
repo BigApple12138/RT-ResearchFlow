@@ -125,6 +125,7 @@ interface ChartRow {
   pct1: number | null; // 399001.SZ
   pct2: number | null; // 399006.SZ
   // Always present
+  成交量: number | null;
   成交额: number | null;
   涨跌幅: number | null;
   换手率: number | null;
@@ -291,6 +292,13 @@ async function loadMinuteOHLCVFromDb(
 function formatAmount(amountQian: number): string {
   if (amountQian >= 100000) return `${(amountQian / 100000).toFixed(2)}亿`;
   return `${(amountQian / 10000).toFixed(2)}千万`;
+}
+
+/** Format volume in 手. */
+function formatVolumeHand(vol: number): string {
+  if (vol >= 100000000) return `${(vol / 100000000).toFixed(2)}亿手`;
+  if (vol >= 10000) return `${(vol / 10000).toFixed(2)}万手`;
+  return `${Math.round(vol)}手`;
 }
 
 function formatPercent(value: number | null | undefined): string {
@@ -678,7 +686,8 @@ export function StockChart() {
     high: number;
     low: number;
     close: number;
-    amount: number;
+    volume: number | null;
+    amount: number | null;
     turnoverRate: number | null;
     pctChg: number | null;
     amplitude: number | null;
@@ -2074,6 +2083,7 @@ export function StockChart() {
       pct0: pctMaps[0]?.get(r.tradeDate) ?? null,
       pct1: pctMaps[1]?.get(r.tradeDate) ?? null,
       pct2: pctMaps[2]?.get(r.tradeDate) ?? null,
+      成交量: r.volume,
       成交额: r.amount,
       涨跌幅: pctChg,
       换手率: r.turnoverRate ?? null,
@@ -2251,9 +2261,7 @@ export function StockChart() {
       priceScaleId: "volume",
       color: "#94a3b8",
       priceFormat: {
-        type: "custom",
-        formatter: (v: number) => formatAmount(v),
-        minMove: 1,
+        type: "volume",
       },
     });
     chart.priceScale("volume").applyOptions({
@@ -2346,7 +2354,6 @@ export function StockChart() {
         const currentHistogram = dailyHistogramSeriesRef.current;
         if (!currentCandle || !currentHistogram) return;
         const candle = param.seriesData.get(currentCandle);
-        const hist = param.seriesData.get(currentHistogram);
         if (candle && "open" in candle) {
           const c = candle as {
             open: number;
@@ -2354,7 +2361,6 @@ export function StockChart() {
             low: number;
             close: number;
           };
-          const h = hist as { value: number } | undefined;
           const row = dailyChartRowsByTimeRef.current.get(String(param.time));
           const pctChg = row?.涨跌幅 ?? null;
           const amplitude =
@@ -2383,7 +2389,8 @@ export function StockChart() {
             high: c.high,
             low: c.low,
             close: c.close,
-            amount: h?.value ?? 0,
+            volume: row?.成交量 ?? null,
+            amount: row?.成交额 ?? null,
             turnoverRate: row?.换手率 ?? null,
             pctChg,
             amplitude,
@@ -2475,10 +2482,10 @@ export function StockChart() {
     );
 
     dailyHistogramSeriesRef.current?.setData(effectiveData
-      .filter((row) => row.成交额 != null)
+      .filter((row) => row.成交量 != null)
       .map((row) => ({
         time: toISODate(row.tradeDate) as Time,
-        value: row.成交额!,
+        value: row.成交量!,
         color: row.isUp ? "rgba(239, 68, 68, 0.5)" : "rgba(34, 197, 94, 0.5)",
       })));
 
@@ -4055,7 +4062,10 @@ export function StockChart() {
                         </span>
                       </div>
                       <div className="mt-1.5 pt-1 border-t border-gray-100 dark:border-gray-800 text-gray-500 dark:text-gray-400">
-                        成交 <b className="text-gray-700 dark:text-gray-200">{formatAmount(legendData.amount)}</b>
+                        成交量 <b className="text-gray-700 dark:text-gray-200">{legendData.volume == null ? "--" : formatVolumeHand(legendData.volume)}</b>
+                        {legendData.amount != null && (
+                          <span className="ml-2">额 <b className="text-gray-700 dark:text-gray-200">{formatAmount(legendData.amount)}</b></span>
+                        )}
                       </div>
                     </div>
                   )}

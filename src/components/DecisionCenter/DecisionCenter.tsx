@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useAppStore } from '../../store/appStore'
 import type { StockNavigationContext } from '../../store/appStore'
 import { SignalCard, type DecisionSignalItem } from './SignalCard'
@@ -28,6 +28,7 @@ import {
   buildDailyReviewReport,
   buildWeeklyReviewReport,
   WEEKLY_REVIEW_RANGE_DAYS,
+  type ReviewAiNarrative,
   type ReviewReport,
 } from './reviewReportModel'
 import { ReviewReportPanel } from './ReviewReportPanel'
@@ -147,6 +148,12 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
   const [judgmentFollowUpsLoading, setJudgmentFollowUpsLoading] = useState(false)
   const [judgmentFollowUpsError, setJudgmentFollowUpsError] = useState<string | null>(null)
   const [reviewReportHistoryRefresh, setReviewReportHistoryRefresh] = useState(0)
+  const reviewAiSeqRef = useRef(0)
+  const savedReviewReportIdRef = useRef<string | null>(null)
+  const pendingAiPatchRef = useRef<ReviewAiNarrative | null>(null)
+  const reviewReportRef = useRef<ReviewReport | null>(null)
+  reviewReportRef.current = reviewReport
+  const [reviewAiBusy, setReviewAiBusy] = useState(false)
   const [reviewStats, setReviewStats] = useState<DecisionReviewStatsData | null>(null)
   const [reviewRangeDays] = useState(30)
   const [reviewLoading, setReviewLoading] = useState(false)
@@ -441,6 +448,7 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         setPendingReviewReportSave(null)
         setReviewReportSaveError(null)
         setReviewReportSaveState('saved')
+        savedReviewReportIdRef.current = response.data.id
         setSavedReviewReportMeta({
           id: response.data.id,
           versionNumber: response.data.versionNumber,
@@ -575,6 +583,7 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
     try {
       const res = await window.api.decision.saveReviewReport(pending)
       if (!res.ok || !res.data) throw new Error(res.message || res.error || '保存复盘报告失败')
+      savedReviewReportIdRef.current = res.data.id
       setSavedReviewReportMeta({
         id: res.data.id,
         versionNumber: res.data.versionNumber,
@@ -583,13 +592,108 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
       })
       setReviewReportHistoryRefresh((value) => value + 1)
       setReviewReportSaveState('saved')
+      const pendingAi = pendingAiPatchRef.current
+      if (pendingAi && reviewReportRef.current) {
+        pendingAiPatchRef.current = null
+        const patched = { ...reviewReportRef.current, aiNarrative: pendingAi }
+        reviewReportRef.current = patched
+        setReviewReport(patched)
+        const updateRes = await window.api.decision.updateReviewReportSnapshot({
+          id: res.data.id,
+          report: patched,
+        })
+        if (updateRes.ok && updateRes.data) {
+          setSavedReviewReportMeta({
+            id: updateRes.data.id,
+            versionNumber: updateRes.data.versionNumber,
+            versionCount: updateRes.data.versionCount,
+            savedAt: updateRes.data.savedAt,
+          })
+          setReviewReportHistoryRefresh((value) => value + 1)
+        }
+      }
     } catch (err) {
       setReviewReportSaveState('error')
       setReviewReportSaveError(err instanceof Error ? err.message : String(err))
     }
   }, [])
 
+  const patchSavedReviewReport = useCallback(async (report: ReviewReport) => {
+    const id = savedReviewReportIdRef.current
+    if (!id) {
+      pendingAiPatchRef.current = report.aiNarrative ?? null
+      setPendingReviewReportSave((prev) => (prev ? { ...prev, report } : prev))
+      return
+    }
+    try {
+      const res = await window.api.decision.updateReviewReportSnapshot({ id, report })
+      if (!res.ok || !res.data) throw new Error(res.message || res.error || '补写 AI 研判失败')
+      setSavedReviewReportMeta({
+        id: res.data.id,
+        versionNumber: res.data.versionNumber,
+        versionCount: res.data.versionCount,
+        savedAt: res.data.savedAt,
+      })
+      setReviewReportHistoryRefresh((value) => value + 1)
+      setPendingReviewReportSave((prev) => (prev ? { ...prev, report } : prev))
+    } catch (err) {
+      // 软失败：本地 UI 已含 AI 段落；保存条提示但不回滚本地事实
+      setReviewReportSaveState('error')
+      setReviewReportSaveError(err instanceof Error ? err.message : String(err))
+    }
+  }, [])
+
+  const cancelReviewAiInFlight = useCallback(() => {
+    reviewAiSeqRef.current += 1
+    pendingAiPatchRef.current = null
+    setReviewAiBusy(false)
+  }, [])
+
+  const runReviewAiNarrative = useCallback(async (baseReport: ReviewReport) => {
+    const seq = ++reviewAiSeqRef.current
+    const pendingNarrative: ReviewAiNarrative = { status: 'pending', text: null }
+    const withPending = { ...baseReport, aiNarrative: pendingNarrative }
+    reviewReportRef.current = withPending
+    setReviewReport(withPending)
+    setReviewAiBusy(true)
+    try {
+      const res = await window.api.decision.generateReviewAiNarrative({ report: baseReport })
+      if (seq !== reviewAiSeqRef.current) return
+      const narrative: ReviewAiNarrative = res.data ?? {
+        status: 'error',
+        text: null,
+        errorCode: typeof res.error === 'object' && res.error && 'code' in res.error
+          ? String((res.error as { code: string }).code)
+          : 'AI_CALL_FAILED',
+        errorMessage: typeof res.error === 'object' && res.error && 'message' in res.error
+          ? String((res.error as { message: string }).message)
+          : (res.message || 'AI 研判失败'),
+      }
+      const merged = { ...(reviewReportRef.current ?? baseReport), aiNarrative: narrative }
+      reviewReportRef.current = merged
+      setReviewReport(merged)
+      await patchSavedReviewReport(merged)
+    } catch (err) {
+      if (seq !== reviewAiSeqRef.current) return
+      const message = err instanceof Error ? err.message : String(err)
+      const narrative: ReviewAiNarrative = {
+        status: 'error',
+        text: null,
+        errorCode: 'AI_CALL_FAILED',
+        errorMessage: message,
+      }
+      const merged = { ...(reviewReportRef.current ?? baseReport), aiNarrative: narrative }
+      reviewReportRef.current = merged
+      setReviewReport(merged)
+      await patchSavedReviewReport(merged)
+    } finally {
+      if (seq === reviewAiSeqRef.current) setReviewAiBusy(false)
+    }
+  }, [patchSavedReviewReport])
+
   const queueReviewReportSave = useCallback((report: ReviewReport) => {
+    pendingAiPatchRef.current = null
+    savedReviewReportIdRef.current = null
     const pending = {
       requestId: createRequestId(),
       ...reviewReportPeriod(report),
@@ -600,8 +704,9 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
     void persistReviewReport(pending)
   }, [persistReviewReport])
 
-  /** FR-233/FR-236: 前端即时生成今日复盘并异步保存快照 */
+  /** FR-233/FR-236/FR-250: 前端即时生成今日复盘、异步保存，并自动触发 AI 研判 */
   const handleGenerateDailyReview = useCallback(async () => {
+    cancelReviewAiInFlight()
     setReviewReportOpen(true)
     setReviewReportLoading(true)
     setReviewReportError(null)
@@ -615,18 +720,21 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         judgments: (response.data?.items ?? []) as DecisionJudgmentSummaryItem[],
         judgmentFollowUps,
       })
+      reviewReportRef.current = report
       setReviewReport(report)
       queueReviewReportSave(report)
+      void runReviewAiNarrative(report)
     } catch (caught) {
       setReviewReport(null)
       setReviewReportError(caught instanceof Error ? caught.message : String(caught))
     } finally {
       setReviewReportLoading(false)
     }
-  }, [holdings, judgmentFollowUps, portfolioRiskData, queueReviewReportSave, signals])
+  }, [cancelReviewAiInFlight, holdings, judgmentFollowUps, portfolioRiskData, queueReviewReportSave, runReviewAiNarrative, signals])
 
-  /** FR-233 P2: 近 7 自然日持仓相关历史 + 今日开放风险 */
+  /** FR-233 P2 / FR-250: 近 7 自然日持仓相关历史 + 今日开放风险 + 自动 AI 研判 */
   const handleGenerateWeeklyReview = useCallback(async () => {
+    cancelReviewAiInFlight()
     setReviewReportOpen(true)
     setReviewReportLoading(true)
     setReviewReportError(null)
@@ -646,15 +754,25 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         judgments: (judgmentResponse.data?.items ?? []) as DecisionJudgmentSummaryItem[],
         judgmentFollowUps,
       })
+      reviewReportRef.current = report
       setReviewReport(report)
       queueReviewReportSave(report)
+      void runReviewAiNarrative(report)
     } catch (err) {
       setReviewReport(null)
       setReviewReportError(err instanceof Error ? err.message : String(err))
     } finally {
       setReviewReportLoading(false)
     }
-  }, [holdings, judgmentFollowUps, portfolioRiskData, queueReviewReportSave, signals])
+  }, [cancelReviewAiInFlight, holdings, judgmentFollowUps, portfolioRiskData, queueReviewReportSave, runReviewAiNarrative, signals])
+
+  const handleRetryReviewAi = useCallback(() => {
+    const report = reviewReportRef.current
+    if (!report || reviewAiBusy || reviewReportLoading) return
+    const base = { ...report }
+    delete base.aiNarrative
+    void runReviewAiNarrative(base)
+  }, [reviewAiBusy, reviewReportLoading, runReviewAiNarrative])
 
   const relatedSignalsForJudgment = useMemo(() => {
     if (!judgmentSignal?.tsCode) return []
@@ -833,24 +951,25 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
             >
               {loading ? '刷新中' : '刷新'}
             </button>
+            <button
+              type="button"
+              data-testid="decision-generate-daily-review"
+              onClick={() => { void handleGenerateDailyReview() }}
+              disabled={reviewReportLoading || reviewAiBusy}
+              className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-800 transition-colors hover:bg-cyan-100 disabled:opacity-50 dark:border-cyan-900/60 dark:bg-cyan-950/40 dark:text-cyan-200 dark:hover:bg-cyan-950/60"
+            >
+              {reviewReportLoading ? '复盘生成中' : reviewAiBusy ? 'AI 研判中' : '一键复盘'}
+            </button>
             {isPortfolioView && (
               <>
                 <button
                   type="button"
-                  data-testid="decision-generate-daily-review"
-                  onClick={handleGenerateDailyReview}
-                  className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1.5 text-xs font-medium text-cyan-800 transition-colors hover:bg-cyan-100 dark:border-cyan-900/60 dark:bg-cyan-950/40 dark:text-cyan-200 dark:hover:bg-cyan-950/60"
-                >
-                  生成今日复盘
-                </button>
-                <button
-                  type="button"
                   data-testid="decision-generate-weekly-review"
                   onClick={() => { void handleGenerateWeeklyReview() }}
-                  disabled={reviewReportLoading}
+                  disabled={reviewReportLoading || reviewAiBusy}
                   className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-800"
                 >
-                  {reviewReportLoading ? '周报复盘生成中' : '生成本周复盘'}
+                  {reviewReportLoading ? '周报复盘生成中' : reviewAiBusy ? 'AI 研判中' : '生成本周复盘'}
                 </button>
                 <button
                   type="button"
@@ -868,7 +987,13 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
 
         <div className="rounded-[10px] border border-slate-200/90 bg-white/90 p-3 shadow-sm shadow-slate-200/60 dark:border-slate-800 dark:bg-slate-900/90 dark:shadow-none">
           <div data-testid="decision-home-metrics" className="grid h-full grid-cols-2 gap-2.5 lg:grid-cols-4">
-            {commandMetrics.map(metric => <CommandMetric key={metric.label} {...metric} />)}
+            {commandMetrics.map(metric => (
+              <CommandMetric
+                key={metric.label}
+                {...metric}
+                onClick={metric.label === '复盘积压' ? () => setReviewReportHistoryOpen(true) : undefined}
+              />
+            ))}
           </div>
         </div>
 
@@ -998,6 +1123,7 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
                 portfolioRangeDays={portfolioRiskRangeDays}
                 onReloadPortfolio={() => void loadPortfolioRiskReview()}
                 onPortfolioRangeChange={setPortfolioRiskRangeDays}
+                onOpenReviewHistory={() => setReviewReportHistoryOpen(true)}
                 outcomeData={outcomeMemory}
                 outcomeLoading={outcomeLoading}
                 outcomeError={outcomeError}
@@ -1100,7 +1226,10 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         onRetrySave={pendingReviewReportSave
           ? () => { void persistReviewReport(pendingReviewReportSave) }
           : undefined}
+        onRetryAi={handleRetryReviewAi}
+        aiBusy={reviewAiBusy}
         onClose={() => {
+          cancelReviewAiInFlight()
           setReviewReportOpen(false)
           setReviewReportError(null)
           setReviewReportLoading(false)
@@ -1120,10 +1249,12 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         }}
         onDiscuss={(summary) => { void discussReport(summary.id, summary.kind) }}
         onOpenReport={(report, summary: SavedReviewReportSummaryItem) => {
+          cancelReviewAiInFlight()
           setReviewReport(report)
           setPendingReviewReportSave(null)
           setReviewReportSaveError(null)
           setReviewReportSaveState('saved')
+          savedReviewReportIdRef.current = summary.id
           setSavedReviewReportMeta({
             id: summary.id,
             versionNumber: summary.versionNumber,
@@ -1302,6 +1433,8 @@ interface CommandMetricItem {
   hint: string
   tone: CommandMetricTone
   tag?: string
+  testId?: string
+  onClick?: () => void
 }
 
 function buildDecisionCommandMetrics(
@@ -1318,11 +1451,11 @@ function buildDecisionCommandMetrics(
     { label: '高优先级', value: highPriorityUnread, hint: 'P4+ 未读优先处理', tone: 'red', tag: 'P4+' },
     { label: '持仓风险', value: portfolioRisk, hint: `未收口 ${portfolioRiskData?.unresolvedRiskSignals ?? 0} 条`, tone: 'green', tag: '需先看' },
     { label: '短线机会', value: shortTermOpportunity, hint: '竞价/策略信号线索', tone: 'blue', tag: '策略' },
-    { label: '复盘积压', value: reviewBacklog, hint: `近 ${reviewStats ? '30' : '当前'} 日待收口`, tone: 'amber', tag: '30日' },
+    { label: '复盘积压', value: reviewBacklog, hint: `近 ${reviewStats ? '30' : '当前'} 日待收口`, tone: 'amber', tag: '30日', testId: 'decision-metric-review-backlog' },
   ]
 }
 
-function CommandMetric({ label, value, hint, tone, tag }: CommandMetricItem) {
+export function CommandMetric({ label, value, hint, tone, tag, testId, onClick }: CommandMetricItem) {
   const valueClass = {
     red: 'text-red-600 dark:text-red-300',
     green: 'text-emerald-700 dark:text-emerald-300',
@@ -1336,11 +1469,33 @@ function CommandMetric({ label, value, hint, tone, tag }: CommandMetricItem) {
     amber: 'text-amber-600',
   }[tone]
   const tagText = tag ?? (tone === 'red' ? 'P4+' : tone === 'green' ? '需先看' : tone === 'blue' ? '策略' : '30日')
+  const shellClass = 'flex h-full min-w-0 flex-col items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-center text-slate-600 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-300'
+  const labelRow = (
+    <div className="flex min-w-0 items-center justify-center gap-2 text-xs"><span>{label}</span><span className={tagClass}>{tagText}</span></div>
+  )
+  const valueRow = <div className={`mt-1 text-2xl font-extrabold tabular-nums ${valueClass}`}>{value}</div>
+  const hintRow = <div className="mt-1 w-full truncate text-center text-[11px] text-slate-500 dark:text-slate-400">{hint}</div>
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        data-testid={testId ?? 'decision-command-metric'}
+        aria-label="打开历史复盘"
+        title="打开历史复盘"
+        onClick={onClick}
+        className={`${shellClass} cursor-pointer transition-colors hover:border-amber-300 hover:bg-amber-50/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500 dark:hover:border-amber-700 dark:hover:bg-amber-950/30`}
+      >
+        {labelRow}
+        {valueRow}
+        {hintRow}
+      </button>
+    )
+  }
   return (
-    <div data-testid="decision-command-metric" className="flex h-full min-w-0 flex-col items-center justify-center rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-center text-slate-600 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-300">
-      <div className="flex min-w-0 items-center justify-center gap-2 text-xs"><span>{label}</span><span className={tagClass}>{tagText}</span></div>
-      <div className={`mt-1 text-2xl font-extrabold tabular-nums ${valueClass}`}>{value}</div>
-      <div className="mt-1 w-full truncate text-center text-[11px] text-slate-500 dark:text-slate-400">{hint}</div>
+    <div data-testid={testId ?? 'decision-command-metric'} className={shellClass}>
+      {labelRow}
+      {valueRow}
+      {hintRow}
     </div>
   )
 }
@@ -1431,6 +1586,7 @@ function ReviewAndPortfolioPanel({
   portfolioRangeDays,
   onReloadPortfolio,
   onPortfolioRangeChange,
+  onOpenReviewHistory,
   outcomeData,
   outcomeLoading,
   outcomeError,
@@ -1449,6 +1605,7 @@ function ReviewAndPortfolioPanel({
   portfolioRangeDays: number
   onReloadPortfolio: () => void
   onPortfolioRangeChange: (rangeDays: number) => void
+  onOpenReviewHistory: () => void
   outcomeData: DecisionOutcomeMemoryData | null
   outcomeLoading: boolean
   outcomeError: string | null
@@ -1503,6 +1660,7 @@ function ReviewAndPortfolioPanel({
             rangeDays={portfolioRangeDays}
             onReload={onReloadPortfolio}
             onRangeChange={onPortfolioRangeChange}
+            onOpenReviewHistory={onOpenReviewHistory}
           />
         ) : activeTab === 'review' ? (
           <ReviewHintsPanel
@@ -1608,13 +1766,31 @@ function statusText(status: string): string {
   }[status] ?? status
 }
 
-function PortfolioRiskMiniPanel({ data, loading, error, rangeDays, onReload, onRangeChange }: { data: DecisionPortfolioRiskReviewData | null; loading: boolean; error: string | null; rangeDays: number; onReload: () => void; onRangeChange: (rangeDays: number) => void }) {
-  const rows = [
-    ['成本价缺口', `${data?.missingCostPrice ?? 0} 只`, 'red'],
-    ['未收口风险信号', `${data?.unresolvedRiskSignals ?? 0} 条`, 'red'],
-    ['重复触发', `${data?.items.reduce((sum, item) => sum + item.repeatedSignals, 0) ?? 0} 条`, 'green'],
-    ['建议入口', (data?.missingCostPrice ?? 0) > 0 ? '补成本价' : '看复盘', 'normal']
-  ] as const
+export function PortfolioRiskMiniPanel({
+  data,
+  loading,
+  error,
+  rangeDays,
+  onReload,
+  onRangeChange,
+  onOpenReviewHistory,
+}: {
+  data: DecisionPortfolioRiskReviewData | null
+  loading: boolean
+  error: string | null
+  rangeDays: number
+  onReload: () => void
+  onRangeChange: (rangeDays: number) => void
+  onOpenReviewHistory?: () => void
+}) {
+  const suggestLookReview = (data?.missingCostPrice ?? 0) <= 0
+  const suggestValue = suggestLookReview ? '看复盘' : '补成本价'
+  const rows: Array<{ label: string; value: string; tone: 'red' | 'green' | 'normal'; clickable?: boolean }> = [
+    { label: '成本价缺口', value: `${data?.missingCostPrice ?? 0} 只`, tone: 'red' },
+    { label: '未收口风险信号', value: `${data?.unresolvedRiskSignals ?? 0} 条`, tone: 'red' },
+    { label: '重复触发', value: `${data?.items.reduce((sum, item) => sum + item.repeatedSignals, 0) ?? 0} 条`, tone: 'green' },
+    { label: '建议入口', value: suggestValue, tone: 'normal', clickable: suggestLookReview },
+  ]
 
   return (
     <section data-testid="decision-portfolio-risk-review" className="flex min-h-0 flex-col overflow-hidden">
@@ -1634,10 +1810,21 @@ function PortfolioRiskMiniPanel({ data, loading, error, rangeDays, onReload, onR
         <div className="rounded border border-red-200 bg-red-50 px-2 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">{error}</div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {rows.map(([label, value, tone]) => (
-            <div key={label} className="flex items-center justify-between border-b border-gray-100 py-2 text-xs last:border-b-0 dark:border-gray-800">
-              <span className="text-gray-500 dark:text-gray-400">{label}</span>
-              <b className={tone === 'red' ? 'text-red-600 dark:text-red-400' : tone === 'green' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-gray-100'}>{value}</b>
+          {rows.map((row) => (
+            <div key={row.label} className="flex items-center justify-between border-b border-gray-100 py-2 text-xs last:border-b-0 dark:border-gray-800">
+              <span className="text-gray-500 dark:text-gray-400">{row.label}</span>
+              {row.clickable && onOpenReviewHistory ? (
+                <button
+                  type="button"
+                  data-testid="decision-suggest-open-review"
+                  onClick={onOpenReviewHistory}
+                  className="font-bold text-cyan-700 underline underline-offset-2 hover:text-cyan-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-500 dark:text-cyan-300 dark:hover:text-cyan-200"
+                >
+                  {row.value}
+                </button>
+              ) : (
+                <b className={row.tone === 'red' ? 'text-red-600 dark:text-red-400' : row.tone === 'green' ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-900 dark:text-gray-100'}>{row.value}</b>
+              )}
             </div>
           ))}
         </div>

@@ -9,6 +9,7 @@
 
 import type Database from 'better-sqlite3'
 import type { DcConceptMembersRow } from './types'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 /**
  * 批量写入东方财富题材成分股（INSERT OR REPLACE）
@@ -41,28 +42,33 @@ export function getDcConceptsByStock(
   tsCode: string,
   tradeDate: string
 ): DcConceptMembersRow[] {
-  const rows = db.prepare(`
-    SELECT ts_code, trade_date, name, theme_code, theme_name, industry_code, industry
-    FROM dc_concept_members
-    WHERE ts_code = ? AND trade_date = ?
-  `).all(tsCode, tradeDate) as Array<{
-    ts_code: string
-    trade_date: string
-    name: string | null
-    theme_code: string
-    theme_name: string | null
-    industry_code: string | null
-    industry: string | null
-  }>
-  return rows.map(r => ({
-    tsCode: r.ts_code,
-    tradeDate: r.trade_date,
-    name: r.name,
-    themeCode: r.theme_code,
-    themeName: r.theme_name,
-    industryCode: r.industry_code,
-    industry: r.industry,
-  }))
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const rows = db.prepare(`
+      SELECT ts_code, trade_date, name, theme_code, theme_name, industry_code, industry
+      FROM dc_concept_members
+      WHERE ts_code = ? AND trade_date = ?
+    `).all(code, tradeDate) as Array<{
+      ts_code: string
+      trade_date: string
+      name: string | null
+      theme_code: string
+      theme_name: string | null
+      industry_code: string | null
+      industry: string | null
+    }>
+    if (rows.length > 0) {
+      return rows.map(r => ({
+        tsCode: r.ts_code,
+        tradeDate: r.trade_date,
+        name: r.name,
+        themeCode: r.theme_code,
+        themeName: r.theme_name,
+        industryCode: r.industry_code,
+        industry: r.industry,
+      }))
+    }
+  }
+  return []
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   type ChipStructureSummarySelectionPolicy,
   type ChipStructureSummaryRequest,
 } from './chipStructureService'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 export interface ChipSummary {
   tradeDate: string
@@ -102,9 +103,7 @@ function toChipSummary(row: ChipMonitorResultRow): ChipSummary {
 }
 
 function codeKeys(tsCode: string): string[] {
-  const clean = tsCode.trim().toUpperCase()
-  const stripped = clean.replace(/\.(SH|SZ|BJ)$/i, '')
-  return Array.from(new Set([clean, stripped]))
+  return tsCodeLookupCandidates(tsCode)
 }
 
 function getDateRelation(

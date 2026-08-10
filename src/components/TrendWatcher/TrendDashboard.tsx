@@ -3,6 +3,8 @@ import { StockKlineChipDrawer } from '../shared/StockMiniChart'
 import { useAppStore } from '../../store/appStore'
 import { useResearchDiscussionNavigation } from '../ResearchDiscussion/useResearchDiscussionNavigation'
 import { AiTrendReviewBadge } from './AiTrendReviewBadge'
+import { countReusableModelReviews, isReusableModelStructureReview } from './reusableModelReview'
+import { TrendForceModelConfirmDialog } from './TrendForceModelConfirmDialog'
 import {
   ScoreSparkline,
   TrendBenchmarkMeta,
@@ -46,6 +48,9 @@ type BatchReviewState = {
   failed: number
   results: BatchReviewResult[]
 }
+type ForceModelConfirmState =
+  | { kind: 'batch'; tsCodes: string[]; reusableCount: number }
+  | { kind: 'single'; item: TrendWorkbenchItem }
 
 export function resolveTrendDrawerItem(
   selectedTsCode: string | null,
@@ -61,7 +66,7 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set())
   const [reviewingCodes, setReviewingCodes] = useState<Set<string>>(() => new Set())
   const [batchReview, setBatchReview] = useState<BatchReviewState | null>(null)
-  const [batchConfirmCodes, setBatchConfirmCodes] = useState<string[] | null>(null)
+  const [forceModelConfirm, setForceModelConfirm] = useState<ForceModelConfirmState | null>(null)
   const [toast, setToast] = useState<ReviewToast | null>(null)
   const navigateToStock = useAppStore((state) => state.navigateToStock)
   const { startFromTrendReview, starting: startingDiscussion } = useResearchDiscussionNavigation()
@@ -173,11 +178,15 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
     setSelectedCodes((current) => new Set([...current, ...visibleCodes]))
   }
 
-  const reviewOne = async (item: TrendWorkbenchItem) => {
+  const reviewOne = async (item: TrendWorkbenchItem, forceModelRefresh = false) => {
     if (reviewingCodes.has(item.tsCode) || batchRunning) return
     setReviewingCodes((current) => new Set([...current, item.tsCode]))
     try {
-      const response = await window.api.trend.reviewStructure({ requestId: crypto.randomUUID(), tsCode: item.tsCode })
+      const response = await window.api.trend.reviewStructure({
+        requestId: crypto.randomUUID(),
+        tsCode: item.tsCode,
+        forceModelRefresh,
+      })
       if (!response.ok || !response.data) {
         showToast('error', `${item.stockName} 复核失败：${response.message ?? response.error ?? '未知错误'}`)
         return
@@ -195,6 +204,15 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
     }
   }
 
+  const requestReviewOne = (item: TrendWorkbenchItem) => {
+    if (reviewingCodes.has(item.tsCode) || batchRunning) return
+    if (isReusableModelStructureReview(item.structureReview)) {
+      setForceModelConfirm({ kind: 'single', item })
+      return
+    }
+    void reviewOne(item, false)
+  }
+
   const requestBatchReview = () => {
     const tsCodes = [...selectedCodes]
     if (tsCodes.length < 1 || tsCodes.length > 20 || batchRunning) {
@@ -202,14 +220,23 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
       if (tsCodes.length > 20) showToast('info', '批量复核最多选择20只股票。')
       return
     }
-    setBatchConfirmCodes(tsCodes)
+    const reusableCount = countReusableModelReviews(snapshot?.items ?? [], tsCodes)
+    if (reusableCount >= 1) {
+      setForceModelConfirm({ kind: 'batch', tsCodes, reusableCount })
+      return
+    }
+    void runBatchReview(tsCodes, false)
   }
 
-  const runBatchReview = async (tsCodes: string[]) => {
+  const runBatchReview = async (tsCodes: string[], forceModelRefresh: boolean) => {
     const batchRequestId = crypto.randomUUID()
     setBatchReview({ batchRequestId, status: 'running', requested: tsCodes.length, completed: 0, succeeded: 0, failed: 0, results: [] })
     try {
-      const response = await window.api.trend.reviewStructureBatch({ requestId: batchRequestId, tsCodes })
+      const response = await window.api.trend.reviewStructureBatch({
+        requestId: batchRequestId,
+        tsCodes,
+        forceModelRefresh,
+      })
       if (!response.ok || !response.data) {
         setBatchReview(null)
         showToast('error', `批量复核失败：${response.message ?? response.error ?? '未知错误'}`)
@@ -369,33 +396,33 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
         </div>
       )}
 
-      {batchConfirmCodes && !batchRunning && (
-        <div
-          data-testid="trend-ai-review-batch-confirm"
-          role="dialog"
-          aria-label="确认批量复核"
-          className="flex flex-wrap items-center gap-3 border-b border-violet-200 bg-violet-100 px-4 py-2 text-xs text-violet-900 dark:border-violet-900 dark:bg-violet-950/50 dark:text-violet-100 sm:px-5"
-        >
-          <span>确认串行复核 {batchConfirmCodes.length} 只股票？单条失败会继续后续任务。</span>
-          <button
-            type="button"
-            onClick={() => {
-              const codes = batchConfirmCodes
-              setBatchConfirmCodes(null)
-              void runBatchReview(codes)
-            }}
-            className="min-h-9 rounded-md bg-violet-700 px-3 font-semibold text-white transition-colors hover:bg-violet-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:bg-violet-500 dark:text-violet-950 dark:hover:bg-violet-400"
-          >
-            确认复核
-          </button>
-          <button
-            type="button"
-            onClick={() => setBatchConfirmCodes(null)}
-            className="min-h-9 rounded-md px-2 text-violet-700 transition-colors hover:bg-violet-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-violet-200 dark:hover:bg-violet-900"
-          >
-            取消
-          </button>
-        </div>
+      {forceModelConfirm && !batchRunning && (
+        <TrendForceModelConfirmDialog
+          title="再次请求大模型？"
+          description={
+            forceModelConfirm.kind === 'batch'
+              ? `已选股票中有 ${forceModelConfirm.reusableCount} 只具备与当前事实一致的本地 AI 复核结论。是否再次请求大模型生成新结论？`
+              : '本地已有与当前事实一致的 AI 复核结论。是否再次请求大模型？'
+          }
+          detail={
+            forceModelConfirm.kind === 'batch'
+              ? `选择「是」将对这 ${forceModelConfirm.reusableCount} 只强制重跑模型（产生费用）；其余股票仍按常规门闸与模型逻辑处理。选择「否」则对可复用结论直接沿用本地结果。`
+              : undefined
+          }
+          onCancel={() => setForceModelConfirm(null)}
+          onNo={() => {
+            const confirm = forceModelConfirm
+            setForceModelConfirm(null)
+            if (confirm.kind === 'batch') void runBatchReview(confirm.tsCodes, false)
+            else void reviewOne(confirm.item, false)
+          }}
+          onYes={() => {
+            const confirm = forceModelConfirm
+            setForceModelConfirm(null)
+            if (confirm.kind === 'batch') void runBatchReview(confirm.tsCodes, true)
+            else void reviewOne(confirm.item, true)
+          }}
+        />
       )}
 
       {!snapshot && loading ? (
@@ -461,7 +488,7 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
                     </div>
                   </td>
                   <td className="px-2 py-2.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="flex flex-wrap items-start gap-1.5">
                       <TrendStateBadge state={item.trendState} />
                       {item.structureReview && <AiTrendReviewBadge review={item.structureReview} stockCode={item.stockCode} />}
                     </div>
@@ -486,7 +513,7 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
                       <button
                         type="button"
                         data-testid={`trend-ai-review-${item.stockCode}`}
-                        onClick={() => { void reviewOne(item) }}
+                        onClick={() => { requestReviewOne(item) }}
                         disabled={reviewingCodes.has(item.tsCode) || batchRunning || startingDiscussion}
                         className="min-h-9 whitespace-nowrap rounded-md border border-violet-200 bg-violet-50 px-2.5 text-[11px] font-semibold text-violet-800 transition-colors hover:border-violet-300 hover:bg-violet-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:cursor-wait disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/45 dark:text-violet-200 dark:hover:bg-violet-900/55"
                       >
@@ -519,7 +546,7 @@ export function TrendDashboard({ snapshot, loading, errorMessage, onRefresh }: T
             navigateToStock(selected.stockCode, selected.stockName)
             setSelectedTsCode(null)
           }}
-          onReview={() => { void reviewOne(selected) }}
+          onReview={() => { requestReviewOne(selected) }}
           onDiscuss={selected.structureReview && !selected.structureReview.stale
             ? () => { void discussReview(selected) }
             : undefined}

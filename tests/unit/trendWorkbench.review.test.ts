@@ -56,8 +56,53 @@ describe('Trend Workbench AI 复核附加字段', () => {
       scoreDate: item.scoreDate,
       factsHash: hashTrendReviewFacts(facts),
       stale: false,
+      source: 'model',
     })
     expect(next).not.toHaveProperty('scoreTradeDate')
+  })
+
+  it('确定性门槛复核下发 source=gate，模型复核下发 source=model', () => {
+    const first = getTrendWorkbench(db)
+    const item = first.items[0]
+    const facts = buildTrendReviewFacts(db, item.tsCode, () => first)
+    const factsHash = hashTrendReviewFacts(facts)
+
+    upsertTrendStructureReview(db, {
+      tsCode: item.tsCode,
+      scoreDate: item.scoreDate,
+      factsHash,
+      requestId: '00000000-0000-4000-8000-000000000203',
+      localTrendState: item.trendState,
+      localTotalScore: item.totalScore,
+      verdict: 'need_more_data',
+      rationale: '有效评分权重不足70%，暂不形成趋势结构判断。',
+      focusPoints: ['补齐本地行情与评分事实后再复核'],
+      provider: null,
+      model: null,
+      audit: { status: 'passed' },
+      now: 1_000,
+    })
+    expect(getTrendWorkbench(db).items[0].structureReview?.source).toBe('gate')
+
+    // 同 factsHash 会重放既有 revision；换 hash 才能写入带 provider/model 的新 revision
+    upsertTrendStructureReview(db, {
+      tsCode: item.tsCode,
+      scoreDate: item.scoreDate,
+      factsHash: 'c'.repeat(64),
+      requestId: '00000000-0000-4000-8000-000000000204',
+      localTrendState: item.trendState,
+      localTotalScore: item.totalScore,
+      verdict: 'need_more_data',
+      rationale: '证据不足以对抗本地结构标签。',
+      focusPoints: [],
+      provider: 'qwen',
+      model: 'test-model',
+      audit: { status: 'passed' },
+      now: 2_000,
+    })
+    const modelReview = getTrendWorkbench(db).items[0].structureReview
+    expect(modelReview?.source).toBe('model')
+    expect(modelReview?.stale).toBe(true)
   })
 
   it('当前事实 hash 不同则只标记 stale，不改变本地趋势状态', () => {
