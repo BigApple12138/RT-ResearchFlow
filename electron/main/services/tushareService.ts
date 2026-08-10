@@ -18,6 +18,14 @@ import {
   type TrendBenchmarkErrorCode,
   type TrendBenchmarkHealth,
 } from './trendBenchmarkFreshness'
+import { getDb } from '../database/db'
+import { getDataSourceConfig } from '../database/dataSourceRepository'
+import {
+  DEFAULT_TUSHARE_API_URL,
+  resolveTushareApiUrl
+} from './tushareApiUrl'
+
+export { DEFAULT_TUSHARE_API_URL, resolveTushareApiUrl, validateTushareApiUrlInput } from './tushareApiUrl'
 
 /** Single data point for intraday (分时) chart */
 export interface IntradayItem {
@@ -26,8 +34,23 @@ export interface IntradayItem {
   volume: number  // trading volume in 手 (100 shares)
 }
 
-const TUSHARE_API_URL = 'https://api.tushare.pro'
 const EASTMONEY_KLINE_API = 'https://push2his.eastmoney.com/api/qt/stock/kline/get'
+
+/**
+ * Effective Tushare REST URL: form override when provided, else saved config, else official default.
+ * Safe when DB is not initialized (unit tests) — falls back to default.
+ */
+function getActiveTushareApiUrl(override?: string | null): string {
+  if (override !== undefined) {
+    return resolveTushareApiUrl(override)
+  }
+  try {
+    const cfg = getDataSourceConfig(getDb())
+    return resolveTushareApiUrl(cfg.tushareApiUrl)
+  } catch {
+    return DEFAULT_TUSHARE_API_URL
+  }
+}
 
 /** Eastmoney secid for each preset index (market.code) */
 const INDEX_SECID: Record<string, string> = {
@@ -101,10 +124,13 @@ function bjDateRange(): { endDate: string; startDate30: string } {
 }
 
 /** Validate a Tushare token using the trade_cal API (lightweight, no data cost) */
-export async function validateTushareToken(token: string): Promise<{ valid: boolean; message: string }> {
+export async function validateTushareToken(
+  token: string,
+  apiUrl?: string
+): Promise<{ valid: boolean; message: string }> {
   try {
     const res = await withRetry(() => fetch(
-      TUSHARE_API_URL,
+      getActiveTushareApiUrl(apiUrl),
       buildRequest(token, 'trade_cal', { exchange: 'SSE', start_date: '20240101', end_date: '20240101' }, 'cal_date')
     ))
     const json = (await res.json()) as TushareResponse
@@ -660,7 +686,7 @@ export async function forceFetchSingleStock(
   // Always fetch authoritative stock name from Tushare stock_basic (can correct AI hallucinations)
   try {
     const res = await withRetry(() => fetch(
-      TUSHARE_API_URL,
+      getActiveTushareApiUrl(),
       buildRequest(token, 'stock_basic', { ts_code: tsCode, fields: 'ts_code,name' }, 'ts_code,name')
     ))
     const json = (await res.json()) as TushareResponse
@@ -676,7 +702,7 @@ export async function forceFetchSingleStock(
 
   // Fetch daily price data — throws on network error (caller should use withRetry)
   const res = await withRetry(() => fetch(
-    TUSHARE_API_URL,
+    getActiveTushareApiUrl(),
     buildRequest(
       token,
       'daily',
@@ -783,7 +809,7 @@ export async function fetchStockPricesForPrompt(
     if (!cachedDates.has(endDate) || hasMissingAmount(db, code, startDate30)) {
       try {
         const res = await withRetry(() => fetch(
-          TUSHARE_API_URL,
+          getActiveTushareApiUrl(),
           buildRequest(
             token,
             'daily',
@@ -1064,7 +1090,7 @@ export async function fetchStockMinute(
   try {
     const res = await withRetry(() =>
       fetch(
-        TUSHARE_API_URL,
+        getActiveTushareApiUrl(),
         buildRequest(
           token,
           'rt_min',
@@ -1156,7 +1182,7 @@ async function callTushareApi(
 ): Promise<TushareResponse> {
   let json: TushareResponse
   try {
-    const res = await withRetry(() => fetch(TUSHARE_API_URL, buildRequest(token, apiName, params, fields)))
+    const res = await withRetry(() => fetch(getActiveTushareApiUrl(), buildRequest(token, apiName, params, fields)))
     json = (await res.json()) as TushareResponse
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

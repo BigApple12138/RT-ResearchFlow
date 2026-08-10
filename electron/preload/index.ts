@@ -1922,9 +1922,10 @@ const api = {
   // ── Data Sources ───────────────────────────────────────
   datasource: {
     getConfig: () => ipcRenderer.invoke('datasource:getConfig'),
-    saveConfig: (data: { tushareToken?: string; tushareEnabled?: boolean }) =>
-      ipcRenderer.invoke('datasource:saveConfig', data),
-    validateTushare: (token: string) => ipcRenderer.invoke('datasource:validateTushare', { token }),
+    saveConfig: (data: { tushareToken?: string; tushareEnabled?: boolean; tushareApiUrl?: string }) =>
+      ipcRenderer.invoke('datasource:saveConfig', data) as Promise<{ ok: true } | { ok: false; message: string }>,
+    validateTushare: (token: string, apiUrl?: string) =>
+      ipcRenderer.invoke('datasource:validateTushare', { token, apiUrl }),
     listStocks: () => ipcRenderer.invoke('datasource:listStocks') as Promise<{ stockCode: string; stockName: string }[]>,
     getStockPrices: (stockCode: string) => ipcRenderer.invoke('datasource:getStockPrices', { stockCode }),
     getStockPricePage: (stockCode: string, beforeTradeDate?: string, limit = 149) =>

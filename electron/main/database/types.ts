@@ -1520,6 +1520,8 @@ export interface DataSourceConfigRow {
   id: 1
   tushareTokenEncrypted: Buffer | null
   tushareEnabled: number // 0 or 1
+  /** Custom Tushare REST base URL; null/empty = official default */
+  tushareApiUrl: string | null
 }
 
 export interface StockInfoRow {

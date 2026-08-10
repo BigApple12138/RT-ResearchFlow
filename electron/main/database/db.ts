@@ -4944,6 +4944,13 @@ const MIGRATIONS: DatabaseMigration[] = [
         ('能源金属', '钴', 39, 1, 1754755200000, 1754755200000),
         ('能源金属', '镍', 40, 1, 1754755200000, 1754755200000);
     `
+  },
+  {
+    // Custom Tushare REST base URL (optional; null = official api.tushare.pro)
+    version: 146,
+    sql: `
+      ALTER TABLE data_source_config ADD COLUMN tushareApiUrl TEXT;
+    `
   }
 ]
 

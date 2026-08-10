@@ -38,6 +38,7 @@ import {
   getBoardSecid,
   resolveStockIdentityPublic,
   validateTushareToken,
+  validateTushareApiUrlInput,
 } from '../services/tushareService'
 import { inspectTrendBenchmarkHealth, type TrendBenchmarkHealth } from '../services/trendBenchmarkFreshness'
 import { getCachedPricePage, getCachedPrices, getStockInfo, upsertStockInfo, upsertStockInfoIfAbsent } from '../database/stockPriceCacheRepository'
@@ -1655,16 +1656,31 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     const row = getDataSourceConfig(db)
     return {
       tushareEnabled: row.tushareEnabled === 1,
-      hasTushareToken: !!(row.tushareTokenEncrypted && row.tushareTokenEncrypted.length > 0)
+      hasTushareToken: !!(row.tushareTokenEncrypted && row.tushareTokenEncrypted.length > 0),
+      tushareApiUrl: row.tushareApiUrl ?? ''
     }
   })
 
   // ── datasource:saveConfig ─────────────────────────────────────────────────────
-  ipcMain.handle('datasource:saveConfig', (_e, data: { tushareToken?: string; tushareEnabled?: boolean }) => {
+  ipcMain.handle('datasource:saveConfig', (_e, data: {
+    tushareToken?: string
+    tushareEnabled?: boolean
+    tushareApiUrl?: string
+  }) => {
     const db = getDb()
+    if (data.tushareApiUrl !== undefined) {
+      const checked = validateTushareApiUrlInput(data.tushareApiUrl)
+      if (!checked.ok) {
+        return { ok: false, message: checked.message }
+      }
+    }
     const update: Parameters<typeof updateDataSourceConfig>[1] = {}
     if (data.tushareToken) update.tushareTokenEncrypted = encryptApiKey(data.tushareToken)
     if (data.tushareEnabled !== undefined) update.tushareEnabled = data.tushareEnabled ? 1 : 0
+    if (data.tushareApiUrl !== undefined) {
+      const checked = validateTushareApiUrlInput(data.tushareApiUrl)
+      if (checked.ok) update.tushareApiUrl = checked.url
+    }
     updateDataSourceConfig(db, update)
     // FR-123: 关闭 Tushare 时立即取消分钟 K 订阅, 防止失效订阅继续轮询
     if (data.tushareEnabled === false) {
@@ -1680,8 +1696,14 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // ── datasource:validateTushare ────────────────────────────────────────────────
-  ipcMain.handle('datasource:validateTushare', async (_e, data: { token: string }) => {
-    return validateTushareToken(data.token)
+  ipcMain.handle('datasource:validateTushare', async (_e, data: { token: string; apiUrl?: string }) => {
+    if (data.apiUrl !== undefined) {
+      const checked = validateTushareApiUrlInput(data.apiUrl)
+      if (!checked.ok) {
+        return { valid: false, message: checked.message }
+      }
+    }
+    return validateTushareToken(data.token, data.apiUrl)
   })
 
   // ── datasource:listStocks ──────────────────────────────────────────────────────

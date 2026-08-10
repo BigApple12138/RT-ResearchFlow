@@ -5,14 +5,19 @@ export function getDataSourceConfig(db: Database.Database): DataSourceConfigRow 
   const row = db.prepare('SELECT * FROM data_source_config WHERE id = 1').get() as DataSourceConfigRow | undefined
   if (!row) {
     db.prepare('INSERT OR IGNORE INTO data_source_config (id) VALUES (1)').run()
-    return { id: 1, tushareTokenEncrypted: null, tushareEnabled: 0 }
+    return { id: 1, tushareTokenEncrypted: null, tushareEnabled: 0, tushareApiUrl: null }
   }
-  return row
+  return {
+    id: 1,
+    tushareTokenEncrypted: row.tushareTokenEncrypted ?? null,
+    tushareEnabled: row.tushareEnabled ?? 0,
+    tushareApiUrl: row.tushareApiUrl ?? null
+  }
 }
 
 export function updateDataSourceConfig(
   db: Database.Database,
-  update: Partial<Pick<DataSourceConfigRow, 'tushareTokenEncrypted' | 'tushareEnabled'>>
+  update: Partial<Pick<DataSourceConfigRow, 'tushareTokenEncrypted' | 'tushareEnabled' | 'tushareApiUrl'>>
 ): void {
   const fields: string[] = []
   const values: unknown[] = []
@@ -24,6 +29,10 @@ export function updateDataSourceConfig(
   if (update.tushareEnabled !== undefined) {
     fields.push('tushareEnabled = ?')
     values.push(update.tushareEnabled)
+  }
+  if (update.tushareApiUrl !== undefined) {
+    fields.push('tushareApiUrl = ?')
+    values.push(update.tushareApiUrl)
   }
 
   if (fields.length === 0) return
