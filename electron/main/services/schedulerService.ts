@@ -63,6 +63,7 @@ import { refreshTradingCalendar, clearTradingCalendarCache } from './tradingCale
 import { runChipStructureSync } from './chipStructureSyncService'
 import { cleanupMonitorResults } from '../database/chipMonitorRepository'
 import { archiveCurrentSnapshot } from './sectorFlowService'
+import { archiveMarketResonanceSnapshot } from './marketResonanceService'
 import { cleanupStkAuctionCache } from '../database/stkAuctionCacheRepository'
 import { cleanupBacktestDetail } from '../database/backtestDetailRepository'
 import { cleanupBacktestRuns } from '../database/strategyBacktestRepository'
@@ -837,6 +838,13 @@ export function runUnifiedAfterCloseSyncJob(
 
     results.push(await runTrackedAfterCloseTask(tradeDate, 'sector_snapshot', async () => {
       await archiveCurrentSnapshot(db)
+    }))
+    results.push(await runTrackedAfterCloseTask(tradeDate, 'market_resonance', async () => {
+      const snapshot = await archiveMarketResonanceSnapshot(db, tradeDate)
+      return {
+        status: snapshot.dataMode === 'partial' ? 'partial' : 'completed',
+        message: `覆盖 ${snapshot.coverage.available}/${snapshot.coverage.total} 个一级行业`,
+      }
     }))
     results.push(await runTrackedAfterCloseTask(tradeDate, 'trend_scores', async () => {
       const eodWin = BrowserWindow.getAllWindows()[0] ?? undefined
