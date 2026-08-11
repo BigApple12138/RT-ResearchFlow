@@ -16,10 +16,11 @@ describe('一键复盘相关视图语义', () => {
       tone: 'amber',
       tag: '30日',
       testId: 'decision-metric-review-backlog',
+      actionLabel: '打开待复盘列表',
       onClick,
     }))
     expect(output).toContain('data-testid="decision-metric-review-backlog"')
-    expect(output).toContain('aria-label="打开历史复盘"')
+    expect(output).toContain('aria-label="打开待复盘列表"')
     expect(output).toMatch(/<button[^>]*type="button"/)
     expect(output).toContain('复盘积压')
   })
@@ -34,7 +35,7 @@ describe('一键复盘相关视图语义', () => {
     }))
     expect(output).not.toContain('<button')
     expect(output).toContain('高优先级')
-    expect(output).not.toContain('aria-label="打开历史复盘"')
+    expect(output).not.toContain('aria-label=')
   })
 
   it('PortfolioRiskMiniPanel：看复盘可点；补成本价不可点开历史', () => {

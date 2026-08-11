@@ -59,12 +59,10 @@ import {
 } from '../database/dailyCloseCacheRepository'
 import { upsertChips, queryChips, queryLatestChips } from '../database/cyqChipsCacheRepository'
 import {
-  upsertFactor,
-  queryFactor,
-  queryLatestFactor,
   queryFactorHistory,
   upsertFactorBatch
 } from '../database/stkFactorCacheRepository'
+import { loadStockFactorWithStaleRefresh } from '../services/stkFactorEnsureService'
 import { countThsMembers, getThsSyncedAt, getThsConceptsByStock } from '../database/thsConceptMembersRepository'
 import { hasDcDataForDate } from '../database/dcConceptMembersRepository'
 import { getConceptsByStockRouted } from '../services/conceptRouter'
@@ -642,54 +640,40 @@ export function registerShortTermHandlers(): void {
 
   // ── FR-143 技术因子 ─────────────────────────────────────────────
 
-  // singleflight map：key = tsCode+tradeDate
-  const factorInflight = new Map<string, Promise<ReturnType<typeof queryFactor>>>()
+  // singleflight map：key = tsCode+tradeDate / default+expected
+  const factorInflight = new Map<string, Promise<Awaited<ReturnType<typeof loadStockFactorWithStaleRefresh>>>>()
 
   ipcMain.handle(
     'shortTerm:getStockFactor',
     async (_e, payload: { tsCode: string; tradeDate?: string }) => {
       if (!payload?.tsCode) return { ok: false as const, code: 'INVALID_PARAM' as const }
       const tsCode = resolveCanonicalTsCode(payload.tsCode)
-      const isDefaultLoad = !payload.tradeDate
-      const tradeDate = payload.tradeDate ?? getBjTodayYmd()
       const db = getDb()
 
-      // DB-first：精确日期命中直接返回
-      const cached = queryFactor(db, tsCode, tradeDate)
-      if (cached) return { ok: true as const, data: cached }
-
-      // 默认加载（未指定交易日）时，回退到 DB 中最新一期缓存（盘中今日数据尚未发布）
-      if (isDefaultLoad) {
-        const latest = queryLatestFactor(db, tsCode)
-        if (latest) return { ok: true as const, data: latest }
-      }
-
-      // DB 完全无该股数据时，尝试从 Tushare API 拉取
-      // isDefaultLoad 时用昨日日期：今日盘后数据在收盘后才发布，昨日数据必然存在
-      const dsConfig = getDataSourceConfig(db)
-      if (!dsConfig.tushareEnabled || !dsConfig.tushareTokenEncrypted) {
-        return { ok: false as const, code: 'TUSHARE_DISABLED' as const }
-      }
-
-      const apiDate = isDefaultLoad ? getLatestTradeDateYmd(db) : tradeDate
-      // singleflight 合并同 tsCode+apiDate 并发请求
-      const key = `${tsCode}|${apiDate}`
-      const token = decryptApiKey(dsConfig.tushareTokenEncrypted)
-      if (!token) return { ok: false as const, code: 'TUSHARE_DISABLED' as const }
+      // singleflight：默认加载按期望日合并；指定日按 tsCode|date
+      const expected = (() => {
+        try {
+          return getLatestTradeDateYmd(db)
+        } catch {
+          return getBjTodayYmd()
+        }
+      })()
+      const key = payload.tradeDate
+        ? `${tsCode}|${payload.tradeDate}`
+        : `${tsCode}|default|${expected}`
       let promise = factorInflight.get(key)
       if (!promise) {
-        promise = (async () => {
-          const row = await fetchStkFactorPro(token, tsCode, apiDate)
-          if (row) upsertFactor(db, row)
-          return row
-        })().finally(() => factorInflight.delete(key))
+        promise = loadStockFactorWithStaleRefresh(db, tsCode, payload.tradeDate, {
+          marketLatestTradeDate: expected,
+          fetchFactor: fetchStkFactorPro,
+        }).finally(() => factorInflight.delete(key))
         factorInflight.set(key, promise)
       }
 
       try {
-        const data = await promise
-        if (!data) return { ok: false as const, code: 'UPSTREAM_ERROR' as const }
-        return { ok: true as const, data }
+        const result = await promise
+        if (result.ok) return { ok: true as const, data: result.data }
+        return { ok: false as const, code: result.code }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         if (msg.includes('TUSHARE_QUOTA_INSUFFICIENT')) {

@@ -31,9 +31,10 @@ describe('FR-253 public fundamentals contracts', () => {
     expect(preload).toContain("ipcRenderer.invoke('stockFundamentals:refresh', { stockCode })")
   })
 
-  it('keeps drawer opening local and makes refresh an explicit accessible command', () => {
+  it('auto-prefetches on add / missing drawer open, and keeps manual refresh accessible', () => {
     const chart = source('src/components/StockChart/StockChart.tsx')
     const drawer = source('src/components/StockChart/StockFundamentalDrawer.tsx')
+    const prefetch = source('src/components/StockChart/prefetchStockFundamentals.ts')
     const buttonStart = chart.indexOf('data-testid="stock-fundamental-open"')
     const buttonEnd = chart.indexOf('</button>', buttonStart)
     const fundamentalButton = chart.slice(buttonStart, buttonEnd)
@@ -43,8 +44,11 @@ describe('FR-253 public fundamentals contracts', () => {
     expect(fundamentalButton).toContain('after:-inset-y-2')
     expect(fundamentalButton).not.toContain('h-11')
     expect(chart).toContain('!PRESET_CODES.includes(selected)')
+    expect(chart).toContain('prefetchStockFundamentalsIfMissing')
+    expect(prefetch).toContain("status === 'missing'")
     expect(drawer).toContain('await api.get(stockCode)')
     expect(drawer).toContain('await api.refresh(stockCode)')
+    expect(drawer).toContain("local.status !== 'missing'")
     expect(drawer).toContain('aria-live="polite"')
     expect(drawer).toContain('disabled={refreshing}')
     expect(drawer).toContain('来源未提供资料更新日')

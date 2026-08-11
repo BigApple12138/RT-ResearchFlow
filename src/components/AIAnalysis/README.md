@@ -6,7 +6,7 @@
 
 本地投研 Agent Phase 1 起，研判记录默认常驻「新对话」composer（不再空态弹窗门槛，也不盲选历史第一条会话）；首条消息 create-and-send；快捷芯片「分析我的持仓 / 我有哪些持仓 / 检查 AI 配置」经 `ai:runPortfolioBrief` 写入讨论，持仓事实默认不含成本价。主工作区对气泡与研判正文启用文本选中（`select-text`），便于复制；应用壳层导航仍保持 `select-none`。
 
-Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片，确认后打开 `ResearchAgentPanel` 预检并 `startRun`；会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。面板不再展示「新建深度研究」按钮，无运行时不占 UI；有运行时只展示进度账本。
+Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片；点「启动深度研究」后按 **自动化 skill / 多 agent** 直接 `startRun`（从会话抽取股票代码、短问题自动扩写），**不再弹预检表单**；失败仅 toast。会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。面板无运行时不占 UI；有运行时展示进度账本。
 
 ## 实现思路
 
@@ -21,6 +21,7 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - `normalizeAIResponseMarkdown`: 在ReactMarkdown解析前修复模型常见的 `**标签：**正文`/`__标签：__正文` 闭合歧义。只调整展示投影，跳过代码围栏、行内代码和转义内容；首轮、第二轮和assistant追问共用，数据库原文不变。
 - `followUpInput/sendingFollowUp`: 控制追问/新对话输入与发送状态；无选中会话时走 create-and-send。
 - 讨论消息由主进程分配稳定 `sequence`；Renderer 不计算或用数组下标定位消息。`ai:followUp` 必须携带 UUID `requestId`，同一请求重放返回已有 turn，不重复追加 user/assistant。
+- FR（流式）：`ai:followUp` 期间主进程通过 `ai:followUpDelta`（`start` / `delta` / `reset` / `error`）推送累计正文；Renderer 展示 `ai-followup-streaming` 草稿气泡，**结束再**以 `getSession` 权威消息替换。流式过程不写 `messages` JSON。含网页搜索的 turn 可降级为整段返回并明示。深度研究保留 `researchAgent:progress`，写作步另推 `researchAgent:delta`；`ResearchAgentPanel` 展示阶段文案与写作草稿。
 - 研究讨论的消息热区只保留未归档原文；历史原文进入归档账本，累计摘要独立保存并在模型调用时与 `promptSent` 硬事实、热消息一起组装。摘要不是一条伪造的 chat message，也不进入 FR-239 变更游标。
 - 讨论达到未归档的 12 个完整问答后，下一次追问前默认自动调用上下文整理；AI 配置可关闭。讨论页的“整理聊天上下文”是显式手动入口，与“整理本次讨论”研究变更动作严格区分，最近 6 条原文作为热尾部保留。
 - 快捷芯片：`chip-analyze-portfolio` / `chip-list-portfolio` / `chip-check-ai-config`；`new-conversation` 回到新对话；`research-composer` 为底部输入区。

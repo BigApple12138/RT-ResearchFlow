@@ -2349,7 +2349,13 @@ export interface DecisionReviewReportSnapshot {
     openRiskCount: number
     evidenceGapCount: number
     followUpCount: number
+    watchingCount?: number
   }
+  /** 日报日结可选字段；旧快照/周报可缺省 */
+  marketEnvironment?: unknown
+  capitalHighlights?: unknown
+  holdingMoves?: unknown
+  watchedSignals?: unknown[]
   processed: unknown[]
   openRisks: unknown[]
   evidenceGaps: unknown[]

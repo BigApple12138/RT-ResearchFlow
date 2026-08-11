@@ -73,8 +73,8 @@ export function registerPortfolioHandlers(getWindow: () => Electron.BrowserWindo
     }
   })
 
-  // 手动触发批量预测（防重入）
-  ipcMain.handle('portfolio:forecastNow', async (_e) => {
+  // 手动触发批量预测（防重入）；force=true 时重跑今日已有预测的持仓
+  ipcMain.handle('portfolio:forecastNow', async (_e, payload: { force?: boolean } = {}) => {
     if (isPortfolioForecastRunning()) {
       return { ok: false, code: 'ALREADY_RUNNING' }
     }
@@ -83,8 +83,9 @@ export function registerPortfolioHandlers(getWindow: () => Electron.BrowserWindo
     if (stocks.length === 0) {
       return { ok: false, code: 'NO_STOCKS' }
     }
+    const force = payload?.force === true
     // fire-and-forget，进度通过 portfolio:forecastProgress 事件推送
-    void runPortfolioForecastJob(db, getWindow()).catch(err => {
+    void runPortfolioForecastJob(db, getWindow(), { force }).catch(err => {
       console.warn('[Portfolio] forecastNow 任务异常:', err)
     })
     return { ok: true }

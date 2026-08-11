@@ -5,6 +5,7 @@ interface StockDecisionActionsProps {
   savingAction: string | null
   actionMessage: string | null
   actionError: string | null
+  /** 「发起 AI 预测」时应先跑预测再开面板；「查看预测记录」仅开面板。 */
   onOpenForecast: () => void
   onBackToDecisionCenter: () => void
   onMarkRead: () => void

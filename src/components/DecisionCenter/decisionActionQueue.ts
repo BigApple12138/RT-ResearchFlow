@@ -116,8 +116,8 @@ function actionScore(signal: DecisionSignalItem): number {
 
 export function buildDecisionActionQueue(signals: DecisionSignalItem[], limit = 5): DecisionActionItem[] {
   return signals
-    .filter(signal => signal.status !== 'DISMISSED' && signal.status !== 'EXPIRED')
-    .filter(signal => !signal.resolvedAt || signal.status === 'WATCHING')
+    // 与进度「待处理」对齐：仅未读 NEW；关注 / 已读 / 忽略后离开导航
+    .filter(signal => signal.status === 'NEW' && !signal.resolvedAt)
     .map(signal => {
       const primaryAction = choosePrimaryAction(signal)
       return {

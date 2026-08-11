@@ -33,7 +33,7 @@ import {
   fetchIndexPrices,
   fetchIntradayData,
   fetchIntradayDataBySecid,
-  fetchStockMinuteDaily,
+  fetchStockMinute,
   forceFetchSingleStock,
   getBoardSecid,
   resolveStockIdentityPublic,
@@ -48,7 +48,7 @@ import { sha256 } from '../utils/hashUtils'
 import { fetchHtml } from './detailHandlers'
 import { detailContentToText, extractDetailContent } from '../services/detailContentExtraction'
 import { getStockMinuteByDate, upsertStockMinute } from '../database/stockMinuteCacheRepository'
-import { runStockBasicSyncJob, subscribeStockMinute, unsubscribeStockMinute } from '../services/schedulerService'
+import { runStockBasicSyncJob, subscribeStockMinute, unsubscribeStockMinute, refreshStockMinuteOnce } from '../services/schedulerService'
 import { searchByNameOrCode, countAll as countStockBasic } from '../database/stockBasicCacheRepository'
 import type { AIProvider, ImpactRating, BriefingRow, SourceRow, StockPriceCacheRow, DiscussionCompactionRow } from '../database/types'
 // FR-163: 数据增强辅助模块
@@ -71,6 +71,16 @@ import {
   formatDailyCsvVolumeCell,
   summarizeVolumeEnergy,
 } from '../services/volumeContextSummary'
+import {
+  appendForecastGrounding,
+  DEFAULT_TREND_MORROW_PROMPT,
+  DEFAULT_TREND_TODAY_PROMPT,
+  ensureStkFactorForForecast,
+  prepareForecastIntradayEvidence,
+  serializeMinuteBarsForPrompt,
+  TECHNICAL_FACTOR_EOD_NOTE,
+  technicalFactorAbsenceNote,
+} from '../services/forecastEvidencePackage'
 import { buildArticleRound2ResearchFactContext } from '../services/researchFactPromptService'
 import {
   discussionContextPreview,
@@ -184,21 +194,7 @@ function buildForecastInputSnapshot(data: {
   })
 }
 
-/** FR-072: Default trendForecastPrompt — used when provider_configs.trendForecastPrompt is empty. */
-const DEFAULT_TREND_TODAY_PROMPT =
-  '我将提供给你以下信息：股票代码、今天大盘（上证指数）的分时走势数据、这支股票所属板块指数的分时走势数据，以及这支股票此时此刻的实际分时数据。' +
-  '请你结合上述数据，同时利用你可访问的公开渠道（东方财富、同花顺或其他来源）收集该公司的基本面信息（含近期年报/季报要点、主营业务、行业地位），' +
-  '并结合当前时政热点及该股票所属板块是否处于市场热点，综合分析并预测该股票今日剩余交易时段（至15:00收盘）的价格走势。' +
-  '跳过11:30至13:00的午休时段。' +
-  '当各指标出现矛盾信号时（如MACD趋势向上但RSI6或KDJ已进入超买区），必须明确指出矛盾并倾向于保守判断，不得凭借单一指标的信号主导结论。'
-
-/** FR-072: Default trendForecastMorrowPrompt — used when provider_configs.trendForecastMorrowPrompt is empty. */
-const DEFAULT_TREND_MORROW_PROMPT =
-  '我将提供给你以下信息：股票代码、今日完整分时数据、今日大盘及板块分时数据、近30日日线OHLCV数据。' +
-  '请你结合上述数据，同时利用你可访问的公开渠道（东方财富、同花顺或其他来源）收集该公司基本面信息（含近期年报/季报要点、主营业务、行业地位），' +
-  '并结合当前时政热点及该股票所属板块是否处于市场热点，综合预测明日09:30至15:00的价格走势。' +
-  '跳过11:30至13:00的午休时段。' +
-  '当各指标出现矛盾信号时（如MACD趋势向上但RSI6或KDJ已进入超买区），必须明确指出矛盾并倾向于保守判断，不得凭借单一指标的信号主导结论。'
+/** FR-072 默认今日/明日预测提示：见 forecastEvidencePackage（接地，禁止催模型假装联网终端）。 */
 
 /** 近30日日线 CSV 块：量=成交量(手) + 紧凑量能摘要 */
 function buildRecentDailyOhlcvPromptBlock(
@@ -683,6 +679,90 @@ async function _buildBoardMarketSuffix(stockCode: string): Promise<string> {
   return marketPart + boardPart
 }
 
+function resolveTechnicalSummaryForForecast(
+  db: import('better-sqlite3').Database,
+  tsCode: string,
+  factorStatus: Awaited<ReturnType<typeof ensureStkFactorForForecast>>,
+): string {
+  const tech = buildTechnicalSummary(db, tsCode)
+  if (tech) return `${tech}\n${TECHNICAL_FACTOR_EOD_NOTE}`
+  return technicalFactorAbsenceNote(factorStatus)
+}
+
+/**
+ * 组装今日预测共用证据：刷新分时主包、ensure 因子、大盘板块、增强摘要。
+ */
+async function assembleTodayForecastEvidence(
+  db: import('better-sqlite3').Database,
+  stockCode: string,
+): Promise<
+  | {
+      ok: true
+      timeStr: string
+      tsCode: string
+      intradayLabel: string
+      intradayJson: string
+      volumeSummary: string
+      dataPointCount: number
+      dataLabel: string
+      boardSuffix: string
+      extraContext: string
+    }
+  | { ok: false; error: { code: string; message: string } }
+> {
+  const tsCode = toTsCodeWithSuffix(stockCode)
+  const factorStatus = await ensureStkFactorForForecast(db, tsCode)
+  const intraday = await prepareForecastIntradayEvidence(db, stockCode)
+  if (!intraday.ok) {
+    return { ok: false, error: intraday.error }
+  }
+  const boardSuffix = await _buildBoardMarketSuffix(stockCode)
+  const techSummary = resolveTechnicalSummaryForForecast(db, tsCode, factorStatus)
+  const extraContext = [
+    techSummary,
+    buildLimitConceptSummary(db, stockCode),
+    buildSectorFlowSummary(db, stockCode),
+    buildSMCSummary(db, stockCode),
+    intraday.volumeSummary,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
+  const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
+  return {
+    ok: true,
+    timeStr,
+    tsCode,
+    intradayLabel: intraday.intradayLabel,
+    intradayJson: intraday.intradayJson,
+    volumeSummary: intraday.volumeSummary,
+    dataPointCount: intraday.dataPointCount,
+    dataLabel: intraday.dataLabel,
+    boardSuffix,
+    extraContext,
+  }
+}
+
+function buildTodayForecastUserPrompt(input: {
+  forecastPrompt: string
+  stockCode: string
+  timeStr: string
+  intradayLabel: string
+  intradayJson: string
+  boardSuffix: string
+  extraContext: string
+}): string {
+  const body =
+    `${input.forecastPrompt}\n\n股票代码：${input.stockCode}\n当前北京时间：${input.timeStr}\n\n` +
+    `${input.intradayLabel}：${input.intradayJson}${input.boardSuffix}` +
+    `${input.extraContext ? '\n\n' + input.extraContext : ''}` +
+    `\n\n请在响应末尾输出如下格式的预测数据（从${input.timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n` +
+    `\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n` +
+    `并另外输出结构化分析（紧跟在上方 json 块之后）：\n` +
+    `\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+  return appendForecastGrounding(body)
+}
+
 /**
  * FR-168: 持仓批量预测核心函数（导出供后台服务调用）.
  * 并行调用所有已配置 AI provider 预测今日走势，结果直接写入 trend_forecasts 表.
@@ -700,38 +780,19 @@ export async function performPredictTrendToday(
     return { ok: false, successCount: 0, error: { code: 'AI_NOT_CONFIGURED', message: '未配置 AI 厂商' } }
   }
 
-  // 获取今日分时数据（优先 DB 分钟 K 线，fallback 东财）
-  const bjToday = getBjTodayYmd()
-  const minuteRows = getStockMinuteByDate(db, stockCode, bjToday)
-  let intradayLabel: string
-  let intradayJson: string
-  let dataPointCount = 0
-  if (minuteRows.length > 0) {
-    intradayLabel = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-    dataPointCount = minuteRows.length
-    intradayJson = JSON.stringify(minuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-  } else {
-    const stockItems = await fetchIntradayData(stockCode)
-    if (stockItems.length === 0) {
-      return { ok: false, successCount: 0, error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据' } }
-    }
-    intradayLabel = '实际分时数据（至今）'
-    dataPointCount = stockItems.length
-    intradayJson = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+  const evidence = await assembleTodayForecastEvidence(db, stockCode)
+  if (!evidence.ok) {
+    return { ok: false, successCount: 0, error: evidence.error }
   }
-
-  const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-  const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
-  const boardSuffix = await _buildBoardMarketSuffix(stockCode)
-  const tsCode = toTsCodeWithSuffix(stockCode)
-  const extraContext = [
-    buildTechnicalSummary(db, tsCode),
-    buildLimitConceptSummary(db, stockCode),
-    buildSectorFlowSummary(db, stockCode),
-    buildSMCSummary(db, stockCode),
-  ]
-    .filter(Boolean)
-    .join('\n\n')
+  const {
+    timeStr,
+    intradayLabel,
+    intradayJson,
+    dataPointCount,
+    dataLabel,
+    boardSuffix,
+    extraContext,
+  } = evidence
 
   // 构建各 provider 调用任务
   const tasks = providersToUse
@@ -745,14 +806,15 @@ export async function performPredictTrendToday(
       const forecastPrompt =
         injectTimePrefix(pc.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) +
         buildSkillsBlock(db, true)
-      const prompt =
-        `${forecastPrompt}\n\n股票代码：${stockCode}\n当前北京时间：${timeStr}\n\n` +
-        `${intradayLabel}：${intradayJson}${boardSuffix}` +
-        `${extraContext ? '\n\n' + extraContext : ''}` +
-        `\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n` +
-        `\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n` +
-        `并另外输出结构化分析（紧跟在上方 json 块之后）：\n` +
-        `\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+      const prompt = buildTodayForecastUserPrompt({
+        forecastPrompt,
+        stockCode,
+        timeStr,
+        intradayLabel,
+        intradayJson,
+        boardSuffix,
+        extraContext,
+      })
       return { provider: p, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, prompt }
     })
     .filter(Boolean) as { provider: string; model: string; apiKey: string; baseUrl?: string; maxTokens?: number | null; prompt: string }[]
@@ -802,7 +864,7 @@ export async function performPredictTrendToday(
             type: 'today',
             provider: task.provider,
             model: task.model,
-            dataLabel: intradayLabel,
+            dataLabel,
             dataPointCount,
             contextText: extraContext,
             promptText: task.prompt,
@@ -1631,12 +1693,19 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     if (!validation.ok) return { error: validation.message, code: validation.code }
     const { requestId, sessionId, message } = validation.data
     const db = getDb()
+    const win = getWindow()
     return runDiscussionFollowUp(db, {
       requestId,
       sessionId,
       message,
     }, {
       onSuccess: (database, id) => refreshStructuredResultInBackground(database, id, 'follow up'),
+      onDelta: (event) => {
+        if (!win || win.isDestroyed()) return
+        try {
+          win.webContents.send('ai:followUpDelta', event)
+        } catch { /* UI only */ }
+      },
     })
   })
 
@@ -1805,6 +1874,36 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       "DELETE FROM stock_info WHERE stockCode NOT IN ('000001.SH','399001.SZ','399006.SZ')"
     ).run()
     return { ok: true }
+  })
+
+  // ── datasource:refreshTodayBar ───────────────────────────────────────────────
+  // 盘中轻量刷新「今日」合成日 K（分钟优先，分时兜底），供日视图自动刷新。
+  ipcMain.handle('datasource:refreshTodayBar', async (_e, data: { stockCode?: string }) => {
+    const raw = String(data?.stockCode ?? '').trim()
+    const stockCode = raw.replace(/\.(SH|SZ|BJ)$/i, '')
+    if (!/^\d{6}$/.test(stockCode) && !['000001', '399001', '399006'].includes(stockCode)) {
+      return { ok: false as const, reason: 'invalid_code' as const }
+    }
+    const db = getDb()
+    try {
+      // 自动刷新：仅盘中拉分钟并覆盖合成；非盘中不 force，避免误覆盖
+      try {
+        await refreshStockMinuteOnce(stockCode)
+      } catch (err) {
+        console.warn(
+          '[refreshTodayBar] minute refresh failed:',
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+      const updated = await backfillTodayDailyFromIntradayIfMissing(db, stockCode)
+      return { ok: true as const, updated }
+    } catch (err) {
+      return {
+        ok: false as const,
+        reason: 'fetch_error' as const,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    }
   })
 
   // ── datasource:refreshStock ────────────────────────────────────────────────────
@@ -2012,19 +2111,20 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     if (rows.length > 0) return { ok: true, data: rows }
 
     if (tradeDate === todayStr) {
-      // 今日模式：Tushare rt_min_daily
+      // 今日模式：优先官方 rt_min；无权限/失败由下方东财兜底
       const dsCfg = getDataSourceConfig(getDb())
       if (dsCfg.tushareEnabled && dsCfg.tushareTokenEncrypted) {
         try {
           const token = decryptApiKey(dsCfg.tushareTokenEncrypted)
           if (!token) throw new Error('TUSHARE_TOKEN_UNAVAILABLE')
-          const fetched = await fetchStockMinuteDaily(token, data.tsCode)
+          const fetched = await fetchStockMinute(token, data.tsCode)
           if (fetched.length > 0) {
             upsertStockMinute(getDb(), fetched)
             rows = fetched
           }
-        } catch {
-          // Tushare 失败静默
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.warn(`[datasource:getStockMinuteKline] rt_min failed, will try Eastmoney: ${msg}`)
         }
       }
     }
@@ -2060,11 +2160,11 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // 启动一只股票的分钟订阅（互斥, 切换股票自动 unsubscribe 旧的）
-  // 不再要求 Tushare：无 Tushare 时订阅内部自动回退东财 push2his 60s 轮询
+  // 不再要求 Tushare：无 Tushare / 无分钟权限时订阅内部自动回退东财 push2his
   ipcMain.handle('datasource:subscribeStockMinute', async (_e, data: { stockCode?: string }) => {
     if (!data?.stockCode) return { ok: false, code: 'INVALID_PARAM', message: '缺少 stockCode' }
-    subscribeStockMinute(data.stockCode)
-    return { ok: true }
+    const gotData = await subscribeStockMinute(data.stockCode)
+    return { ok: true, gotData }
   })
 
   // 取消当前活跃订阅
@@ -2264,43 +2364,26 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       const model = pc.model || (PROVIDER_MODELS as Record<string, string[]>)[data.provider]?.[0] || ''
       if (!model) return { error: { code: 'AI_NOT_CONFIGURED', message: `厂商 ${data.provider} 未选择模型` } }
       try {
-        // FR-163a: 优先从 DB 读取今日 OHLCV 分钟 K 线；无数据时 fallback 东财 price-only
-        const bjToday = getBjTodayYmd()
-        const minuteRows = getStockMinuteByDate(db, data.stockCode, bjToday)
-        let intradayLabel: string
-        let intradayJson: string
-        let dataPointCount = 0
-        if (minuteRows.length > 0) {
-          intradayLabel = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-          dataPointCount = minuteRows.length
-          intradayJson = JSON.stringify(minuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-        } else {
-          const stockItems = await fetchIntradayData(data.stockCode)
-          if (stockItems.length === 0) {
-            return { error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据，无法预测' } }
-          }
-          intradayLabel = '实际分时数据（至今）'
-          dataPointCount = stockItems.length
-          intradayJson = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+        const evidence = await assembleTodayForecastEvidence(db, data.stockCode)
+        if (!evidence.ok) {
+          return { error: { ...evidence.error, message: evidence.error.message + '，无法预测' } }
         }
-        const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-        const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
-        const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-        // FR-163b-e: 构建数据增强摘要
-        const tsCode = toTsCodeWithSuffix(data.stockCode)
-        const techSummary = buildTechnicalSummary(db, tsCode)
-        const limitSummary = buildLimitConceptSummary(db, data.stockCode)
-        const sectorSummary = buildSectorFlowSummary(db, data.stockCode)
-        const smcSummary = buildSMCSummary(db, data.stockCode)
-        const extraContext = [techSummary, limitSummary, sectorSummary, smcSummary].filter(Boolean).join('\n\n')
         const forecastPrompt = injectTimePrefix(pc.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) + buildSkillsBlock(db, true)
-        const prompt = `${forecastPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${intradayLabel}：${intradayJson}${boardSuffix}${extraContext ? '\n\n' + extraContext : ''}\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+        const prompt = buildTodayForecastUserPrompt({
+          forecastPrompt,
+          stockCode: data.stockCode,
+          timeStr: evidence.timeStr,
+          intradayLabel: evidence.intradayLabel,
+          intradayJson: evidence.intradayJson,
+          boardSuffix: evidence.boardSuffix,
+          extraContext: evidence.extraContext,
+        })
         const aiResult = await callAIProvider({ provider: data.provider as AIProvider, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, messages: [{ role: 'user', content: prompt }] })
         const { points, aiReason, direction, confidence, keySupport, keyResistance } = parseForecastResponse(aiResult.text)
         if (points.length === 0) {
           return { stockCode: data.stockCode, points: [], aiReason, message: 'AI未返回有效预测数据' }
         }
-        const forecastId = insertForecast(db, { stockCode: data.stockCode, type: 'today', points: JSON.stringify(points), aiReason: aiReason || null, provider: data.provider, model, direction: direction ?? null, confidence: confidence ?? null, keySupport: keySupport ?? null, keyResistance: keyResistance ?? null, inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: data.provider, model, dataLabel: intradayLabel, dataPointCount, contextText: extraContext, promptText: prompt, forecastPointCount: points.length }) })
+        const forecastId = insertForecast(db, { stockCode: data.stockCode, type: 'today', points: JSON.stringify(points), aiReason: aiReason || null, provider: data.provider, model, direction: direction ?? null, confidence: confidence ?? null, keySupport: keySupport ?? null, keyResistance: keyResistance ?? null, inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: data.provider, model, dataLabel: evidence.dataLabel, dataPointCount: evidence.dataPointCount, contextText: evidence.extraContext, promptText: prompt, forecastPointCount: points.length }) })
         emitAIForecastDecisionSignal({ stockCode: data.stockCode, forecastType: 'today', forecastId, provider: data.provider, model, direction, confidence, keySupport, keyResistance })
         const maxKeep = aiConfig.maxForecastsPerStock ?? 50
         trimForecasts(db, data.stockCode, maxKeep)
@@ -2323,36 +2406,19 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     // If providers are explicitly specified (FR-094) or multi-model is enabled, run in parallel.
     if (requestedProviders.length > 0 || multiModelProviders.length > 1) {
       try {
-        // FR-163a: 优先从 DB 读取今日 OHLCV 分钟 K 线；无数据时 fallback 东财 price-only
-        const bjToday = getBjTodayYmd()
-        const minuteRowsMulti = getStockMinuteByDate(db, data.stockCode, bjToday)
-        let intradayLabelMulti: string
-        let intradayJsonMulti: string
-        let dataPointCountMulti = 0
-        if (minuteRowsMulti.length > 0) {
-          intradayLabelMulti = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-          dataPointCountMulti = minuteRowsMulti.length
-          intradayJsonMulti = JSON.stringify(minuteRowsMulti.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-        } else {
-          const stockItems = await fetchIntradayData(data.stockCode)
-          if (stockItems.length === 0) {
-            return { error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据，无法预测' } }
-          }
-          intradayLabelMulti = '实际分时数据（至今）'
-          dataPointCountMulti = stockItems.length
-          intradayJsonMulti = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+        const evidenceMulti = await assembleTodayForecastEvidence(db, data.stockCode)
+        if (!evidenceMulti.ok) {
+          return { error: { ...evidenceMulti.error, message: evidenceMulti.error.message + '，无法预测' } }
         }
-        const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-        const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
-        const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-        // FR-163b-e: 构建数据增强摘要（多 provider 路径共享同一份上下文）
-        const tsCodeMulti = toTsCodeWithSuffix(data.stockCode)
-        const techSummaryMulti = buildTechnicalSummary(db, tsCodeMulti)
-        const limitSummaryMulti = buildLimitConceptSummary(db, data.stockCode)
-        const sectorSummaryMulti = buildSectorFlowSummary(db, data.stockCode)
-        const smcSummaryMulti = buildSMCSummary(db, data.stockCode)
-        const extraContextMulti = [techSummaryMulti, limitSummaryMulti, sectorSummaryMulti, smcSummaryMulti].filter(Boolean).join('\n\n')
-        const intradayJson = intradayJsonMulti
+        const {
+          timeStr,
+          intradayLabel: intradayLabelMulti,
+          intradayJson,
+          dataPointCount: dataPointCountMulti,
+          dataLabel: dataLabelMulti,
+          boardSuffix,
+          extraContext: extraContextMulti,
+        } = evidenceMulti
 
         // Build per-provider tasks
         const tasks = multiModelProviders.map(p => {
@@ -2363,7 +2429,15 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
           const model = pc.model || (PROVIDER_MODELS as Record<string, string[]>)[p]?.[0] || ''
           if (!model) return null
           const forecastPrompt = injectTimePrefix(pc.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) + buildSkillsBlock(db, true)
-          const prompt = `${forecastPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${intradayLabelMulti}：${intradayJson}${boardSuffix}${extraContextMulti ? '\n\n' + extraContextMulti : ''}\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+          const prompt = buildTodayForecastUserPrompt({
+            forecastPrompt,
+            stockCode: data.stockCode,
+            timeStr,
+            intradayLabel: intradayLabelMulti,
+            intradayJson,
+            boardSuffix,
+            extraContext: extraContextMulti,
+          })
           return { provider: p, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, prompt }
         }).filter(Boolean) as { provider: string; model: string; apiKey: string; baseUrl?: string; maxTokens?: number | null; prompt: string }[]
 
@@ -2410,7 +2484,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
               confidence: confidence ?? null,
               keySupport: keySupport ?? null,
               keyResistance: keyResistance ?? null,
-              inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: task.provider, model: task.model, dataLabel: intradayLabelMulti, dataPointCount: dataPointCountMulti, contextText: extraContextMulti, promptText: task.prompt, forecastPointCount: points.length }),
+              inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: task.provider, model: task.model, dataLabel: dataLabelMulti, dataPointCount: dataPointCountMulti, contextText: extraContextMulti, promptText: task.prompt, forecastPointCount: points.length }),
             })
             emitAIForecastDecisionSignal({ stockCode: data.stockCode, forecastType: 'today', forecastId, provider: task.provider, model: task.model, direction, confidence, keySupport, keyResistance })
             trimForecasts(db, data.stockCode, maxKeep)
@@ -2442,37 +2516,20 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       return { error: { code: 'AI_NOT_CONFIGURED', message: '请先在AI配置页配置AI厂商' } }
     }
     try {
-      // FR-163a: 优先从 DB 读取今日 OHLCV 分钟 K 线；无数据时 fallback 东财 price-only
-      const bjTodayFb = getBjTodayYmd()
-      const minuteRowsFb = getStockMinuteByDate(db, data.stockCode, bjTodayFb)
-      let intradayLabelFb: string
-      let intradayJsonFb: string
-      let dataPointCountFb = 0
-      if (minuteRowsFb.length > 0) {
-        intradayLabelFb = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-        dataPointCountFb = minuteRowsFb.length
-        intradayJsonFb = JSON.stringify(minuteRowsFb.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-      } else {
-        const stockItems = await fetchIntradayData(data.stockCode)
-        if (stockItems.length === 0) {
-          return { error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据，无法预测' } }
-        }
-        intradayLabelFb = '实际分时数据（至今）'
-        dataPointCountFb = stockItems.length
-        intradayJsonFb = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+      const evidenceFb = await assembleTodayForecastEvidence(db, data.stockCode)
+      if (!evidenceFb.ok) {
+        return { error: { ...evidenceFb.error, message: evidenceFb.error.message + '，无法预测' } }
       }
-      const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-      const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
       const forecastPrompt = injectTimePrefix(creds.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) + buildSkillsBlock(db, true)
-      const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-      // FR-163b-e: 构建数据增强摘要
-      const tsCodeFb = toTsCodeWithSuffix(data.stockCode)
-      const techSummaryFb = buildTechnicalSummary(db, tsCodeFb)
-      const limitSummaryFb = buildLimitConceptSummary(db, data.stockCode)
-      const sectorSummaryFb = buildSectorFlowSummary(db, data.stockCode)
-      const smcSummaryFb = buildSMCSummary(db, data.stockCode)
-      const extraContextFb = [techSummaryFb, limitSummaryFb, sectorSummaryFb, smcSummaryFb].filter(Boolean).join('\n\n')
-      const prompt = `${forecastPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${intradayLabelFb}：${intradayJsonFb}${boardSuffix}${extraContextFb ? '\n\n' + extraContextFb : ''}\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+      const prompt = buildTodayForecastUserPrompt({
+        forecastPrompt,
+        stockCode: data.stockCode,
+        timeStr: evidenceFb.timeStr,
+        intradayLabel: evidenceFb.intradayLabel,
+        intradayJson: evidenceFb.intradayJson,
+        boardSuffix: evidenceFb.boardSuffix,
+        extraContext: evidenceFb.extraContext,
+      })
       const aiResult = await callWithFallback(db, { messages: [{ role: 'user', content: prompt }] })
       const { points, aiReason, direction, confidence, keySupport, keyResistance } = parseForecastResponse(aiResult.text)
       if (points.length === 0) {
@@ -2489,7 +2546,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
         confidence: confidence ?? null,
         keySupport: keySupport ?? null,
         keyResistance: keyResistance ?? null,
-        inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: aiResult.provider, model: aiResult.model, dataLabel: intradayLabelFb, dataPointCount: dataPointCountFb, contextText: extraContextFb, promptText: prompt, forecastPointCount: points.length }),
+        inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: aiResult.provider, model: aiResult.model, dataLabel: evidenceFb.dataLabel, dataPointCount: evidenceFb.dataPointCount, contextText: evidenceFb.extraContext, promptText: prompt, forecastPointCount: points.length }),
       })
       emitAIForecastDecisionSignal({ stockCode: data.stockCode, forecastType: 'today', forecastId, provider: aiResult.provider, model: aiResult.model, direction, confidence, keySupport, keyResistance })
       const maxKeep = aiConfig.maxForecastsPerStock ?? 50
@@ -2528,25 +2585,27 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
         const allPrices = getCachedPrices(db, data.stockCode)
         const recent30 = allPrices.slice(-30)
         const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
-        // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线
+        // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线（含量额）；预测前刷新今日分钟
+        await prepareForecastIntradayEvidence(db, data.stockCode)
         const { getLatestTradeDateForStock } = await import('../database/stockMinuteCacheRepository')
         const latestMDateM = getLatestTradeDateForStock(db, data.stockCode)
         const morrowMinuteRows = latestMDateM ? getStockMinuteByDate(db, data.stockCode, latestMDateM) : []
         let intradayPart: string
         if (morrowMinuteRows.length > 0) {
-          intradayPart = `\n\n最新交易日(${latestMDateM})1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）：${JSON.stringify(morrowMinuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))}`
+          intradayPart = `\n\n最新交易日(${latestMDateM})1分钟K线（t,o,h,l,c,v,a可选）：${serializeMinuteBarsForPrompt(morrowMinuteRows)}`
         } else {
           const stockItems = await fetchIntradayData(data.stockCode)
           intradayPart = stockItems.length > 0
-            ? `\n\n今日分时数据：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))}`
-            : ''
+            ? `\n\n今日分时数据（time,price,volume）：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price, volume: i.volume })))}`
+            : '\n\n今日分时数据：本包未提供'
         }
         const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
         const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
         const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-        // FR-163b-e: 构建数据增强摘要
+        // FR-163b-e: 构建数据增强摘要（含 Tushare 因子 ensure）
         const tsCodeMM = toTsCodeWithSuffix(data.stockCode)
-        const techSummaryMM = buildTechnicalSummary(db, tsCodeMM)
+        const factorStatusMM = await ensureStkFactorForForecast(db, tsCodeMM)
+        const techSummaryMM = resolveTechnicalSummaryForForecast(db, tsCodeMM, factorStatusMM)
         const limitSummaryMM = buildLimitConceptSummary(db, data.stockCode)
         const sectorSummaryMM = buildSectorFlowSummary(db, data.stockCode)
         const smcSummaryMM = buildSMCSummary(db, data.stockCode)
@@ -2560,7 +2619,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
           const model = pc.model || (PROVIDER_MODELS as Record<string, string[]>)[p]?.[0] || ''
           if (!model) return null
           const morrowPrompt = injectTimePrefix(pc.trendForecastMorrowPrompt || aiConfig.trendForecastMorrowPrompt || DEFAULT_TREND_MORROW_PROMPT) + buildSkillsBlock(db, true)
-          const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMM ? '\n\n' + extraContextMM : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+          const prompt = appendForecastGrounding(`${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMM ? '\n\n' + extraContextMM : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``)
           return { provider: p, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, prompt }
         }).filter(Boolean) as { provider: string; model: string; apiKey: string; baseUrl?: string; maxTokens?: number | null; prompt: string }[]
 
@@ -2639,31 +2698,33 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       const allPrices = getCachedPrices(db, data.stockCode)
       const recent30 = allPrices.slice(-30)
       const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
-      // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线
+      // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线（含量额）
+      await prepareForecastIntradayEvidence(db, data.stockCode)
       const { getLatestTradeDateForStock: getLatestDate2 } = await import('../database/stockMinuteCacheRepository')
       const latestMDateFb = getLatestDate2(db, data.stockCode)
       const morrowMinuteRowsFb = latestMDateFb ? getStockMinuteByDate(db, data.stockCode, latestMDateFb) : []
       let intradayPart: string
       if (morrowMinuteRowsFb.length > 0) {
-        intradayPart = `\n\n最新交易日(${latestMDateFb})1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）：${JSON.stringify(morrowMinuteRowsFb.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))}`
+        intradayPart = `\n\n最新交易日(${latestMDateFb})1分钟K线（t,o,h,l,c,v,a可选）：${serializeMinuteBarsForPrompt(morrowMinuteRowsFb)}`
       } else {
         const stockItems = await fetchIntradayData(data.stockCode)
         intradayPart = stockItems.length > 0
-          ? `\n\n今日分时数据：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))}`
-          : ''
+          ? `\n\n今日分时数据（time,price,volume）：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price, volume: i.volume })))}`
+          : '\n\n今日分时数据：本包未提供'
       }
       const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
       const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
       const morrowPrompt = injectTimePrefix(creds.trendForecastMorrowPrompt || aiConfig.trendForecastMorrowPrompt || DEFAULT_TREND_MORROW_PROMPT) + buildSkillsBlock(db, true)
       const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-      // FR-163b-e: 构建数据增强摘要
+      // FR-163b-e: 构建数据增强摘要（含 Tushare 因子 ensure）
       const tsCodeMF = toTsCodeWithSuffix(data.stockCode)
-      const techSummaryMF = buildTechnicalSummary(db, tsCodeMF)
+      const factorStatusMF = await ensureStkFactorForForecast(db, tsCodeMF)
+      const techSummaryMF = resolveTechnicalSummaryForForecast(db, tsCodeMF, factorStatusMF)
       const limitSummaryMF = buildLimitConceptSummary(db, data.stockCode)
       const sectorSummaryMF = buildSectorFlowSummary(db, data.stockCode)
       const smcSummaryMF = buildSMCSummary(db, data.stockCode)
       const extraContextMF = [techSummaryMF, limitSummaryMF, sectorSummaryMF, smcSummaryMF].filter(Boolean).join('\n\n')
-      const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMF ? '\n\n' + extraContextMF : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+      const prompt = appendForecastGrounding(`${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMF ? '\n\n' + extraContextMF : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``)
       const aiResult = await callWithFallback(db, { messages: [{ role: 'user', content: prompt }] })
       const { points, aiReason, direction, confidence, keySupport, keyResistance } = parseForecastResponse(aiResult.text)
       if (points.length === 0) {

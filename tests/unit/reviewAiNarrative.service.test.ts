@@ -49,11 +49,16 @@ describe('reviewAiNarrativeService', () => {
     expect(prompt).toContain('持仓相关风险仍需验证')
     expect(prompt).toContain('跌破止损')
     expect(prompt).toContain('禁止给出具体买卖点')
+    expect(prompt).toContain('【市场环境】')
+    expect(prompt).toContain('【持仓走势】')
+    expect(prompt).toContain('【今日关注】')
   })
 
-  it('拒收含买卖指令的模型输出', () => {
-    expect(sanitizeReviewAiNarrativeText('建议买入并加仓').ok).toBe(false)
+  it('含买卖词的模型输出仍可通过；空串拒收', () => {
+    expect(sanitizeReviewAiNarrativeText('建议买入并加仓').ok).toBe(true)
     expect(sanitizeReviewAiNarrativeText('证据不足，需继续观察开放风险。').ok).toBe(true)
+    expect(sanitizeReviewAiNarrativeText('   ').ok).toBe(false)
+    expect(sanitizeReviewAiNarrativeText('').ok).toBe(false)
   })
 
   it('未配置 AI 时软失败并返回 error narrative', async () => {

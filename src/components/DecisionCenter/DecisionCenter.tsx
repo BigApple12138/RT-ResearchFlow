@@ -29,6 +29,7 @@ import {
   buildWeeklyReviewReport,
   WEEKLY_REVIEW_RANGE_DAYS,
   type ReviewAiNarrative,
+  type ReviewDayContextInput,
   type ReviewReport,
 } from './reviewReportModel'
 import { ReviewReportPanel } from './ReviewReportPanel'
@@ -39,6 +40,8 @@ import { JudgmentHistoryPanel, type DecisionJudgmentSummaryItem } from './Judgme
 import { JudgmentFollowUpPanel, type DecisionJudgmentFollowUpTaskItem } from './JudgmentFollowUpPanel'
 import { useResearchDiscussionNavigation } from '../ResearchDiscussion/useResearchDiscussionNavigation'
 import { PremarketScenarioDrawer } from './PremarketScenarioDrawer'
+import { buildTodayBriefModel, toTodayBriefAiFacts } from './todayBriefModel'
+import { TodayBriefPanel, type TodayBriefAiState } from './TodayBriefPanel'
 
 type ReviewReportSaveState = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -86,7 +89,7 @@ function createRequestId(): string {
 type DecisionStatus = 'NEW' | 'READ' | 'WATCHING' | 'DISMISSED' | 'EXPIRED'
 type DecisionType = 'ALERT' | 'OPPORTUNITY' | 'RISK' | 'INFO'
 type DecisionSource = 'news' | 'ai' | 'short_term' | 'trend' | 'market' | 'sector_flow' | 'manual'
-type WorkspaceTab = 'priority' | DecisionSection['key'] | 'history'
+type WorkspaceTab = 'brief' | 'priority' | DecisionSection['key'] | 'history'
 type ReviewHintsTab = 'noise' | 'repeated' | 'pending'
 type ReviewSideTab = 'portfolio' | 'review' | 'outcome'
 
@@ -119,6 +122,7 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
   const premarketScenarioOpenRequest = useAppStore((s) => s.premarketScenarioOpenRequest)
   const { start: startDiscussion, starting: startingDiscussion, error: discussionError, clearError: clearDiscussionError } = useResearchDiscussionNavigation()
   const [signals, setSignals] = useState<DecisionSignalItem[]>([])
+  const [briefContextSignals, setBriefContextSignals] = useState<DecisionSignalItem[]>([])
   const [signalDateContext, setSignalDateContext] = useState<DecisionSignalDateContextData | null>(null)
   const [loading, setLoading] = useState(false)
   const [signalsReady, setSignalsReady] = useState(false)
@@ -173,9 +177,17 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
   const [outcomeMemory, setOutcomeMemory] = useState<DecisionOutcomeMemoryData | null>(null)
   const [outcomeLoading, setOutcomeLoading] = useState(false)
   const [outcomeError, setOutcomeError] = useState<string | null>(null)
-  // FR-231: 组合模式默认进入持仓分区, 市场模式保持重点
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(isPortfolioView ? 'portfolio' : 'priority')
+  // FR-262: 默认进入「今日提炼」；组合/市场视图均如此
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('brief')
+  const [briefAiState, setBriefAiState] = useState<TodayBriefAiState>({
+    status: 'idle',
+    text: null,
+    errorMessage: null,
+  })
+  const [briefAiBusy, setBriefAiBusy] = useState(false)
+  const briefAiSeqRef = useRef(0)
   const [reviewHintsOpen, setReviewHintsOpen] = useState(false)
+  const [reviewHintsTab, setReviewHintsTab] = useState<ReviewHintsTab>('noise')
   const [premarketScenarioOpen, setPremarketScenarioOpen] = useState(false)
 
   useEffect(() => {
@@ -202,13 +214,73 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
     return result
   }, [status, type, source, portfolioOnly, minPriority, isPortfolioView])
 
-  useEffect(() => {
-    if (isPortfolioView && workspaceTab === 'priority') {
-      setWorkspaceTab('portfolio')
-    }
-  }, [isPortfolioView, workspaceTab])
-
   const homeModel = useMemo(() => buildDecisionHomeModel(signals), [signals])
+  const todayBrief = useMemo(() => {
+    const byId = new Map<number, DecisionSignalItem>()
+    for (const item of [...signals, ...briefContextSignals]) byId.set(item.id, item)
+    return buildTodayBriefModel([...byId.values()])
+  }, [briefContextSignals, signals])
+
+  useEffect(() => {
+    briefAiSeqRef.current += 1
+    setBriefAiBusy(false)
+    setBriefAiState({ status: 'idle', text: null, errorMessage: null })
+  }, [todayBrief.generatedAt, todayBrief.headline, todayBrief.noiseCount, todayBrief.portfolioClues.length, todayBrief.strategyClues.length])
+
+  const runTodayBriefAi = useCallback(async () => {
+    const seq = ++briefAiSeqRef.current
+    setBriefAiBusy(true)
+    setBriefAiState({ status: 'pending', text: null, errorMessage: null })
+    try {
+      const res = await window.api.decision.generateTodayBriefAi({ brief: toTodayBriefAiFacts(todayBrief) })
+      if (seq !== briefAiSeqRef.current) return
+      if (res.data?.status === 'ready' && res.data.text) {
+        setBriefAiState({
+          status: 'ready',
+          text: res.data.text,
+          errorMessage: null,
+          provider: res.data.provider,
+          model: res.data.model,
+        })
+      } else {
+        const message = res.data?.errorMessage
+          ?? (typeof res.error === 'string' ? res.error : res.error?.message)
+          ?? res.message
+          ?? 'AI 提炼失败'
+        setBriefAiState({
+          status: 'error',
+          text: null,
+          errorMessage: message,
+          provider: res.data?.provider,
+          model: res.data?.model,
+        })
+      }
+    } catch (err) {
+      if (seq !== briefAiSeqRef.current) return
+      setBriefAiState({
+        status: 'error',
+        text: null,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      if (seq === briefAiSeqRef.current) setBriefAiBusy(false)
+    }
+  }, [todayBrief])
+
+  const openPendingSignals = useCallback(() => {
+    setDecisionCenterFilters({
+      status: 'NEW',
+      type: 'all',
+      source: 'all',
+      portfolioOnly: isPortfolioView ? true : false,
+      minPriority: 1,
+      viewMode: isPortfolioView ? 'portfolio' : 'market',
+    })
+    setWorkspaceTab('priority')
+    window.requestAnimationFrame(() => {
+      workspaceScrollRef.current?.scrollTo({ top: 0 })
+    })
+  }, [isPortfolioView, setDecisionCenterFilters])
   const portfolioCommand = useMemo(
     () => buildPortfolioCommandSummary(signals, holdings, portfolioRiskData),
     [holdings, portfolioRiskData, signals],
@@ -232,12 +304,100 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         hint: item.hint,
         tone: item.tone,
         tag: item.tag,
+        actionLabel: `查看${item.label}`,
+        testId: `decision-metric-portfolio-${item.label}`,
       }))
     }
     return buildDecisionCommandMetrics(signals, summary, reviewStats, portfolioRiskData)
   }, [isPortfolioView, portfolioCommand.metrics, portfolioRiskData, reviewStats, signals, summary])
   const emptyState = useMemo(() => buildDecisionEmptyStateModel(initialization, initializationFlow), [initialization, initializationFlow])
   const hasGlobalSignals = (summary?.totalToday ?? 0) > 0
+  const showBriefWorkbench = (
+    signals.length > 0
+    || briefContextSignals.length > 0
+    || (historyData?.items.length ?? 0) > 0
+    || (isPortfolioView && actionQueue.length > 0)
+    || (isPortfolioView && hasDueJudgmentFollowUps)
+    || hasGlobalSignals
+  ) && !(isPortfolioView && hasNoHoldings && !hasDueJudgmentFollowUps)
+
+  // 组合视图无持仓信号时，避免停在空的分区 Tab；保留用户主动打开的「历史回看」
+  useEffect(() => {
+    if (!loading && showBriefWorkbench && signals.length === 0 && hasGlobalSignals) {
+      setWorkspaceTab((current) => (current === 'brief' || current === 'history' ? current : 'brief'))
+    }
+  }, [hasGlobalSignals, loading, showBriefWorkbench, signals.length])
+
+  const openCommandMetric = useCallback((label: string) => {
+    if (label === '复盘积压') {
+      setReviewHintsTab('pending')
+      setReviewHintsOpen(true)
+      return
+    }
+    if (label === '高优先级') {
+      setDecisionCenterFilters({
+        status: 'NEW',
+        type: 'all',
+        source: 'all',
+        portfolioOnly: false,
+        minPriority: 4,
+        viewMode: 'market',
+      })
+      setWorkspaceTab('priority')
+      return
+    }
+    if (label === '持仓风险') {
+      setDecisionCenterFilters({
+        status: 'active',
+        type: 'RISK',
+        source: 'all',
+        portfolioOnly: true,
+        minPriority: 1,
+        viewMode: 'portfolio',
+      })
+      setWorkspaceTab('risk')
+      return
+    }
+    if (label === '短线机会') {
+      setDecisionCenterFilters({
+        status: 'active',
+        type: 'OPPORTUNITY',
+        source: 'short_term',
+        portfolioOnly: false,
+        minPriority: 1,
+        viewMode: 'market',
+      })
+      setWorkspaceTab('strategy')
+      return
+    }
+    if (label === '持仓数') {
+      setWorkspaceTab('portfolio')
+      return
+    }
+    if (label === '证据缺口') {
+      setDecisionCenterFilters({
+        status: 'active',
+        type: 'all',
+        source: 'all',
+        portfolioOnly: true,
+        minPriority: 1,
+        viewMode: 'portfolio',
+      })
+      setWorkspaceTab('risk')
+      return
+    }
+    if (label === '组合未处理') {
+      setDecisionCenterFilters({
+        status: 'NEW',
+        type: 'all',
+        source: 'all',
+        portfolioOnly: true,
+        minPriority: 1,
+        viewMode: 'portfolio',
+      })
+      setWorkspaceTab('priority')
+    }
+  }, [setDecisionCenterFilters])
 
   const openJudgment = useCallback((signal: DecisionSignalItem, actionItem?: DecisionActionItem | null) => {
     if (!signal.tsCode) {
@@ -261,6 +421,35 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         setSignalDateContext(res.context)
         setHistoryTradeDate((current) => current || formatCompactDate(res.context!.displayDate))
       }
+      // FR-262: 组合视图仍为提炼补一块非持仓市场/策略/资讯上下文（不进入左侧处置队列）
+      if (isPortfolioView) {
+        try {
+          const ctx = await window.api.decision.getTodaySignals({
+            statuses: ['NEW', 'READ', 'WATCHING'],
+            minPriority: 3,
+            limit: 80,
+            portfolioOnly: false,
+          })
+          if (ctx.ok) {
+            const rows = [...(ctx.data ?? []), ...(ctx.carryover ?? [])] as DecisionSignalItem[]
+            setBriefContextSignals(
+              rows.filter((row) =>
+                row.sourceModule === 'sector_flow'
+                || row.sourceModule === 'market'
+                || row.sourceModule === 'short_term'
+                || row.sourceModule === 'news'
+                || row.sourceModule === 'ai',
+              ),
+            )
+          } else {
+            setBriefContextSignals([])
+          }
+        } catch {
+          setBriefContextSignals([])
+        }
+      } else {
+        setBriefContextSignals([])
+      }
       await loadSummary()
       return next
     } catch (err) {
@@ -270,13 +459,13 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
       setLoading(false)
       setSignalsReady(true)
     }
-  }, [filters, loadSummary])
+  }, [filters, isPortfolioView, loadSummary])
 
   const loadReviewStats = useCallback(async () => {
     setReviewLoading(true)
     setReviewError(null)
     try {
-      const res = await window.api.decision.getReviewStats({ rangeDays: reviewRangeDays, limit: 8 })
+      const res = await window.api.decision.getReviewStats({ rangeDays: reviewRangeDays, limit: 30 })
       if (!res.ok) throw new Error(res.message || res.error || '加载复盘统计失败')
       setReviewStats((res.data ?? null) as DecisionReviewStatsData | null)
     } catch (err) {
@@ -551,6 +740,38 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
     await loadHoldings()
   }, [loadHistorySignals, loadHoldings, loadPortfolioRiskReview, loadReviewStats, loadSignals])
 
+  const refreshAfterSignalMutation = useCallback(async () => {
+    await loadSignals()
+    await loadReviewStats()
+    await loadHistorySignals()
+    await loadPortfolioRiskReview()
+    await loadHoldings()
+  }, [loadHistorySignals, loadHoldings, loadPortfolioRiskReview, loadReviewStats, loadSignals])
+
+  const quickResolveSignals = useCallback(async (ids: number[]) => {
+    const unique = [...new Set(ids.filter((id) => Number.isFinite(id)))]
+    if (unique.length === 0) return { ok: true as const, failed: 0 }
+    let failed = 0
+    for (const id of unique) {
+      const res = await window.api.decision.resolve(id, 'RESOLVED_VALID')
+      if (!res.ok) failed += 1
+    }
+    await refreshAfterSignalMutation()
+    return { ok: failed === 0, failed }
+  }, [refreshAfterSignalMutation])
+
+  const quickDismissSignals = useCallback(async (ids: number[]) => {
+    const unique = [...new Set(ids.filter((id) => Number.isFinite(id)))]
+    if (unique.length === 0) return { ok: true as const, failed: 0 }
+    let failed = 0
+    for (const id of unique) {
+      const res = await window.api.decision.dismiss(id, '噪音/快捷忽略')
+      if (!res.ok) failed += 1
+    }
+    await refreshAfterSignalMutation()
+    return { ok: failed === 0, failed }
+  }, [refreshAfterSignalMutation])
+
   const handleNavigateStock = useCallback((signal: DecisionSignalItem) => {
     if (!signal.tsCode) return
     const normalized = signal.tsCode.includes('.') ? signal.tsCode.split('.')[0] : signal.tsCode
@@ -704,21 +925,62 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
     void persistReviewReport(pending)
   }, [persistReviewReport])
 
-  /** FR-233/FR-236/FR-250: 前端即时生成今日复盘、异步保存，并自动触发 AI 研判 */
+  /** FR-233/FR-236/FR-250: 前端即时生成今日复盘（含日结：市场/资金/持仓/关注）、异步保存，并自动触发 AI 研判 */
   const handleGenerateDailyReview = useCallback(async () => {
     cancelReviewAiInFlight()
     setReviewReportOpen(true)
     setReviewReportLoading(true)
     setReviewReportError(null)
     try {
-      const response = await window.api.decision.listJudgments({ from: Date.now() - 24 * 60 * 60 * 1000, latestPerGroup: false, limit: 100 })
-      if (!response.ok) throw new Error(response.message || response.error || '加载今日判断失败')
+      const [judgmentResponse, overviewRes, dashboardRes] = await Promise.all([
+        window.api.decision.listJudgments({ from: Date.now() - 24 * 60 * 60 * 1000, latestPerGroup: false, limit: 100 }),
+        window.api.market.getMarketOverview().catch((err: unknown) => ({
+          ok: false as const,
+          error: err instanceof Error ? err.message : String(err),
+        })),
+        window.api.portfolio.getDashboard({ limit: 100, offset: 0 }).catch((err: unknown) => ({
+          ok: false as const,
+          message: err instanceof Error ? err.message : String(err),
+        })),
+      ])
+      if (!judgmentResponse.ok) throw new Error(judgmentResponse.message || judgmentResponse.error || '加载今日判断失败')
+
+      let marketOverview: ReviewDayContextInput['marketOverview'] = null
+      let marketOverviewError: string | null = null
+      if (!overviewRes || !('ok' in overviewRes) || overviewRes.ok !== true) {
+        marketOverviewError = ('error' in (overviewRes ?? {}) && typeof (overviewRes as { error?: string }).error === 'string')
+          ? (overviewRes as { error: string }).error
+          : ('message' in (overviewRes ?? {}) && typeof (overviewRes as { message?: string }).message === 'string')
+            ? (overviewRes as { message: string }).message
+            : '市场概览不可用'
+      } else {
+        marketOverview = overviewRes.snapshot as ReviewDayContextInput['marketOverview']
+      }
+
+      let dashboardItems: ReviewDayContextInput['dashboardItems'] = null
+      let dashboardError: string | null = null
+      if (!dashboardRes.ok) {
+        dashboardError = ('message' in dashboardRes && dashboardRes.message)
+          || ('code' in dashboardRes && typeof dashboardRes.code === 'string' ? dashboardRes.code : null)
+          || '持仓看板不可用'
+      } else {
+        dashboardItems = (dashboardRes.data ?? []) as NonNullable<ReviewDayContextInput['dashboardItems']>
+      }
+
+      const dayContext: ReviewDayContextInput = {
+        marketOverview,
+        marketOverviewError,
+        dashboardItems,
+        dashboardError,
+      }
+
       const report = buildDailyReviewReport({
         signals,
         holdings,
         portfolioRiskData,
-        judgments: (response.data?.items ?? []) as DecisionJudgmentSummaryItem[],
+        judgments: (judgmentResponse.data?.items ?? []) as DecisionJudgmentSummaryItem[],
         judgmentFollowUps,
+        dayContext,
       })
       reviewReportRef.current = report
       setReviewReport(report)
@@ -863,11 +1125,12 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
   const workspaceTabs = useMemo(() => {
     const sectionTabs = homeModel.sections.map(section => ({ key: section.key as WorkspaceTab, label: section.title, count: section.signals.length }))
     return [
-      { key: 'priority' as WorkspaceTab, label: '重点', count: homeModel.prioritySignals.length },
+      { key: 'brief' as WorkspaceTab, label: '提炼', count: todayBrief.portfolioClues.length + todayBrief.sectorClues.length + todayBrief.strategyClues.length + todayBrief.peripheralClues.length },
+      { key: 'priority' as WorkspaceTab, label: '信号明细', count: homeModel.prioritySignals.length },
       ...sectionTabs,
       { key: 'history' as WorkspaceTab, label: '历史回看', count: historyData?.items?.length ?? 0 }
     ]
-  }, [historyData?.items?.length, homeModel.prioritySignals.length, homeModel.sections])
+  }, [historyData?.items?.length, homeModel.prioritySignals.length, homeModel.sections, todayBrief.peripheralClues.length, todayBrief.portfolioClues.length, todayBrief.sectorClues.length, todayBrief.strategyClues.length])
 
   function handleInitializationAction(action: InitializationAction) {
     if (action.type === 'guide') {
@@ -930,12 +1193,24 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
             {isPortfolioView ? (
               <>
                 <MissionPill label="持仓" value={portfolioCommand.holdingCount} />
-                <MissionPill label="组合待办" value={portfolioCommand.pendingCount} tone="hot" />
+                <MissionPill
+                  label="组合待办"
+                  value={portfolioCommand.pendingCount}
+                  tone="hot"
+                  testId="decision-mission-portfolio-pending"
+                  onClick={openPendingSignals}
+                />
                 <MissionPill label="证据缺口" value={portfolioCommand.evidenceGapCount} />
               </>
             ) : (
               <>
-                <MissionPill label="待处理" value={progressModel.pending} tone="hot" />
+                <MissionPill
+                  label="待处理"
+                  value={progressModel.pending}
+                  tone="hot"
+                  testId="decision-mission-pending"
+                  onClick={openPendingSignals}
+                />
                 <MissionPill label="关注中" value={progressModel.watching} />
                 <MissionPill label="持仓相关" value={homeModel.counts.portfolio} />
               </>
@@ -991,7 +1266,7 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
               <CommandMetric
                 key={metric.label}
                 {...metric}
-                onClick={metric.label === '复盘积压' ? () => setReviewReportHistoryOpen(true) : undefined}
+                onClick={() => openCommandMetric(metric.label)}
               />
             ))}
           </div>
@@ -1035,7 +1310,7 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
           />
         )}
 
-        {!loading && signals.length === 0 && !error && hasGlobalSignals && !(isPortfolioView && hasNoHoldings && !hasDueJudgmentFollowUps) && !hasDueJudgmentFollowUps && (
+        {!loading && signals.length === 0 && !error && hasGlobalSignals && !showBriefWorkbench && !(isPortfolioView && hasNoHoldings && !hasDueJudgmentFollowUps) && !hasDueJudgmentFollowUps && (
           <DecisionFilteredEmptyState
             status={status}
             type={type}
@@ -1055,15 +1330,21 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
           <DecisionInitializationEmptyState model={emptyState} onAction={handleInitializationAction} onStartInitialization={handleStartInitialization} running={initializationFlow?.running ?? false} />
         )}
 
-        {(signals.length > 0 || (historyData?.items.length ?? 0) > 0 || (isPortfolioView && actionQueue.length > 0) || (isPortfolioView && hasDueJudgmentFollowUps)) && !(isPortfolioView && hasNoHoldings && !hasDueJudgmentFollowUps) && (
+        {showBriefWorkbench && (
           <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,330px)_minmax(0,1fr)_minmax(300px,364px)] gap-4 overflow-hidden">
             <div className="flex min-h-0 flex-col gap-3 overflow-hidden">
               {isPortfolioView && <JudgmentFollowUpPanel items={judgmentFollowUps} loading={judgmentFollowUpsLoading} error={judgmentFollowUpsError} onCompleted={() => { void loadJudgmentFollowUps(); void loadReviewStats(); void loadOutcomeMemory() }} />}
               <ActionQueuePanel
                 items={actionQueue}
                 progress={progressModel}
-                title={isPortfolioView ? `组合待办 (${actionQueue.length})` : undefined}
-                subtitle={isPortfolioView ? '按股票聚合 · 风险/缺口优先' : undefined}
+                title={`待办导航 (${actionQueue.length}${progressModel.pending > actionQueue.length ? `/${progressModel.pending}` : ''})`}
+                subtitle={
+                  isPortfolioView
+                    ? '按股票聚合 · 点进中间提炼或明细'
+                    : progressModel.pending > actionQueue.length
+                      ? `优先 ${actionQueue.length} 条 · 其余 ${progressModel.pending - actionQueue.length} 条在「信号明细」`
+                      : '导航用 · 主阅读在「提炼」；点右侧「待处理」看全部'
+                }
                 emptyText={isPortfolioView
                   ? (portfolioCommand.holdingCount === 0
                     ? '尚未添加持仓。'
@@ -1087,8 +1368,28 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
               onTabChange={setWorkspaceTab}
               scrollRef={workspaceScrollRef}
             >
+                {workspaceTab === 'brief' && (
+                  <TodayBriefPanel
+                    model={todayBrief}
+                    aiState={briefAiState}
+                    aiBusy={briefAiBusy}
+                    onRunAi={() => { void runTodayBriefAi() }}
+                    onOpenDetailTab={() => setWorkspaceTab('priority')}
+                    onOpenSignal={(signalId) => {
+                      const hit = signals.find((item) => item.id === signalId)
+                        ?? briefContextSignals.find((item) => item.id === signalId)
+                      if (!hit) return
+                      if (isPortfolioView && hit.tsCode && isPortfolioSignal(hit)) openJudgment(hit)
+                      else setLifecycleSignal(hit)
+                    }}
+                    onNavigateStock={(tsCode, stockName) => {
+                      const normalized = tsCode.includes('.') ? tsCode.split('.')[0]! : tsCode
+                      navigateToStock(normalized, stockName ?? undefined)
+                    }}
+                  />
+                )}
                 {workspaceTab === 'priority' && <PriorityPanel signals={homeModel.prioritySignals} renderSignal={renderSignal} />}
-                {workspaceTab !== 'priority' && workspaceTab !== 'history' && sectionByKey.has(workspaceTab) && (
+                {workspaceTab !== 'brief' && workspaceTab !== 'priority' && workspaceTab !== 'history' && sectionByKey.has(workspaceTab) && (
                   <DecisionSectionPanel section={sectionByKey.get(workspaceTab)!} renderSignal={renderSignal} compact={false} />
                 )}
                 {workspaceTab === 'history' && (
@@ -1108,15 +1409,18 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
                   />
                 )}
             </WorkspacePanel>
-            <aside className="grid min-h-0 grid-rows-[174px_minmax(0,1fr)] gap-3 overflow-hidden">
-              <DecisionProgressPanel progress={progressModel} />
+            <aside className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
+              <DecisionProgressPanel progress={progressModel} onOpenPending={openPendingSignals} />
               <ReviewAndPortfolioPanel
                 reviewData={reviewStats}
                 reviewLoading={reviewLoading}
                 reviewError={reviewError}
                 reviewRangeDays={reviewRangeDays}
                 onReloadReview={() => void loadReviewStats()}
-                onOpenReviewAll={() => setReviewHintsOpen(true)}
+                onOpenReviewAll={() => {
+                  setReviewHintsTab('noise')
+                  setReviewHintsOpen(true)
+                }}
                 portfolioData={portfolioRiskData}
                 portfolioLoading={portfolioRiskLoading}
                 portfolioError={portfolioRiskError}
@@ -1207,8 +1511,24 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
         loading={reviewLoading}
         error={reviewError}
         rangeDays={reviewRangeDays}
+        activeTab={reviewHintsTab}
+        onTabChange={setReviewHintsTab}
         onClose={() => setReviewHintsOpen(false)}
         onReload={() => void loadReviewStats()}
+        onLifecycle={(item) => {
+          setReviewHintsOpen(false)
+          if (isPortfolioView && item.tsCode) openJudgment(item)
+          else setLifecycleSignal(item)
+        }}
+        onNavigateStock={(item) => {
+          if (item.tsCode) {
+            setReviewHintsOpen(false)
+            handleNavigateStock(item)
+          }
+        }}
+        onQuickResolve={quickResolveSignals}
+        onQuickDismiss={quickDismissSignals}
+        lifecycleLabel={isPortfolioView ? '研判' : '事件明细'}
       />
       <ReviewReportPanel
         open={reviewReportOpen}
@@ -1414,10 +1734,34 @@ function DecisionInitializationEmptyState({ model, onAction, onStartInitializati
   )
 }
 
-function MissionPill({ label, value, tone = 'normal' }: { label: string; value: number; tone?: 'normal' | 'hot' }) {
+function MissionPill({
+  label,
+  value,
+  tone = 'normal',
+  onClick,
+  testId,
+}: {
+  label: string
+  value: number
+  tone?: 'normal' | 'hot'
+  onClick?: () => void
+  testId?: string
+}) {
   const className = tone === 'hot'
     ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300'
     : 'border-slate-200 bg-white/90 text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300'
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        data-testid={testId}
+        onClick={onClick}
+        className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${className}`}
+      >
+        {label} <b className="ml-1 tabular-nums">{value}</b>
+      </button>
+    )
+  }
   return (
     <span className={`rounded-full border px-3 py-1.5 text-xs font-medium ${className}`}>
       {label} <b className="ml-1 tabular-nums">{value}</b>
@@ -1435,6 +1779,7 @@ interface CommandMetricItem {
   tag?: string
   testId?: string
   onClick?: () => void
+  actionLabel?: string
 }
 
 function buildDecisionCommandMetrics(
@@ -1446,16 +1791,18 @@ function buildDecisionCommandMetrics(
   const highPriorityUnread = summary?.highPriorityUnreadCount ?? signals.filter(signal => signal.status === 'NEW' && signal.priority >= 4).length
   const portfolioRisk = signals.filter(signal => isPortfolioSignal(signal) && isRiskSignal(signal)).length
   const shortTermOpportunity = signals.filter(signal => signal.sourceModule === 'short_term' && (signal.signalType === 'OPPORTUNITY' || signal.direction === 'BULLISH')).length
-  const reviewBacklog = reviewStats?.pendingReview?.length ?? portfolioRiskData?.unresolvedRiskSignals ?? signals.filter(signal => signal.status === 'NEW' || signal.status === 'WATCHING').length
+  const reviewBacklog = reviewStats?.summary.unresolved
+    ?? portfolioRiskData?.unresolvedRiskSignals
+    ?? signals.filter(signal => signal.status === 'NEW' || signal.status === 'WATCHING').length
   return [
-    { label: '高优先级', value: highPriorityUnread, hint: 'P4+ 未读优先处理', tone: 'red', tag: 'P4+' },
-    { label: '持仓风险', value: portfolioRisk, hint: `未收口 ${portfolioRiskData?.unresolvedRiskSignals ?? 0} 条`, tone: 'green', tag: '需先看' },
-    { label: '短线机会', value: shortTermOpportunity, hint: '竞价/策略信号线索', tone: 'blue', tag: '策略' },
-    { label: '复盘积压', value: reviewBacklog, hint: `近 ${reviewStats ? '30' : '当前'} 日待收口`, tone: 'amber', tag: '30日', testId: 'decision-metric-review-backlog' },
+    { label: '高优先级', value: highPriorityUnread, hint: 'P4+ 未读优先处理', tone: 'red', tag: 'P4+', testId: 'decision-metric-high-priority', actionLabel: '查看高优先级未读' },
+    { label: '持仓风险', value: portfolioRisk, hint: `未收口 ${portfolioRiskData?.unresolvedRiskSignals ?? 0} 条`, tone: 'green', tag: '需先看', testId: 'decision-metric-portfolio-risk', actionLabel: '查看持仓风险' },
+    { label: '短线机会', value: shortTermOpportunity, hint: '竞价/策略信号线索', tone: 'blue', tag: '策略', testId: 'decision-metric-short-term', actionLabel: '查看短线机会' },
+    { label: '复盘积压', value: reviewBacklog, hint: `近 ${reviewStats ? '30' : '当前'} 日待收口`, tone: 'amber', tag: '30日', testId: 'decision-metric-review-backlog', actionLabel: '打开待复盘列表' },
   ]
 }
 
-export function CommandMetric({ label, value, hint, tone, tag, testId, onClick }: CommandMetricItem) {
+export function CommandMetric({ label, value, hint, tone, tag, testId, onClick, actionLabel }: CommandMetricItem) {
   const valueClass = {
     red: 'text-red-600 dark:text-red-300',
     green: 'text-emerald-700 dark:text-emerald-300',
@@ -1475,15 +1822,16 @@ export function CommandMetric({ label, value, hint, tone, tag, testId, onClick }
   )
   const valueRow = <div className={`mt-1 text-2xl font-extrabold tabular-nums ${valueClass}`}>{value}</div>
   const hintRow = <div className="mt-1 w-full truncate text-center text-[11px] text-slate-500 dark:text-slate-400">{hint}</div>
+  const clickLabel = actionLabel || `查看${label}`
   if (onClick) {
     return (
       <button
         type="button"
         data-testid={testId ?? 'decision-command-metric'}
-        aria-label="打开历史复盘"
-        title="打开历史复盘"
+        aria-label={clickLabel}
+        title={clickLabel}
         onClick={onClick}
-        className={`${shellClass} cursor-pointer transition-colors hover:border-amber-300 hover:bg-amber-50/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500 dark:hover:border-amber-700 dark:hover:bg-amber-950/30`}
+        className={`${shellClass} cursor-pointer transition-colors hover:border-slate-300 hover:bg-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-500 dark:hover:border-slate-600 dark:hover:bg-slate-900`}
       >
         {labelRow}
         {valueRow}
@@ -1500,32 +1848,50 @@ export function CommandMetric({ label, value, hint, tone, tag, testId, onClick }
   )
 }
 
-function DecisionProgressPanel({ progress }: { progress: ReturnType<typeof buildDecisionProgressModel> }) {
+function DecisionProgressPanel({
+  progress,
+  onOpenPending,
+}: {
+  progress: ReturnType<typeof buildDecisionProgressModel>
+  onOpenPending?: () => void
+}) {
   const pct = progressPct(progress)
   const cards = [
-    ['待处理', progress.pending],
-    ['已关注', progress.watching],
-    ['已读', progress.read]
-  ] as const
+    ['待处理', progress.pending, onOpenPending] as const,
+    ['已关注', progress.watching, undefined] as const,
+    ['已读', progress.read, undefined] as const,
+  ]
 
   return (
-    <section data-testid="decision-progress-summary" className="rounded-[10px] border border-gray-200/90 bg-white/92 p-3 shadow-sm shadow-gray-100/50 dark:border-gray-700 dark:bg-gray-900 dark:shadow-none">
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-extrabold text-gray-900 dark:text-gray-100">{progress.title}</h2>
-          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{progress.description}</p>
-        </div>
-        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300">{pct}%</span>
+    <section data-testid="decision-progress-summary" className="shrink-0 rounded-[10px] border border-gray-200/90 bg-white/92 p-3 shadow-sm shadow-gray-100/50 dark:border-gray-700 dark:bg-gray-900 dark:shadow-none">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="min-w-0 truncate text-sm font-extrabold text-gray-900 dark:text-gray-100">{progress.title}</h2>
+        <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300">{pct}%</span>
       </div>
-      <div className="h-2 rounded-full bg-gray-100 dark:bg-gray-800">
-        <div className="h-2 rounded-full bg-gradient-to-r from-cyan-600 to-emerald-500" style={{ width: `${pct}%` }} />
+      <p className="mb-2 text-[11px] leading-4 text-gray-500 dark:text-gray-400">{progress.description}</p>
+      <div className="h-1.5 rounded-full bg-gray-100 dark:bg-gray-800">
+        <div className="h-1.5 rounded-full bg-gradient-to-r from-cyan-600 to-emerald-500" style={{ width: `${pct}%` }} />
       </div>
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        {cards.map(([label, value]) => (
-          <div key={label} className="rounded-lg border border-gray-100 bg-white px-3 py-2 text-center dark:border-gray-800 dark:bg-gray-950/40">
-            <div className="text-xl font-extrabold tabular-nums text-gray-900 dark:text-gray-100">{value}</div>
-            <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{label}</div>
-          </div>
+      <div className="mt-2 grid grid-cols-3 gap-1.5">
+        {cards.map(([label, value, onClick]) => (
+          onClick ? (
+            <button
+              key={label}
+              type="button"
+              data-testid={`decision-progress-card-${label}`}
+              onClick={onClick}
+              title="打开信号明细中的待处理"
+              className="rounded-lg border border-cyan-200 bg-cyan-50/70 px-2 py-1.5 text-center transition-colors hover:bg-cyan-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-cyan-900/50 dark:bg-cyan-950/30 dark:hover:bg-cyan-950/50"
+            >
+              <div className="text-lg font-extrabold tabular-nums leading-none text-gray-900 dark:text-gray-100">{value}</div>
+              <div className="mt-1 text-[11px] leading-3 text-cyan-800 dark:text-cyan-200">{label}</div>
+            </button>
+          ) : (
+            <div key={label} className="rounded-lg border border-gray-100 bg-white px-2 py-1.5 text-center dark:border-gray-800 dark:bg-gray-950/40">
+              <div className="text-lg font-extrabold tabular-nums leading-none text-gray-900 dark:text-gray-100">{value}</div>
+              <div className="mt-1 text-[11px] leading-3 text-gray-500 dark:text-gray-400">{label}</div>
+            </div>
+          )
         ))}
       </div>
     </section>
@@ -1685,34 +2051,130 @@ function ReviewAndPortfolioPanel({
   )
 }
 
-function ReviewHintsDrawer({ open, data, loading, error, rangeDays, onClose, onReload }: { open: boolean; data: DecisionReviewStatsData | null; loading: boolean; error: string | null; rangeDays: number; onClose: () => void; onReload: () => void }) {
-  const [activeTab, setActiveTab] = useState<ReviewHintsTab>('noise')
+function ReviewHintsDrawer({
+  open,
+  data,
+  loading,
+  error,
+  rangeDays,
+  activeTab,
+  onTabChange,
+  onClose,
+  onReload,
+  onLifecycle,
+  onNavigateStock,
+  onQuickResolve,
+  onQuickDismiss,
+  lifecycleLabel = '事件明细',
+}: {
+  open: boolean
+  data: DecisionReviewStatsData | null
+  loading: boolean
+  error: string | null
+  rangeDays: number
+  activeTab: ReviewHintsTab
+  onTabChange: (tab: ReviewHintsTab) => void
+  onClose: () => void
+  onReload: () => void
+  onLifecycle: (signal: DecisionSignalItem) => void
+  onNavigateStock: (signal: DecisionSignalItem) => void
+  onQuickResolve: (ids: number[]) => Promise<{ ok: boolean; failed: number }>
+  onQuickDismiss: (ids: number[]) => Promise<{ ok: boolean; failed: number }>
+  lifecycleLabel?: string
+}) {
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
+  const [actionBusy, setActionBusy] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+
   const noise = data?.noiseSuggestions ?? []
   const repeated = data?.repeatedSignals ?? []
   const pending = data?.pendingReview ?? []
+  const unresolvedTotal = data?.summary.unresolved ?? pending.length
+  const actionable = activeTab === 'pending' ? pending : activeTab === 'repeated' ? repeated : []
+  const selectableIds = actionable.map((item) => item.id)
+
+  useEffect(() => {
+    if (!open) {
+      setSelectedIds(new Set())
+      setActionError(null)
+      setActionBusy(false)
+    }
+  }, [open])
+
+  useEffect(() => {
+    setSelectedIds(new Set())
+    setActionError(null)
+  }, [activeTab])
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev
+      const allow = new Set(selectableIds)
+      const next = new Set<number>()
+      for (const id of prev) {
+        if (allow.has(id)) next.add(id)
+      }
+      return next.size === prev.size ? prev : next
+    })
+  }, [selectableIds.join(',')])
+
   const tabs = [
     { key: 'noise' as const, label: '降噪建议', count: noise.length },
     { key: 'repeated' as const, label: '重复触发', count: repeated.length },
-    { key: 'pending' as const, label: '待复盘', count: pending.length }
+    { key: 'pending' as const, label: '待复盘', count: unresolvedTotal },
   ]
-  const items = activeTab === 'noise'
-    ? noise.map(item => ({ title: item.title, summary: item.summary, meta: item.metric }))
-    : activeTab === 'repeated'
-      ? repeated.map(item => ({ title: item.title, summary: item.summary, meta: `${item.occurrenceCount} 次触发 · P${item.priority}` }))
-      : pending.map(item => ({ title: item.title, summary: item.summary, meta: `P${item.priority} · ${statusText(item.status)}` }))
+
+  const toggleId = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleAll = () => {
+    setSelectedIds((prev) => {
+      if (prev.size === selectableIds.length) return new Set()
+      return new Set(selectableIds)
+    })
+  }
+
+  const runBatch = async (kind: 'resolve' | 'dismiss', ids: number[]) => {
+    if (ids.length === 0 || actionBusy) return
+    setActionBusy(true)
+    setActionError(null)
+    try {
+      const result = kind === 'resolve' ? await onQuickResolve(ids) : await onQuickDismiss(ids)
+      if (result.failed > 0) {
+        setActionError(`有 ${result.failed}/${ids.length} 条处理失败，已刷新列表`)
+      }
+      setSelectedIds(new Set())
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
   if (!open) return null
 
+  const selectedCount = selectedIds.size
+  const showBatchBar = activeTab === 'pending' || activeTab === 'repeated'
+
   return (
-    <div className="fixed inset-0 z-[10000]" role="dialog" aria-modal="true" aria-label="复盘提示详情">
+    <div className="fixed inset-0 z-[10000]" role="dialog" aria-modal="true" aria-label="复盘提示详情" data-testid="review-hints-drawer">
       <button type="button" aria-label="关闭复盘提示详情" onClick={onClose} className="absolute inset-0 bg-slate-950/45 backdrop-blur-[2px]" />
       <aside className="absolute right-0 top-0 flex h-full w-full max-w-[520px] flex-col overflow-hidden border-l border-slate-200 bg-white shadow-2xl shadow-slate-950/25 dark:border-slate-700 dark:bg-slate-900">
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-4 dark:border-slate-800">
           <div>
             <h2 className="text-base font-extrabold text-slate-950 dark:text-slate-100">复盘提示详情</h2>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">近 {rangeDays} 日, 每次聚焦一类线索。</p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              近 {rangeDays} 日未收口 {unresolvedTotal} 条；可勾选批量收口，或单条「有效收口 / 噪音忽略」。
+            </p>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={onReload} disabled={loading} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">{loading ? '刷新中' : '刷新'}</button>
+            <button type="button" onClick={onReload} disabled={loading || actionBusy} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">{loading ? '刷新中' : '刷新'}</button>
             <button type="button" onClick={onClose} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">关闭</button>
           </div>
         </div>
@@ -1722,7 +2184,8 @@ function ReviewHintsDrawer({ open, data, loading, error, rangeDays, onClose, onR
               <button
                 key={tab.key}
                 type="button"
-                onClick={() => setActiveTab(tab.key)}
+                data-testid={`review-hints-tab-${tab.key}`}
+                onClick={() => onTabChange(tab.key)}
                 className={`rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${activeTab === tab.key ? 'bg-white text-slate-950 shadow-sm dark:bg-slate-800 dark:text-slate-100' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}`}
               >
                 {tab.label} <span className="ml-1 tabular-nums opacity-70">{tab.count}</span>
@@ -1730,28 +2193,202 @@ function ReviewHintsDrawer({ open, data, loading, error, rangeDays, onClose, onR
             ))}
           </div>
         </div>
+        {showBatchBar && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5 dark:border-slate-800">
+            <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
+              <input
+                type="checkbox"
+                data-testid="review-hints-select-all"
+                checked={selectableIds.length > 0 && selectedCount === selectableIds.length}
+                disabled={selectableIds.length === 0 || actionBusy}
+                onChange={toggleAll}
+              />
+              全选本页
+            </label>
+            <span className="text-xs text-slate-400">已选 {selectedCount}</span>
+            <button
+              type="button"
+              data-testid="review-hints-batch-resolve"
+              disabled={selectedCount === 0 || actionBusy}
+              onClick={() => { void runBatch('resolve', [...selectedIds]) }}
+              className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-800 disabled:opacity-40 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-200"
+            >
+              {actionBusy ? '处理中…' : '批量有效收口'}
+            </button>
+            <button
+              type="button"
+              data-testid="review-hints-batch-dismiss"
+              disabled={selectedCount === 0 || actionBusy}
+              onClick={() => { void runBatch('dismiss', [...selectedIds]) }}
+              className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800 disabled:opacity-40 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+              批量噪音忽略
+            </button>
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">{error}</div>}
-          {!error && items.length === 0 && <div className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">当前分类暂无内容。</div>}
-          {!error && items.length > 0 && <ReviewHintList items={items.slice(0, 12)} />}
+          {actionError && <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">{actionError}</div>}
+          {!error && activeTab === 'noise' && (
+            noise.length === 0
+              ? <div className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">当前分类暂无内容。</div>
+              : (
+                <ReviewHintList
+                  items={noise.slice(0, 12).map(item => ({
+                    id: item.id,
+                    title: item.title,
+                    summary: item.summary,
+                    meta: item.metric,
+                  }))}
+                />
+              )
+          )}
+          {!error && activeTab === 'repeated' && (
+            repeated.length === 0
+              ? <div className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">当前分类暂无内容。</div>
+              : (
+                <ReviewHintList
+                  items={repeated.slice(0, 30).map(item => ({
+                    id: String(item.id),
+                    title: item.title,
+                    summary: item.summary ?? '',
+                    meta: `${item.occurrenceCount} 次触发 · P${item.priority}`,
+                    signal: item,
+                  }))}
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleId}
+                  lifecycleLabel={lifecycleLabel}
+                  onLifecycle={onLifecycle}
+                  onNavigateStock={onNavigateStock}
+                  actionBusy={actionBusy}
+                  onQuickResolve={(id) => { void runBatch('resolve', [id]) }}
+                  onQuickDismiss={(id) => { void runBatch('dismiss', [id]) }}
+                />
+              )
+          )}
+          {!error && activeTab === 'pending' && (
+            pending.length === 0
+              ? <div className="rounded-lg border border-dashed border-slate-200 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">当前没有待复盘信号。</div>
+              : (
+                <ReviewHintList
+                  items={pending.slice(0, 30).map(item => ({
+                    id: String(item.id),
+                    title: item.title,
+                    summary: item.summary ?? '',
+                    meta: `P${item.priority} · ${statusText(item.status)}`,
+                    signal: item,
+                  }))}
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleId}
+                  lifecycleLabel={lifecycleLabel}
+                  onLifecycle={onLifecycle}
+                  onNavigateStock={onNavigateStock}
+                  actionBusy={actionBusy}
+                  onQuickResolve={(id) => { void runBatch('resolve', [id]) }}
+                  onQuickDismiss={(id) => { void runBatch('dismiss', [id]) }}
+                />
+              )
+          )}
         </div>
       </aside>
     </div>
   )
 }
 
-function ReviewHintList({ items }: { items: Array<{ title: string; summary: string; meta: string }> }) {
+function ReviewHintList({
+  items,
+  selectedIds,
+  onToggleSelect,
+  lifecycleLabel,
+  onLifecycle,
+  onNavigateStock,
+  actionBusy,
+  onQuickResolve,
+  onQuickDismiss,
+}: {
+  items: Array<{ id: string; title: string; summary: string; meta: string; signal?: DecisionSignalItem }>
+  selectedIds?: Set<number>
+  onToggleSelect?: (id: number) => void
+  lifecycleLabel?: string
+  onLifecycle?: (signal: DecisionSignalItem) => void
+  onNavigateStock?: (signal: DecisionSignalItem) => void
+  actionBusy?: boolean
+  onQuickResolve?: (id: number) => void
+  onQuickDismiss?: (id: number) => void
+}) {
   return (
-    <div className="space-y-2.5">
-      {items.map(item => (
-        <article key={`${item.title}-${item.meta}`} className="rounded-xl border border-slate-100 bg-slate-50/70 px-3.5 py-3 dark:border-slate-800 dark:bg-slate-950/40">
-          <div className="flex items-start justify-between gap-3">
-            <h3 className="min-w-0 text-sm font-bold leading-5 text-slate-900 dark:text-slate-100">{item.title}</h3>
-            <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-400 dark:ring-slate-700">{item.meta}</span>
-          </div>
-          <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{item.summary}</p>
-        </article>
-      ))}
+    <div className="space-y-2.5" data-testid="review-hints-list">
+      {items.map(item => {
+        const signalId = item.signal?.id
+        const checked = signalId != null && selectedIds?.has(signalId)
+        return (
+          <article key={`${item.id}-${item.meta}`} className="rounded-xl border border-slate-100 bg-slate-50/70 px-3.5 py-3 dark:border-slate-800 dark:bg-slate-950/40">
+            <div className="flex items-start gap-2.5">
+              {item.signal && onToggleSelect && signalId != null && (
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={Boolean(checked)}
+                  disabled={actionBusy}
+                  onChange={() => onToggleSelect(signalId)}
+                  aria-label={`选择 ${item.title}`}
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <h3 className="min-w-0 text-sm font-bold leading-5 text-slate-900 dark:text-slate-100">{item.title}</h3>
+                  <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-400 dark:ring-slate-700">{item.meta}</span>
+                </div>
+                {item.summary ? <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{item.summary}</p> : null}
+                {item.signal && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {onQuickResolve && signalId != null && (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-40 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-200"
+                        onClick={() => onQuickResolve(signalId)}
+                      >
+                        有效收口
+                      </button>
+                    )}
+                    {onQuickDismiss && signalId != null && (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-40 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200"
+                        onClick={() => onQuickDismiss(signalId)}
+                      >
+                        噪音忽略
+                      </button>
+                    )}
+                    {onLifecycle && (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-40 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300"
+                        onClick={() => onLifecycle(item.signal!)}
+                      >
+                        {lifecycleLabel || '事件明细'}
+                      </button>
+                    )}
+                    {item.signal.tsCode && onNavigateStock && (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                        onClick={() => onNavigateStock(item.signal!)}
+                      >
+                        走势图
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </article>
+        )
+      })}
     </div>
   )
 }

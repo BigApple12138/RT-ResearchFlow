@@ -66,6 +66,7 @@ import {
   resolveCurrentResearchAgentModelConfig,
   runResearchAgent,
   type ResearchAgentPersistInput,
+  type ResearchAgentRunnerDelta,
   type ResearchAgentRunnerProgress,
 } from './researchAgentRunner'
 import {
@@ -721,6 +722,7 @@ export class ResearchAgentRunManager {
       signal: controller.signal,
       persistReport: persistResearchAgentReport,
       onProgress: (event) => this.emit(event),
+      onDelta: (event) => this.emitDelta(event),
     }).catch((error) => {
       console.error('[ResearchAgent] run failed:', error instanceof Error ? error.message : String(error))
     }).finally(() => {
@@ -732,6 +734,7 @@ export class ResearchAgentRunManager {
         current,
         current.error_message ?? researchAgentStatusLabel(current.status),
       ))
+      this.emitDelta({ runId, phase: current.phase, type: 'done' })
     })
   }
 
@@ -739,6 +742,14 @@ export class ResearchAgentRunManager {
     const window = this.dependencies.getWindow?.()
     if (!window || window.isDestroyed()) return
     window.webContents.send('researchAgent:progress', event)
+  }
+
+  private emitDelta(event: ResearchAgentRunnerDelta): void {
+    const window = this.dependencies.getWindow?.()
+    if (!window || window.isDestroyed()) return
+    try {
+      window.webContents.send('researchAgent:delta', event)
+    } catch { /* UI only */ }
   }
 
   private buildPreflight(input: {

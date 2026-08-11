@@ -11,12 +11,15 @@ describe('个股快捷详情均线', () => {
 
     const ma5 = buildMovingAverageSeries(rows, 5)
     const ma20 = buildMovingAverageSeries(rows, 20)
+    const ma30 = buildMovingAverageSeries(rows, 30)
     const ma60 = buildMovingAverageSeries(rows, 60)
 
     expect(ma5).toHaveLength(212)
     expect(ma5[0]).toEqual({ tradeDate: rows[4].tradeDate, value: 3 })
     expect(ma20).toHaveLength(197)
     expect(ma20[0]).toEqual({ tradeDate: rows[19].tradeDate, value: 10.5 })
+    expect(ma30).toHaveLength(187)
+    expect(ma30[0]).toEqual({ tradeDate: rows[29].tradeDate, value: 15.5 })
     expect(ma60).toHaveLength(157)
     expect(ma60[0]).toEqual({ tradeDate: rows[59].tradeDate, value: 30.5 })
     expect(ma60.at(-1)).toEqual({ tradeDate: rows[215].tradeDate, value: 186.5 })

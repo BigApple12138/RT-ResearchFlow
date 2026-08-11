@@ -110,8 +110,14 @@ export async function callWithFallback(
     prompt?: string
     messages?: ConversationTurn[]
     maxTokens?: number | null
+    /** true 时不向厂商请求写入 max_tokens / max_output_tokens，由模型端自行决定 */
+    omitOutputTokenLimit?: boolean
     webSearch?: { enabled: boolean; searchContextSize?: 'low' | 'medium' | 'high'; excludedUrls?: string[] }
     nativeWebSearchOnly?: boolean
+    /** 流式累计回调；换厂商前由调用方自行 reset UI */
+    onDelta?: (accumulated: string) => void
+    /** 即将尝试下一厂商时回调（用于 UI reset） */
+    onProviderAttempt?: (provider: AIProvider) => void
   },
 ): Promise<AIFallbackResult> {
   const candidates = listProviderCandidates(db)
@@ -132,13 +138,20 @@ export async function callWithFallback(
     const model = providerConfig.model || (PROVIDER_MODELS as Record<string, string[]>)[provider]?.[0] || ''
     if (!model) continue
     try {
+      params.onProviderAttempt?.(provider as AIProvider)
       const result = await callAIProvider({
         provider: provider as AIProvider,
         model,
         apiKey,
         baseUrl: providerConfig.baseUrl ?? undefined,
-        maxTokens: providerConfig.maxTokens ?? undefined,
-        ...params,
+        // 调用方显式 omit 时不再套厂商 maxTokens；否则可用厂商配置，缺省由 resolveMaxTokens→4096
+        ...(params.omitOutputTokenLimit
+          ? { omitOutputTokenLimit: true }
+          : { maxTokens: params.maxTokens ?? providerConfig.maxTokens ?? undefined }),
+        prompt: params.prompt,
+        messages: params.messages,
+        webSearch: params.webSearch,
+        onDelta: params.onDelta,
       })
       return {
         provider: provider as AIProvider,
@@ -146,7 +159,7 @@ export async function callWithFallback(
         text: result.text,
         usage: result.usage,
         finishReason: result.finishReason,
-        maxTokens: providerConfig.maxTokens ?? undefined,
+        maxTokens: params.omitOutputTokenLimit ? undefined : (params.maxTokens ?? providerConfig.maxTokens ?? undefined),
         webSearchTrace: result.webSearchTrace,
       }
     } catch (err) {

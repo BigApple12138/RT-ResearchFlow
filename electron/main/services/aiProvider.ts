@@ -24,6 +24,11 @@ export interface AIProviderRequest {
     searchContextSize?: 'low' | 'medium' | 'high'
     excludedUrls?: string[]
   }
+  /**
+   * 流式累计正文回调（全量 accumulated）。
+   * Web Search Responses 路径不调用（整段返回）；未传则走非流式 create。
+   */
+  onDelta?: (accumulated: string) => void
 }
 
 export interface AIProviderResponse {
@@ -99,12 +104,44 @@ async function callClaude(req: AIProviderRequest): Promise<AIProviderResponse> {
   }
 
   const client = new Anthropic(clientOpts)
-
-  const message = await client.messages.create({
+  const createParams = {
     model: req.model,
     max_tokens: resolveMaxTokens(req.maxTokens),
-    messages: buildMessages(req)
-  }, { signal: req.signal })
+    messages: buildMessages(req),
+  }
+
+  if (req.onDelta) {
+    const stream = client.messages.stream(createParams, { signal: req.signal })
+    let accumulated = ''
+    stream.on('text', (textDelta: string) => {
+      accumulated = appendStreamText(accumulated, textDelta)
+      req.onDelta?.(accumulated)
+    })
+    const message = await stream.finalMessage()
+    const block = message.content[0]
+    if (!block || block.type !== 'text') {
+      throw new Error('AI_RESPONSE_EMPTY')
+    }
+    const text = block.text
+    if (text && text !== accumulated) {
+      req.onDelta?.(text)
+    }
+    if (!text.trim()) throw new Error('AI_RESPONSE_EMPTY')
+    return {
+      text,
+      responseId: message.id ?? null,
+      usage: {
+        inputTokens: message.usage?.input_tokens ?? null,
+        outputTokens: message.usage?.output_tokens ?? null,
+        totalTokens: typeof message.usage?.input_tokens === 'number' && typeof message.usage?.output_tokens === 'number'
+          ? message.usage.input_tokens + message.usage.output_tokens
+          : null
+      },
+      finishReason: message.stop_reason ?? null
+    }
+  }
+
+  const message = await client.messages.create(createParams, { signal: req.signal })
 
   const block = message.content[0]
   if (!block || block.type !== 'text') {
@@ -135,13 +172,19 @@ async function callDeepSeek(req: AIProviderRequest): Promise<AIProviderResponse>
     baseURL: req.baseUrl || 'https://api.deepseek.com'
   })
 
-  const completion = await client.chat.completions.create({
+  const body = {
     model: req.model,
     messages: buildMessages(req),
     ...(req.omitOutputTokenLimit ? {} : { max_tokens: resolveMaxTokens(req.maxTokens) }),
-  }, { signal: req.signal })
+  }
 
-  const text = completion.choices[0]?.message?.content
+  if (req.onDelta) {
+    return streamOpenAIChatCompletion(client, body, req)
+  }
+
+  const completion = await client.chat.completions.create(body, { signal: req.signal })
+
+  const text = extractOpenAIChatText(completion.choices[0]?.message)
   if (!text) {
     throw new Error('AI_RESPONSE_EMPTY')
   }
@@ -176,14 +219,20 @@ async function callOpenAICompatible(req: AIProviderRequest): Promise<AIProviderR
   // 让模型能像 DeepSeek 一样获取最新基本面/资讯
   const extra = buildOpenAICompatibleExtra(req.provider, req.model, !req.disableNativeSearch)
 
-  const completion = await client.chat.completions.create({
+  const body = {
     model: req.model,
     messages: buildMessages(req),
     ...outputLimit,
     ...extra
-  } as any, { signal: req.signal })
+  } as Record<string, unknown>
 
-  const text = completion.choices[0]?.message?.content
+  if (req.onDelta) {
+    return streamOpenAIChatCompletion(client, body, req)
+  }
+
+  const completion = await client.chat.completions.create(body as any, { signal: req.signal })
+
+  const text = extractOpenAIChatText(completion.choices[0]?.message)
   if (!text) {
     throw new Error('AI_RESPONSE_EMPTY')
   }
@@ -194,6 +243,48 @@ async function callOpenAICompatible(req: AIProviderRequest): Promise<AIProviderR
     usage: normalizeOpenAIUsage(completion.usage),
     finishReason: completion.choices[0]?.finish_reason ?? null
   }
+}
+
+async function streamOpenAIChatCompletion(
+  client: { chat: { completions: { create: (...args: any[]) => Promise<any> } } },
+  body: Record<string, unknown>,
+  req: AIProviderRequest,
+): Promise<AIProviderResponse> {
+  const stream = await client.chat.completions.create(
+    { ...body, stream: true },
+    { signal: req.signal },
+  )
+  let accumulated = ''
+  let responseId: string | null = null
+  let finishReason: string | null = null
+  let usage: AIProviderUsage | undefined
+  for await (const chunk of stream as AsyncIterable<{
+    id?: string
+    choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>
+    usage?: unknown
+  }>) {
+    if (chunk.id) responseId = chunk.id
+    const choice = chunk.choices?.[0]
+    if (choice?.delta?.content) {
+      accumulated = appendStreamText(accumulated, choice.delta.content)
+      req.onDelta?.(accumulated)
+    }
+    if (choice?.finish_reason) finishReason = choice.finish_reason
+    if (chunk.usage) usage = normalizeOpenAIUsage(chunk.usage)
+  }
+  const text = accumulated.trim()
+  if (!text) throw new Error('AI_RESPONSE_EMPTY')
+  return {
+    text,
+    responseId,
+    usage,
+    finishReason,
+  }
+}
+
+/** 纯函数：拼接流式文本增量（供单测） */
+export function appendStreamText(accumulated: string, delta: string): string {
+  return delta ? accumulated + delta : accumulated
 }
 
 function webSearchInput(req: AIProviderRequest): ConversationTurn[] {
@@ -363,6 +454,38 @@ function normalizeOpenAIUsage(usage: unknown): AIProviderUsage | undefined {
     outputTokens: typeof record.completion_tokens === 'number' ? record.completion_tokens : null,
     totalTokens: typeof record.total_tokens === 'number' ? record.total_tokens : null
   }
+}
+
+/** OpenAI 兼容响应：content 可能是 string / 分段数组；部分推理网关把正文放在 reasoning_content。 */
+export function extractOpenAIChatText(message: unknown): string | null {
+  if (!message || typeof message !== 'object') return null
+  const record = message as Record<string, unknown>
+  const fromContent = normalizeMessageContent(record.content)
+  if (fromContent) return fromContent
+  const fromReasoning = normalizeMessageContent(record.reasoning_content)
+  if (fromReasoning) return fromReasoning
+  return null
+}
+
+function normalizeMessageContent(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed || null
+  }
+  if (!Array.isArray(value)) return null
+  const parts: string[] = []
+  for (const item of value) {
+    if (typeof item === 'string' && item.trim()) {
+      parts.push(item.trim())
+      continue
+    }
+    if (!item || typeof item !== 'object') continue
+    const part = item as Record<string, unknown>
+    if (typeof part.text === 'string' && part.text.trim()) parts.push(part.text.trim())
+    else if (typeof part.content === 'string' && part.content.trim()) parts.push(part.content.trim())
+  }
+  const joined = parts.join('\n').trim()
+  return joined || null
 }
 
 function resolveMaxTokens(value?: number | null): number {

@@ -9,6 +9,12 @@ import type {
 } from '../../../electron/main/services/researchAgentRunManager'
 import { ResearchAuditTrace } from '../shared/ResearchAuditTrace'
 import { AppConfirmDialog } from '../shared/AppConfirmDialog'
+import { publishAppToast } from '../shared/appToastBus'
+import {
+  buildAutoDeepResearchQuestion,
+  decideAutoDeepResearchStart,
+  resolveAutoDeepResearchStocks,
+} from './researchAgentIntent'
 
 const BUTTON = 'min-h-11 rounded-md border px-3 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/40 disabled:cursor-not-allowed disabled:opacity-45 motion-reduce:transition-none'
 const SECONDARY = `${BUTTON} border-slate-300 bg-white text-slate-700 hover:border-cyan-500 hover:text-cyan-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-cyan-600 dark:hover:text-cyan-200`
@@ -22,6 +28,12 @@ interface Props {
   /** 递增时打开启动对话框（主聊天 suggest→确认） */
   openSignal?: number
   preferredQuestion?: string | null
+  /** 用于短问题扩写与股票抽取的会话线索 */
+  contextHints?: {
+    stockLabels?: string[]
+    recentUserMessages?: string[]
+    corpusTexts?: string[]
+  }
   onSessionBusyChange?: (busy: boolean) => void
 }
 
@@ -72,6 +84,7 @@ export function ResearchAgentPanel({
   onCompleted,
   openSignal = 0,
   preferredQuestion = null,
+  contextHints,
   onSessionBusyChange,
 }: Props) {
   const [runs, setRuns] = useState<ResearchAgentRunSummaryView[]>([])
@@ -85,6 +98,8 @@ export function ResearchAgentPanel({
   const [pendingCancelRunId, setPendingCancelRunId] = useState<string | null>(null)
   const [pendingReviewRunId, setPendingReviewRunId] = useState<string | null>(null)
   const [dialogQuestion, setDialogQuestion] = useState(draftQuestion)
+  const [streamDraft, setStreamDraft] = useState<{ runId: string; phase: string; accumulated: string } | null>(null)
+  const [liveProgress, setLiveProgress] = useState<{ runId: string; message: string; phase: string } | null>(null)
   const previousStatuses = useRef(new Map<string, ResearchAgentRunSummaryView['status']>())
   const selectedRunIdRef = useRef<string | null>(null)
   const openButtonRef = useRef<HTMLButtonElement>(null)
@@ -115,6 +130,7 @@ export function ResearchAgentPanel({
   }, [loadRuns, sessionId])
 
   useEffect(() => window.api.researchAgent.onProgress((event) => {
+    setLiveProgress({ runId: event.runId, message: event.message, phase: event.phase })
     void loadRuns()
     if (event.runId === selectedRunIdRef.current) {
       void window.api.researchAgent.getRun(event.runId).then((result) => {
@@ -129,8 +145,25 @@ export function ResearchAgentPanel({
     }
   }), [loadRuns])
 
+  useEffect(() => {
+    if (!window.api.researchAgent.onDelta) return
+    return window.api.researchAgent.onDelta((event) => {
+      if (event.type === 'start') {
+        setStreamDraft({ runId: event.runId, phase: event.phase, accumulated: '' })
+        return
+      }
+      if (event.type === 'delta' && typeof event.accumulated === 'string') {
+        setStreamDraft({ runId: event.runId, phase: event.phase, accumulated: event.accumulated })
+        return
+      }
+      if (event.type === 'done' || event.type === 'reset') {
+        setStreamDraft((prev) => (prev?.runId === event.runId ? null : prev))
+      }
+    })
+  }, [])
+
   async function openDialog(questionOverride?: string | null) {
-    const nextQuestion = (questionOverride ?? preferredQuestion ?? draftQuestion).trim()
+    const nextQuestion = expandLaunchQuestion(questionOverride ?? preferredQuestion ?? draftQuestion)
     setDialogQuestion(nextQuestion)
     setDialogOpen(true)
     setLoading(true)
@@ -150,10 +183,110 @@ export function ResearchAgentPanel({
     setPreflight(result.data)
   }
 
+  /** 建议卡确认 = 调度 skill：自动 startRun，失败只 toast，不弹窗。 */
+  async function launchFromSuggest(questionOverride?: string | null) {
+    const seed = (questionOverride ?? preferredQuestion ?? draftQuestion).trim()
+    setError(null)
+    setDialogOpen(false)
+    setBusy('autostart')
+    try {
+      const globalRuns = await window.api.researchAgent.listRuns(null)
+      if (globalRuns.ok && globalRuns.data.some((run) => run.status === 'queued' || run.status === 'running')) {
+        const message = '已有其他深度研究正在执行。请等待完成或取消后再启动。'
+        setError(message)
+        publishAppToast(message, 'warning')
+        return
+      }
+      const result = await window.api.researchAgent.preflight(sessionId)
+      if (!result.ok || !result.data) {
+        const message = result.message || '预检失败，深度研究未能启动'
+        setError(message)
+        publishAppToast(message, 'error')
+        return
+      }
+      const nextPreflight = result.data
+      const preflightStocks = nextPreflight.suggestedSubjects
+        .filter((subject): subject is Extract<ResearchAgentSubjectView, { kind: 'stock' }> => subject.kind === 'stock')
+        .map((subject) => ({ kind: 'stock' as const, tsCode: subject.tsCode, label: subject.label }))
+      const project = nextPreflight.suggestedSubjects.find(
+        (subject): subject is Extract<ResearchAgentSubjectView, { kind: 'industry_project' }> => subject.kind === 'industry_project',
+      )
+      const corpusTexts = [
+        seed,
+        ...(contextHints?.stockLabels ?? []),
+        ...(contextHints?.recentUserMessages ?? []),
+        ...(contextHints?.corpusTexts ?? []),
+      ]
+      const stockSubjects = resolveAutoDeepResearchStocks({
+        preflightStocks,
+        corpusTexts,
+      })
+      const decision = decideAutoDeepResearchStart({
+        preflightReady: nextPreflight.ready,
+        stockCount: stockSubjects.length,
+        projectCount: project ? 1 : 0,
+      })
+      const stockLabels = [
+        ...(contextHints?.stockLabels ?? []),
+        ...stockSubjects.map((subject) => subject.label ? `${subject.label}(${subject.tsCode})` : subject.tsCode),
+      ]
+      const question = buildAutoDeepResearchQuestion({
+        seedQuestion: seed,
+        stockLabels,
+        recentUserMessages: contextHints?.recentUserMessages,
+        corpusTexts,
+      })
+      if (!decision.auto) {
+        setError(decision.reason)
+        publishAppToast(decision.reason, 'warning')
+        return
+      }
+      if (!nextPreflight.ready) {
+        const message = nextPreflight.unavailableReason || '预检未就绪，深度研究未能启动'
+        setError(message)
+        publishAppToast(message, 'error')
+        return
+      }
+      const subjects: ResearchAgentSubjectView[] = stockSubjects.length > 0
+        ? stockSubjects.slice(0, 5)
+        : (project ? [{ ...project }] : [])
+      const started = await window.api.researchAgent.startRun({
+        requestId: crypto.randomUUID(),
+        sessionId,
+        question,
+        subjects,
+        includePortfolio: false,
+        confirmedBudgetVersion: 'single-agent-unrestricted-v3',
+        parentRunId: null,
+      })
+      if (!started.ok) {
+        setError(started.message)
+        publishAppToast(started.message || '深度研究启动失败', 'error')
+        return
+      }
+      setPreflight(null)
+      publishAppToast('深度研究已自动启动')
+      setSelectedRunId(started.data.run.id)
+      selectedRunIdRef.current = started.data.run.id
+      await loadRuns()
+      await selectRun(started.data.run.id)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  function expandLaunchQuestion(raw: string | null | undefined): string {
+    return buildAutoDeepResearchQuestion({
+      seedQuestion: raw ?? '',
+      stockLabels: contextHints?.stockLabels ?? [],
+      recentUserMessages: contextHints?.recentUserMessages,
+    })
+  }
+
   useEffect(() => {
     if (!openSignal || openSignal === lastOpenSignal.current) return
     lastOpenSignal.current = openSignal
-    void openDialog(preferredQuestion)
+    void launchFromSuggest(preferredQuestion)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open only on signal edges
   }, [openSignal])
 
@@ -261,6 +394,8 @@ export function ResearchAgentPanel({
                   <ResearchAgentRunDetail
                     detail={detail}
                     busy={busy}
+                    liveProgress={liveProgress?.runId === detail.run.id ? liveProgress : null}
+                    streamDraft={streamDraft?.runId === detail.run.id ? streamDraft : null}
                     onResume={() => { void mutate(detail.run.id, 'resume') }}
                     onCancel={() => setPendingCancelRunId(detail.run.id)}
                     onStartReview={() => setPendingReviewRunId(detail.run.id)}
@@ -351,6 +486,10 @@ function ResearchAgentStartDialog({
   const project = preflight?.suggestedSubjects.find((subject) => subject.kind === 'industry_project') ?? null
   const suggestedStocks = preflight?.suggestedSubjects.filter((subject): subject is Extract<ResearchAgentSubjectView, { kind: 'stock' }> => subject.kind === 'stock') ?? []
   const suggestedStockCodes = suggestedStocks.map((subject) => subject.tsCode).join(' ')
+
+  useEffect(() => {
+    setQuestion(initialQuestion)
+  }, [initialQuestion])
 
   useEffect(() => {
     if (suggestedStockCodes) setStockCodes((current) => current || suggestedStockCodes)
@@ -457,9 +596,11 @@ function ResearchAgentStartDialog({
   )
 }
 
-export function ResearchAgentRunDetail({ detail, busy, onResume, onCancel, onRetry, onDelete, onStartReview, onOpenDiscussion }: {
+export function ResearchAgentRunDetail({ detail, busy, liveProgress = null, streamDraft = null, onResume, onCancel, onRetry, onDelete, onStartReview, onOpenDiscussion }: {
   detail: ResearchAgentRunDetailView
   busy: string | null
+  liveProgress?: { runId: string; message: string; phase: string } | null
+  streamDraft?: { runId: string; phase: string; accumulated: string } | null
   onResume: () => void
   onCancel: () => void
   onRetry?: () => void
@@ -515,6 +656,20 @@ export function ResearchAgentRunDetail({ detail, busy, onResume, onCancel, onRet
       </div>
       {run.status === 'needs_attention' && <div className="mt-3 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-red-700 dark:bg-red-950/30 dark:text-red-300">模型或联网请求可能已经送达并产生费用，但没有取得可验证的完整响应。同一账本不能继续；可使用“重新研究”创建新的可追溯运行。</div>}
       {run.errorMessage && run.status !== 'needs_attention' && <div className="mt-3 border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{run.errorMessage}</div>}
+      {liveProgress && (run.status === 'running' || run.status === 'queued') && (
+        <div data-testid="research-agent-live-progress" className="mt-3 border-l-2 border-cyan-500 bg-cyan-50 px-3 py-2 text-cyan-900 dark:bg-cyan-950/30 dark:text-cyan-100">
+          {liveProgress.message}
+        </div>
+      )}
+      {streamDraft && (run.status === 'running' || run.status === 'paused') && (
+        <div data-testid="research-agent-stream-draft" className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-950">
+          <div className="mb-1 text-[11px] font-semibold text-slate-500">写作草稿 · {phaseLabel(run.runKind, streamDraft.phase as ResearchAgentRunSummaryView['phase'])}</div>
+          <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-slate-700 dark:text-slate-200">
+            {streamDraft.accumulated || '生成中…'}
+            <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" />
+          </div>
+        </div>
+      )}
       {run.runKind === 'single_agent' && run.status === 'succeeded' && !detail.reviewEligibility.eligible && detail.reviewEligibility.reason && <div className="mt-3 border-l-2 border-slate-300 px-3 py-2 text-slate-500 dark:border-slate-700 dark:text-slate-400">多视角复核不可用：{detail.reviewEligibility.reason}</div>}
       <div className="mt-4 flex border-b border-slate-200 dark:border-slate-800" role="tablist" aria-label="深度研究详情">
         <button

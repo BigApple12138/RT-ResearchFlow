@@ -297,24 +297,43 @@ export function SignalCard({ signal, onRead, onWatch, onDismiss, onNavigateStock
         ) : signal.conceptName ? (
           <span className="font-semibold text-blue-700 dark:text-blue-300">{signal.conceptName}</span>
         ) : null}
-        <div className="flex flex-wrap gap-1.5 lg:justify-end">
+        <div className="flex flex-col items-stretch gap-1.5 lg:items-end">
+          <div className="flex flex-wrap gap-1.5 lg:justify-end">
           {signal.status === 'NEW' && (
-            <button onClick={() => onRead(signal.id)} className="px-2 py-1 text-xs rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800">已读</button>
+            <button
+              type="button"
+              data-testid={`decision-signal-done-${signal.id}`}
+              onClick={() => onRead(signal.id)}
+              className="rounded border border-cyan-600 bg-cyan-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-cyan-500 dark:border-cyan-500 dark:bg-cyan-600 dark:hover:bg-cyan-500"
+              title="标记已读，移出待处理"
+            >
+              处理完
+            </button>
           )}
-          <button onClick={() => onWatch(signal.id)} className="px-2 py-1 text-xs rounded border border-amber-200 text-amber-700 dark:border-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20">关注</button>
+          {(signal.status === 'NEW' || signal.status === 'READ') && (
+            <button onClick={() => onWatch(signal.id)} className="px-2 py-1 text-xs rounded border border-amber-200 text-amber-700 dark:border-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20" title="加入关注，移出待处理">关注</button>
+          )}
           {onLifecycle && (
             <button onClick={() => onLifecycle(signal)} className="px-2 py-1 text-xs rounded border border-blue-200 text-blue-700 dark:border-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20">{lifecycleLabel}</button>
           )}
           {onDiscuss && (
             <button type="button" data-testid={`decision-signal-discuss-${signal.id}`} onClick={() => onDiscuss(signal)} className="rounded border border-cyan-200 px-2 py-1 text-xs text-cyan-700 hover:bg-cyan-50 dark:border-cyan-800 dark:text-cyan-300 dark:hover:bg-cyan-950/30">讨论</button>
           )}
-          <button onClick={() => onDismiss(signal.id)} className="px-2 py-1 text-xs rounded border border-gray-200 text-gray-500 dark:border-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">忽略</button>
+          {(signal.status === 'NEW' || signal.status === 'READ' || signal.status === 'WATCHING') && (
+            <button onClick={() => onDismiss(signal.id)} className="px-2 py-1 text-xs rounded border border-gray-200 text-gray-500 dark:border-gray-700 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800" title="忽略后移出待处理">忽略</button>
+          )}
           {onChainAnalysis && signal.sourceModule === 'news' && (signal.priority ?? 0) >= 4 && (
             <button
               onClick={() => onChainAnalysis(`${signal.title} ${signal.summary ?? ''}`.trim())}
               className="px-2 py-1 text-xs rounded border border-teal-200 text-teal-700 dark:border-teal-700 dark:text-teal-300 hover:bg-teal-50 dark:hover:bg-teal-900/20"
               title="产业分析"
             >产业分析</button>
+          )}
+          </div>
+          {signal.status === 'NEW' && (
+            <p className="max-w-[14rem] text-[10px] leading-4 text-slate-400 dark:text-slate-500 lg:text-right">
+              处理完 / 关注 / 忽略 → 待处理 -1
+            </p>
           )}
         </div>
       </div>

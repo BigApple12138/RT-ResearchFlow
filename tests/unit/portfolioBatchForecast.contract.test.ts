@@ -14,16 +14,23 @@ describe('FR-168 portfolio batch forecast progress contracts', () => {
 
     expect(start).toBeGreaterThan(0)
     expect(contract).toContain('forecastNow:')
+    expect(contract).toContain('force?: boolean')
     expect(contract).toContain('onForecastProgress:')
     expect(contract).toContain("portfolio:forecastProgress")
   })
 
-  it('main job pushes progress including empty-pending terminal event', () => {
+  it('main job pushes progress including empty-pending terminal event and supports force', () => {
     const service = source('electron/main/services/portfolioForecastService.ts')
+    const handlers = source('electron/main/ipc/portfolioHandlers.ts')
+    const dashboard = source('src/components/TrendWatcher/PortfolioDashboard.tsx')
 
     expect(service).toContain("win.webContents.send('portfolio:forecastProgress'")
     expect(service).toContain("error: 'ALREADY_DONE_TODAY'")
+    expect(service).toContain('options.force === true')
     expect(service).toContain('current: i + 1')
+    expect(handlers).toContain('payload?.force === true')
+    expect(dashboard).toContain('强制重新批量预测')
+    expect(dashboard).toContain('forecastNow({ force })')
   })
 
   it('batch forecast reuses shared AI credential resolution (not legacy provider-only)', () => {

@@ -72,6 +72,8 @@ export interface ReviewReportSummaryBar {
   openRiskCount: number
   evidenceGapCount: number
   followUpCount: number
+  /** 可选：关注中条数（旧快照可无） */
+  watchingCount?: number
 }
 
 /** FR-250: 报告内嵌 AI 研判段落（可选；旧快照无此字段视为未生成） */
@@ -89,6 +91,76 @@ export interface ReviewAiNarrative {
 
 export const REVIEW_AI_NARRATIVE_MAX_CHARS = 2500
 
+/** 日结：概念热度 Top-N */
+export const REVIEW_CONCEPT_HEAT_TOP = 8
+
+export interface ReviewMarketDistributionBin {
+  label: string
+  count: number
+  isPositive: boolean | null
+}
+
+export interface ReviewMarketEnvironment {
+  available: boolean
+  unavailableReason: string | null
+  generatedAt: number | null
+  isHistorical: boolean
+  tradeDate: string | null
+  upCount: number
+  flatCount: number
+  downCount: number
+  distribution: ReviewMarketDistributionBin[]
+  indexLines: string[]
+  oneLiner: string | null
+}
+
+export interface ReviewCapitalHighlightItem {
+  name: string
+  avgChange: number | null
+  limitUpCount: number | null
+  limitDownCount: number | null
+  mainNetInflow: number | null
+  mainNetInflowRate: number | null
+  kind: 'concept_heat' | 'sector_flow'
+}
+
+export interface ReviewCapitalHighlights {
+  available: boolean
+  unavailableReason: string | null
+  items: ReviewCapitalHighlightItem[]
+}
+
+export interface ReviewHoldingMoveItem {
+  tsCode: string
+  stockName: string
+  price: number | null
+  changePct: number | null
+  profitPct: number | null
+  costPrice: number | null
+  trendScore: number | null
+  maAbove60: boolean | null
+  todaySignalCount: number
+  positionAdvice: string | null
+  positionAdviceReason: string | null
+  quoteUnavailable: boolean
+}
+
+export interface ReviewHoldingMoves {
+  available: boolean
+  unavailableReason: string | null
+  items: ReviewHoldingMoveItem[]
+}
+
+export interface ReviewWatchedSignalItem {
+  signalId: number
+  title: string
+  sourceModule: string
+  priority: number
+  tsCode: string | null
+  stockName: string | null
+  conceptName: string | null
+}
+
 export interface ReviewReport {
   kind: ReviewReportKind
   rangeDays: number
@@ -96,6 +168,11 @@ export interface ReviewReport {
   title: string
   headline: string
   summary: ReviewReportSummaryBar
+  /** 日报日结节；周报/旧快照可缺省 */
+  marketEnvironment?: ReviewMarketEnvironment | null
+  capitalHighlights?: ReviewCapitalHighlights | null
+  holdingMoves?: ReviewHoldingMoves | null
+  watchedSignals?: ReviewWatchedSignalItem[] | null
   processed: ReviewReportProcessedItem[]
   openRisks: ReviewReportOpenRiskItem[]
   evidenceGaps: ReviewReportEvidenceGapItem[]
@@ -103,6 +180,58 @@ export interface ReviewReport {
   disclaimer: string
   emptyDay: boolean
   aiNarrative?: ReviewAiNarrative | null
+}
+
+/** 生成日报时可选注入的外部日结输入（IPC 精简后） */
+export interface ReviewDayContextInput {
+  marketOverview?: {
+    distribution?: Array<{ label: string; count: number; isPositive: boolean | null }>
+    conceptHeat?: Array<{
+      conName: string
+      avgChange: number
+      limitUpCount: number
+      limitDownCount: number
+      memberCount?: number
+    }>
+    generatedAt?: number
+    isHistorical?: boolean
+    tradeDate?: string
+    resonance?: {
+      tradeDate?: string
+      dataMode?: string
+      sourceLabel?: string
+      benchmarks?: Array<{ name: string; change: number }>
+      sectors?: Array<{
+        name: string
+        change: number
+        mainNetInflow?: number | null
+        mainNetInflowRate?: number | null
+      }>
+    } | null
+  } | null
+  marketOverviewError?: string | null
+  dashboardItems?: Array<{
+    tsCode: string
+    stockName: string
+    costPrice: number | null
+    price: number | null
+    change: number | null
+    profitPct: number | null
+    positionAdvice?: string | null
+    positionAdviceReason?: string | null
+    trend?: {
+      totalScore: number | null
+      maAbove60: boolean | null
+      dataSource?: string | null
+    }
+    todaySignals?: { count: number }
+    sectorFlow?: {
+      conceptName: string
+      mainNetInflow: number | null
+      mainNetInflowRate: number | null
+    } | null
+  }> | null
+  dashboardError?: string | null
 }
 
 /** @deprecated 使用 ReviewReport; 保留别名兼容 P1 调用 */
@@ -341,6 +470,233 @@ function buildFollowUpItems(
   return [...fromLedger, ...legacy].slice(0, 20)
 }
 
+function formatSignedPct(value: number | null | undefined, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(digits)}%`
+}
+
+function formatPrice(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return value.toFixed(2)
+}
+
+function formatInflowYi(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const yi = value / 1e8
+  const sign = yi > 0 ? '+' : ''
+  return `${sign}${yi.toFixed(2)}亿`
+}
+
+export function buildWatchedSignalItems(signals: DecisionSignalItem[]): ReviewWatchedSignalItem[] {
+  return signals
+    .filter((signal) => signal.status === 'WATCHING')
+    .slice()
+    .sort((a, b) => (b.priority - a.priority) || (b.signalTime - a.signalTime))
+    .slice(0, 30)
+    .map((signal) => ({
+      signalId: signal.id,
+      title: signal.title,
+      sourceModule: signal.sourceModule,
+      priority: signal.priority,
+      tsCode: signal.tsCode,
+      stockName: signal.stockName,
+      conceptName: signal.conceptName,
+    }))
+}
+
+export function buildMarketEnvironmentFromOverview(
+  overview: ReviewDayContextInput['marketOverview'],
+  error: string | null | undefined,
+): ReviewMarketEnvironment {
+  if (error) {
+    return {
+      available: false,
+      unavailableReason: error,
+      generatedAt: null,
+      isHistorical: false,
+      tradeDate: null,
+      upCount: 0,
+      flatCount: 0,
+      downCount: 0,
+      distribution: [],
+      indexLines: [],
+      oneLiner: null,
+    }
+  }
+  if (!overview) {
+    return {
+      available: false,
+      unavailableReason: '本地暂无市场概览',
+      generatedAt: null,
+      isHistorical: false,
+      tradeDate: null,
+      upCount: 0,
+      flatCount: 0,
+      downCount: 0,
+      distribution: [],
+      indexLines: [],
+      oneLiner: null,
+    }
+  }
+
+  const distribution = (overview.distribution ?? []).map((bin) => ({
+    label: bin.label,
+    count: bin.count,
+    isPositive: bin.isPositive,
+  }))
+  let upCount = 0
+  let flatCount = 0
+  let downCount = 0
+  for (const bin of distribution) {
+    if (bin.isPositive === true) upCount += bin.count
+    else if (bin.isPositive === false) downCount += bin.count
+    else flatCount += bin.count
+  }
+
+  const indexLines = (overview.resonance?.benchmarks ?? [])
+    .slice(0, 4)
+    .map((item) => `${item.name} ${formatSignedPct(item.change)}`)
+
+  const hasBreadth = distribution.some((bin) => bin.count > 0)
+  const oneLiner = hasBreadth
+    ? `涨跌家数 涨${upCount}/平${flatCount}/跌${downCount}${indexLines[0] ? ` · ${indexLines[0]}` : ''}${overview.isHistorical ? ' · 历史回退数据' : ''}`
+    : (indexLines[0] ? `指数 ${indexLines.join(' · ')}` : null)
+
+  return {
+    available: hasBreadth || indexLines.length > 0,
+    unavailableReason: hasBreadth || indexLines.length > 0 ? null : '本地暂无涨跌分布或指数摘要',
+    generatedAt: overview.generatedAt ?? null,
+    isHistorical: Boolean(overview.isHistorical),
+    tradeDate: overview.tradeDate ?? overview.resonance?.tradeDate ?? null,
+    upCount,
+    flatCount,
+    downCount,
+    distribution,
+    indexLines,
+    oneLiner,
+  }
+}
+
+export function buildCapitalHighlightsFromOverview(
+  overview: ReviewDayContextInput['marketOverview'],
+  dashboardItems: ReviewDayContextInput['dashboardItems'],
+  error: string | null | undefined,
+): ReviewCapitalHighlights {
+  if (error && !overview) {
+    return { available: false, unavailableReason: error, items: [] }
+  }
+  const items: ReviewCapitalHighlightItem[] = []
+  for (const heat of (overview?.conceptHeat ?? []).slice(0, REVIEW_CONCEPT_HEAT_TOP)) {
+    items.push({
+      name: heat.conName,
+      avgChange: heat.avgChange,
+      limitUpCount: heat.limitUpCount,
+      limitDownCount: heat.limitDownCount,
+      mainNetInflow: null,
+      mainNetInflowRate: null,
+      kind: 'concept_heat',
+    })
+  }
+  const seen = new Set(items.map((item) => item.name))
+  for (const row of dashboardItems ?? []) {
+    const flow = row.sectorFlow
+    if (!flow?.conceptName || seen.has(flow.conceptName)) continue
+    seen.add(flow.conceptName)
+    items.push({
+      name: flow.conceptName,
+      avgChange: null,
+      limitUpCount: null,
+      limitDownCount: null,
+      mainNetInflow: flow.mainNetInflow,
+      mainNetInflowRate: flow.mainNetInflowRate,
+      kind: 'sector_flow',
+    })
+    if (items.length >= REVIEW_CONCEPT_HEAT_TOP + 4) break
+  }
+  // resonance sectors with inflow
+  for (const sector of overview?.resonance?.sectors ?? []) {
+    if (seen.has(sector.name)) continue
+    if (sector.mainNetInflow == null && sector.mainNetInflowRate == null) continue
+    seen.add(sector.name)
+    items.push({
+      name: sector.name,
+      avgChange: sector.change,
+      limitUpCount: null,
+      limitDownCount: null,
+      mainNetInflow: sector.mainNetInflow ?? null,
+      mainNetInflowRate: sector.mainNetInflowRate ?? null,
+      kind: 'sector_flow',
+    })
+    if (items.length >= REVIEW_CONCEPT_HEAT_TOP + 6) break
+  }
+
+  if (items.length === 0) {
+    return {
+      available: false,
+      unavailableReason: error || '本地暂无概念热度或板块资金摘要',
+      items: [],
+    }
+  }
+  return { available: true, unavailableReason: null, items }
+}
+
+export function buildHoldingMovesFromContext(
+  holdings: PortfolioHoldingRow[] | null,
+  dashboardItems: ReviewDayContextInput['dashboardItems'],
+  dashboardError: string | null | undefined,
+): ReviewHoldingMoves {
+  if (!holdings || holdings.length === 0) {
+    return { available: true, unavailableReason: null, items: [] }
+  }
+  const byCode = new Map<string, NonNullable<ReviewDayContextInput['dashboardItems']>[number]>()
+  for (const item of dashboardItems ?? []) {
+    byCode.set(normalizeCode(item.tsCode), item)
+  }
+
+  const items: ReviewHoldingMoveItem[] = holdings.map((row) => {
+    const dash = byCode.get(normalizeCode(row.tsCode))
+    if (!dash) {
+      return {
+        tsCode: row.tsCode,
+        stockName: row.stockName || normalizeCode(row.tsCode),
+        price: null,
+        changePct: null,
+        profitPct: null,
+        costPrice: row.costPrice,
+        trendScore: null,
+        maAbove60: null,
+        todaySignalCount: 0,
+        positionAdvice: null,
+        positionAdviceReason: null,
+        quoteUnavailable: true,
+      }
+    }
+    return {
+      tsCode: dash.tsCode,
+      stockName: dash.stockName || row.stockName || normalizeCode(row.tsCode),
+      price: dash.price,
+      changePct: dash.change,
+      profitPct: dash.profitPct,
+      costPrice: dash.costPrice ?? row.costPrice,
+      trendScore: dash.trend?.totalScore ?? null,
+      maAbove60: dash.trend?.maAbove60 ?? null,
+      todaySignalCount: dash.todaySignals?.count ?? 0,
+      positionAdvice: dash.positionAdvice ?? null,
+      positionAdviceReason: dash.positionAdviceReason ?? null,
+      quoteUnavailable: dash.price == null && dash.change == null,
+    }
+  })
+
+  return {
+    available: true,
+    unavailableReason: dashboardError && (!dashboardItems || dashboardItems.length === 0)
+      ? dashboardError
+      : null,
+    items,
+  }
+}
+
 function buildHeadline(input: {
   kind: ReviewReportKind
   rangeDays: number
@@ -350,33 +706,43 @@ function buildHeadline(input: {
   processedCount: number
   openRiskCount: number
   evidenceGapCount: number
+  marketOneLiner?: string | null
+  watchingCount?: number
 }): string {
-  const { kind, rangeDays, holdingCount, pendingCount, emptyDay, processedCount, openRiskCount, evidenceGapCount } = input
+  const {
+    kind, rangeDays, holdingCount, pendingCount, emptyDay,
+    processedCount, openRiskCount, evidenceGapCount, marketOneLiner, watchingCount,
+  } = input
   const period = kind === 'weekly' ? `近 ${rangeDays} 日` : '今日'
 
+  let base: string
   if (holdingCount === 0) {
-    return kind === 'weekly'
+    base = kind === 'weekly'
       ? '尚未添加持仓。近一周无组合风险待办; 添加持仓后可生成持仓向周复盘。'
       : '尚未添加持仓。今日无组合风险待办; 添加持仓后可生成持仓向复盘。'
-  }
-  if (emptyDay) {
-    return kind === 'weekly'
+  } else if (emptyDay) {
+    base = kind === 'weekly'
       ? `持仓 ${holdingCount} 只, 近 ${rangeDays} 日无持仓相关处理记录, 组合风险整体平稳。`
       : `持仓 ${holdingCount} 只, 今日无新的持仓相关信号, 组合风险平稳。`
+  } else if (openRiskCount > 0) {
+    base = `${period}已处理 ${processedCount} 只, 仍有 ${openRiskCount} 条未处理持仓风险, 证据缺口 ${evidenceGapCount} 项。`
+  } else if (processedCount > 0) {
+    base = `${period}已处理 ${processedCount} 只持仓相关线索, 当前无开放持仓风险。`
+  } else {
+    base = `持仓 ${holdingCount} 只, 组合待办 ${pendingCount} 条, 可继续按股研判后生成更完整复盘。`
   }
-  if (openRiskCount > 0) {
-    return `${period}已处理 ${processedCount} 只, 仍有 ${openRiskCount} 条未处理持仓风险, 证据缺口 ${evidenceGapCount} 项。`
-  }
-  if (processedCount > 0) {
-    return `${period}已处理 ${processedCount} 只持仓相关线索, 当前无开放持仓风险。`
-  }
-  return `持仓 ${holdingCount} 只, 组合待办 ${pendingCount} 条, 可继续按股研判后生成更完整复盘。`
+
+  const extras: string[] = []
+  if (kind === 'daily' && marketOneLiner) extras.push(marketOneLiner)
+  if (kind === 'daily' && (watchingCount ?? 0) > 0) extras.push(`关注中 ${watchingCount} 条`)
+  return extras.length > 0 ? `${base} ${extras.join(' · ')}` : base
 }
 
 /**
  * 通用复盘报告派生。
  * - periodSignals: 周期内信号 (日=今日, 周=近 N 日历史)
  * - openRiskSignals: 当前仍开放风险, 默认用 periodSignals; 周报可传入今日开放集
+ * - dayContext: 仅日报使用的市场/持仓看板日结
  */
 export function buildReviewReport(input: {
   kind: ReviewReportKind
@@ -388,6 +754,7 @@ export function buildReviewReport(input: {
   generatedAt?: number
   judgments?: DecisionJudgmentSummaryItem[]
   judgmentFollowUps?: ReviewReportJudgmentFollowUpTask[]
+  dayContext?: ReviewDayContextInput | null
 }): ReviewReport {
   const kind = input.kind
   const rangeDays = input.rangeDays ?? (kind === 'weekly' ? WEEKLY_REVIEW_RANGE_DAYS : 1)
@@ -407,6 +774,26 @@ export function buildReviewReport(input: {
 
   const emptyDay = portfolioSignals.length === 0 && openRisks.length === 0 && processed.length === 0
   const holdingCount = command.holdingCount
+
+  const dayContext = kind === 'daily' ? (input.dayContext ?? null) : null
+  const watchedSignals = kind === 'daily' ? buildWatchedSignalItems(input.signals) : null
+  const marketEnvironment = kind === 'daily'
+    ? buildMarketEnvironmentFromOverview(
+      dayContext?.marketOverview,
+      dayContext?.marketOverviewError ?? (dayContext == null ? '未拉取市场概览' : null),
+    )
+    : null
+  const capitalHighlights = kind === 'daily'
+    ? buildCapitalHighlightsFromOverview(
+      dayContext?.marketOverview,
+      dayContext?.dashboardItems,
+      dayContext?.marketOverviewError ?? (dayContext == null ? '未拉取市场概览' : null),
+    )
+    : null
+  const holdingMoves = kind === 'daily'
+    ? buildHoldingMovesFromContext(holdings, dayContext?.dashboardItems, dayContext?.dashboardError)
+    : null
+
   const headline = buildHeadline({
     kind,
     rangeDays,
@@ -416,6 +803,8 @@ export function buildReviewReport(input: {
     processedCount: processed.length,
     openRiskCount: openRisks.length,
     evidenceGapCount: evidenceGaps.length,
+    marketOneLiner: marketEnvironment?.oneLiner,
+    watchingCount: watchedSignals?.length ?? 0,
   })
 
   return {
@@ -431,7 +820,16 @@ export function buildReviewReport(input: {
       openRiskCount: openRisks.length,
       evidenceGapCount: evidenceGaps.length,
       followUpCount: followUps.length,
+      ...(kind === 'daily' ? { watchingCount: watchedSignals?.length ?? 0 } : {}),
     },
+    ...(kind === 'daily'
+      ? {
+          marketEnvironment,
+          capitalHighlights,
+          holdingMoves,
+          watchedSignals: watchedSignals ?? [],
+        }
+      : {}),
     processed,
     openRisks,
     evidenceGaps,
@@ -452,6 +850,7 @@ export function buildDailyReviewReport(input: {
   generatedAt?: number
   judgments?: DecisionJudgmentSummaryItem[]
   judgmentFollowUps?: ReviewReportJudgmentFollowUpTask[]
+  dayContext?: ReviewDayContextInput | null
 }): ReviewReport {
   return buildReviewReport({
     kind: 'daily',
@@ -462,6 +861,7 @@ export function buildDailyReviewReport(input: {
     generatedAt: input.generatedAt,
     judgments: input.judgments,
     judgmentFollowUps: input.judgmentFollowUps,
+    dayContext: input.dayContext,
   })
 }
 
@@ -506,10 +906,80 @@ export function formatReviewReportText(report: ReviewReport): string {
   }
   lines.push(report.headline)
   lines.push('')
+  const watchingPart = report.summary.watchingCount != null
+    ? ` · 关注中 ${report.summary.watchingCount}`
+    : ''
   lines.push(
-    `摘要: 持仓 ${report.summary.holdingCount} · 持仓相关信号 ${report.summary.portfolioSignalCount} · 已处理 ${report.summary.processedCount} · 未处理风险 ${report.summary.openRiskCount} · 证据缺口 ${report.summary.evidenceGapCount} · 待验证 ${report.summary.followUpCount}`,
+    `摘要: 持仓 ${report.summary.holdingCount} · 持仓相关信号 ${report.summary.portfolioSignalCount} · 已处理 ${report.summary.processedCount} · 未处理风险 ${report.summary.openRiskCount} · 证据缺口 ${report.summary.evidenceGapCount} · 待验证 ${report.summary.followUpCount}${watchingPart}`,
   )
   lines.push('')
+
+  if (report.kind === 'daily') {
+    lines.push('## 市场环境')
+    const market = report.marketEnvironment
+    if (!market || !market.available) {
+      lines.push(`- ${market?.unavailableReason || '本地暂无市场环境摘要'}`)
+    } else {
+      lines.push(`- 涨跌家数 涨${market.upCount}/平${market.flatCount}/跌${market.downCount}`)
+      for (const line of market.indexLines) lines.push(`- ${line}`)
+      if (market.isHistorical) lines.push('- 数据为历史回退')
+    }
+    lines.push('')
+
+    lines.push('## 资金要点')
+    const capital = report.capitalHighlights
+    if (!capital || !capital.available || capital.items.length === 0) {
+      lines.push(`- ${capital?.unavailableReason || '本地暂无资金/热度摘要'}`)
+    } else {
+      for (const item of capital.items) {
+        const bits = [item.name]
+        if (item.avgChange != null) bits.push(`均涨跌 ${formatSignedPct(item.avgChange)}`)
+        if (item.limitUpCount != null) bits.push(`涨停 ${item.limitUpCount}`)
+        if (item.mainNetInflow != null) bits.push(`主力净流入 ${formatInflowYi(item.mainNetInflow)}`)
+        if (item.mainNetInflowRate != null) bits.push(`净流入率 ${formatSignedPct(item.mainNetInflowRate)}`)
+        lines.push(`- ${bits.join(' · ')}`)
+      }
+    }
+    lines.push('')
+
+    lines.push('## 持仓走势')
+    const moves = report.holdingMoves
+    if (!moves) {
+      lines.push('- 本地暂无持仓走势')
+    } else if (moves.items.length === 0) {
+      lines.push('- 暂无持仓')
+    } else {
+      if (moves.unavailableReason) lines.push(`- 提示: ${moves.unavailableReason}`)
+      for (const item of moves.items) {
+        const bits = [
+          item.stockName,
+          `现价 ${formatPrice(item.price)}`,
+          `涨跌 ${formatSignedPct(item.changePct)}`,
+          item.profitPct != null ? `浮盈 ${formatSignedPct(item.profitPct)}` : '浮盈 —',
+          item.trendScore != null ? `趋势分 ${item.trendScore}` : '趋势分 —',
+          item.maAbove60 == null ? 'MA60 —' : (item.maAbove60 ? '站上MA60' : '未站上MA60'),
+          `今日信号 ${item.todaySignalCount}`,
+        ]
+        if (item.positionAdvice) bits.push(`规则辅助 ${item.positionAdvice}`)
+        if (item.quoteUnavailable) bits.push('行情未加载')
+        lines.push(`- ${bits.join(' · ')}`)
+      }
+    }
+    lines.push('')
+
+    lines.push('## 今日关注')
+    const watched = report.watchedSignals ?? []
+    if (watched.length === 0) {
+      lines.push('- 暂无关注中信号')
+    } else {
+      for (const item of watched) {
+        const who = item.stockName || item.conceptName || item.tsCode || '未映射'
+        lines.push(`- ${who} · P${item.priority} · ${item.sourceModule} · ${item.title}`)
+      }
+    }
+    lines.push('')
+  }
+
   lines.push('## 已处理')
   if (report.processed.length === 0) {
     lines.push('- 暂无已结案/已忽略的持仓相关处理记录')

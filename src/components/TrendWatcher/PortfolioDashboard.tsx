@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { TrendConfirmDialog } from './TrendConfirmDialog'
 import { ForecastPanel } from '../ForecastPanel/ForecastPanel'
 import { StockKlineChipDrawer } from '../shared/StockMiniChart'
 import { useAppStore } from '../../store/appStore'
@@ -111,6 +112,7 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
   const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null)
   const [chartStock, setChartStock] = useState<PortfolioViewItem | null>(null)
   const [forecastStock, setForecastStock] = useState<PortfolioViewItem | null>(null)
+  const [forecastForceConfirmCount, setForecastForceConfirmCount] = useState<number | null>(null)
   const navigateToStock = useAppStore((state) => state.navigateToStock)
 
   const loadPortfolio = useCallback(async () => {
@@ -287,13 +289,19 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
     }
   }
 
-  const forecastAll = async () => {
+  const startForecastJob = useCallback(async (force: boolean) => {
     if (forecasting) return
     setPortfolioError('')
-    setForecastProgress({ current: 0, total: items.length, detail: '正在启动批量预测…', failed: 0, lastError: null })
+    setForecastProgress({
+      current: 0,
+      total: items.length,
+      detail: force ? '正在启动强制重新预测…' : '正在启动批量预测…',
+      failed: 0,
+      lastError: null,
+    })
     setForecasting(true)
     try {
-      const response = await window.api.portfolio.forecastNow()
+      const response = await window.api.portfolio.forecastNow({ force })
       if (!response.ok) {
         setForecasting(false)
         setForecastProgress(null)
@@ -301,12 +309,21 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
         else if (response.code === 'NO_STOCKS') setPortfolioError('暂无持仓股票，无法批量预测')
         else setPortfolioError('预测任务启动失败')
       }
-      // ok：fire-and-forget，由 onForecastProgress 维持/结束 loading
     } catch {
       setForecasting(false)
       setForecastProgress(null)
       setPortfolioError('预测任务启动失败，请稍后重试')
     }
+  }, [forecasting, items.length])
+
+  const forecastAll = async () => {
+    if (forecasting) return
+    const alreadyTodayCount = items.filter((item) => item.forecast != null && isForecastCreatedTodayBj(item.forecast.createdAt)).length
+    if (alreadyTodayCount > 0) {
+      setForecastForceConfirmCount(alreadyTodayCount)
+      return
+    }
+    await startForecastJob(false)
   }
 
   const runBackfill = useCallback(async (codes: string[]) => {
@@ -486,7 +503,7 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
                 <div className="mt-4 grid grid-cols-2 gap-y-4 sm:grid-cols-4">
                   <MetricCell label="现价" value={selected.price == null ? '—' : selected.price.toFixed(2)} />
                   <MetricCell label="当日涨跌" value={<span className={valueTone(selected.change)}>{formatSigned(selected.change, '%', 2)}</span>} />
-                  <MetricCell label="成本 / 浮盈亏" value={<CostEditor item={selected} saving={savingCode === selected.tsCode} onSave={saveCost} />} />
+                  <MetricCell label="成本 / 浮盈亏" value={<CostEditor key={selected.tsCode} item={selected} saving={savingCode === selected.tsCode} onSave={saveCost} />} />
                   <MetricCell label="趋势分 / 5日变化" value={<span>{selected.trendItem?.totalScore ?? '—'} <span className={valueTone(selected.trendItem?.scoreDelta5d)}>{formatSigned(selected.trendItem?.scoreDelta5d)}</span></span>} />
                 </div>
               </div>
@@ -566,6 +583,21 @@ export function PortfolioDashboard({ snapshot, loading, errorMessage, onRefresh 
         />
       )}
       {forecastStock && <ForecastPanel stockCode={forecastStock.stockCode} stockName={forecastStock.stockName} isOpen onClose={() => setForecastStock(null)} />}
+      {forecastForceConfirmCount != null && (
+        <TrendConfirmDialog
+          title="强制重新批量预测"
+          description={`今日已有 ${forecastForceConfirmCount} 只持仓预测。盘中走势与技术因子可能已变化；确认后将用最新数据重新预测全部 ${items.length} 只持仓。取消则不执行。`}
+          subject="不构成投资建议 · 将产生新的 AI 调用"
+          busy={forecasting}
+          onCancel={() => setForecastForceConfirmCount(null)}
+          onConfirm={() => {
+            const count = forecastForceConfirmCount
+            setForecastForceConfirmCount(null)
+            if (count == null) return
+            void startForecastJob(true)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -581,10 +613,25 @@ function AdviceBadge({ advice }: { advice: PositionAdvice }) {
 }
 
 function CostEditor({ item, saving, onSave }: { item: PortfolioViewItem; saving: boolean; onSave: (item: PortfolioViewItem, value: string) => void }) {
+  const [draft, setDraft] = useState(item.costPrice == null ? '' : String(item.costPrice))
+  useEffect(() => {
+    setDraft(item.costPrice == null ? '' : String(item.costPrice))
+  }, [item.tsCode, item.costPrice])
   return (
     <span className="flex items-center gap-2">
       <label className="sr-only" htmlFor={`cost-${item.stockCode}`}>成本价</label>
-      <input id={`cost-${item.stockCode}`} type="number" min="0" step="0.01" defaultValue={item.costPrice ?? ''} disabled={saving} onBlur={(event) => onSave(item, event.currentTarget.value)} className="h-8 w-20 rounded border border-slate-300 bg-white px-2 text-right text-xs outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-900" placeholder="成本价" />
+      <input
+        id={`cost-${item.stockCode}`}
+        type="number"
+        min="0"
+        step="0.01"
+        value={draft}
+        disabled={saving}
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        onBlur={(event) => onSave(item, event.currentTarget.value)}
+        className="h-8 w-20 rounded border border-slate-300 bg-white px-2 text-right text-xs outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-900"
+        placeholder="成本价"
+      />
       <span className={valueTone(item.profitPct)}>{formatSigned(item.profitPct, '%')}</span>
     </span>
   )
@@ -611,6 +658,17 @@ function directionLabel(direction: string | null): string {
 
 function stripCode(tsCode: string): string {
   return tsCode.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/i, '')
+}
+
+/** 与主进程 portfolioForecastService 一致：按北京时间判断是否「今日」 */
+function isForecastCreatedTodayBj(createdAtMs: number): boolean {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000)
+  const created = new Date(createdAtMs + 8 * 60 * 60 * 1000)
+  return (
+    now.getUTCFullYear() === created.getUTCFullYear()
+    && now.getUTCMonth() === created.getUTCMonth()
+    && now.getUTCDate() === created.getUTCDate()
+  )
 }
 
 function humanizeForecastError(raw: string): string {

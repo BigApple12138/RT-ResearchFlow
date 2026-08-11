@@ -27,19 +27,20 @@ export function isPortfolioForecastRunning(): boolean {
 
 /**
  * 持仓批量预测主任务.
- * 遍历 portfolio_stocks 中所有股票，跳过今日已有预测的，串行调用
- * performPredictTrendToday，每只间隔 500ms，单只超时 60s 则跳过并 warn.
- * 通过 win.webContents.send 向前端推送 portfolio:forecastProgress 事件.
+ * 遍历 portfolio_stocks；默认跳过今日已有预测。
+ * `options.force=true` 时不跳过（供用户手动确认后重跑；定时任务不得传 force）。
  */
 export async function runPortfolioForecastJob(
   db: Database.Database,
-  win?: BrowserWindow | null
+  win?: BrowserWindow | null,
+  options: { force?: boolean } = {},
 ): Promise<void> {
   if (_running) {
     console.warn('[Portfolio] 批量预测任务已在运行，跳过本次触发')
     return
   }
   _running = true
+  const force = options.force === true
   try {
     const stocks = listPortfolioStocks(db)
     if (stocks.length === 0) {
@@ -57,8 +58,9 @@ export async function runPortfolioForecastJob(
       return
     }
 
-    // 过滤出今日尚未预测的股票
+    // 过滤出今日尚未预测的股票（force 时全部纳入）
     const pending = stocks.filter(s => {
+      if (force) return true
       try {
         const latest = getLatestForecasts(db, s.tsCode)
         if (latest.today && isTodayBj(latest.today.createdAt)) {
@@ -86,7 +88,7 @@ export async function runPortfolioForecastJob(
       return
     }
 
-    console.log(`[Portfolio] 开始批量预测，共 ${pending.length} 只股票`)
+    console.log(`[Portfolio] 开始批量预测${force ? '（强制重跑）' : ''}，共 ${pending.length} 只股票`)
 
     for (let i = 0; i < pending.length; i++) {
       const stock = pending[i]

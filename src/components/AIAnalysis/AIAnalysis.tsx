@@ -437,6 +437,14 @@ export function AIAnalysis() {
   const [portfolioByCode, setPortfolioByCode] = useState<Map<string, string>>(new Map())
   const [followUpInput, setFollowUpInput] = useState('')
   const [sendingFollowUp, setSendingFollowUp] = useState(false)
+  const [followUpDraft, setFollowUpDraft] = useState<{
+    requestId: string
+    sessionId: number
+    accumulated: string
+    streaming: boolean
+    reason?: 'web_search' | 'buffered'
+  } | null>(null)
+  const followUpRequestRef = useRef<string | null>(null)
   const [showIndustryAnalysis, setShowIndustryAnalysis] = useState(false)
   const [industryAnalysisText, setIndustryAnalysisText] = useState('')
   const [industryChainId, setIndustryChainId] = useState<string | undefined>()
@@ -492,6 +500,43 @@ export function AIAnalysis() {
   useEffect(() => {
     const unsubscribe = window.api.ai.onTushareNotConfigured(() => {
       showToast('本地近期日线不足，且未配置 Tushare，第二轮真实行情复核已受阻。可前往「数据源」补齐数据后重新复核。')
+    })
+    return () => { unsubscribe() }
+  }, [])
+
+  useEffect(() => {
+    if (!window.api.ai.onFollowUpDelta) return
+    const unsubscribe = window.api.ai.onFollowUpDelta((event) => {
+      const activeId = followUpRequestRef.current
+      if (!activeId || event.requestId !== activeId) return
+      if (event.type === 'start') {
+        setFollowUpDraft({
+          requestId: event.requestId,
+          sessionId: event.sessionId,
+          accumulated: '',
+          streaming: event.streaming !== false,
+          reason: event.reason,
+        })
+        return
+      }
+      if (event.type === 'reset') {
+        setFollowUpDraft((prev) => prev && prev.requestId === event.requestId
+          ? { ...prev, accumulated: '' }
+          : prev)
+        return
+      }
+      if (event.type === 'delta' && typeof event.accumulated === 'string') {
+        setFollowUpDraft((prev) => prev && prev.requestId === event.requestId
+          ? { ...prev, accumulated: event.accumulated!, streaming: true }
+          : prev)
+        window.requestAnimationFrame(() => {
+          scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+        })
+        return
+      }
+      if (event.type === 'error') {
+        setFollowUpDraft(null)
+      }
     })
     return () => { unsubscribe() }
   }, [])
@@ -680,6 +725,8 @@ export function AIAnalysis() {
     setFollowUpInput('')
     setActiveTab('chat')
     const requestId = crypto.randomUUID()
+    followUpRequestRef.current = requestId
+    setFollowUpDraft(null)
 
     const optimisticMessages: ConversationMessage[] = [
       ...(detail.messages ?? []),
@@ -702,6 +749,8 @@ export function AIAnalysis() {
         setFollowUpInput(message)
       }
     } finally {
+      followUpRequestRef.current = null
+      setFollowUpDraft(null)
       setSendingFollowUp(false)
       setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 100)
     }
@@ -883,6 +932,9 @@ export function AIAnalysis() {
     }
     setSendingFollowUp(true)
     setFollowUpInput('')
+    const requestId = crypto.randomUUID()
+    followUpRequestRef.current = requestId
+    setFollowUpDraft(null)
     try {
       const created = await startDiscussion({
         origin: { type: 'manual', id: null },
@@ -900,7 +952,7 @@ export function AIAnalysis() {
       clearResearchDiscussionDraft(sessionId)
       setActiveTab('chat')
       const result = await window.api.ai.followUp({
-        requestId: crypto.randomUUID(), sessionId, message,
+        requestId, sessionId, message,
       })
       if (result?.messages) {
         const latest = await window.api.ai.getSession(sessionId)
@@ -912,6 +964,8 @@ export function AIAnalysis() {
         setFollowUpInput(message)
       }
     } finally {
+      followUpRequestRef.current = null
+      setFollowUpDraft(null)
       setSendingFollowUp(false)
     }
   }
@@ -1428,10 +1482,51 @@ export function AIAnalysis() {
                             </div>
                           </div>
                         ))}
-                        {sendingFollowUp && <div className="text-xs text-slate-400">思考中...</div>}
+                        {followUpDraft && followUpDraft.sessionId === detail.id && (
+                          <div data-testid="ai-followup-streaming" className="flex justify-start">
+                            <div className="max-w-[85%] rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                              {!followUpDraft.streaming && (
+                                <div className="mb-1 text-[11px] text-amber-700 dark:text-amber-300">
+                                  {followUpDraft.reason === 'web_search'
+                                    ? '本轮含网页搜索，整段返回中…'
+                                    : '本轮整段生成中…'}
+                                </div>
+                              )}
+                              {followUpDraft.accumulated ? (
+                                <div className="whitespace-pre-wrap leading-relaxed">{followUpDraft.accumulated}<span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" /></div>
+                              ) : (
+                                <div className="text-slate-400">{followUpDraft.streaming ? '生成中…' : '思考中…'}</div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {sendingFollowUp && !followUpDraft && <div className="text-xs text-slate-400">思考中...</div>}
                       </div>
                     ) : (
-                      <div className="mt-4 rounded-lg bg-slate-50 px-3 py-8 text-center text-sm text-slate-400 dark:bg-slate-950/60">{detail.discussion ? '输入问题开始讨论' : '暂无追问记录'}</div>
+                      <div className="mt-4 space-y-3">
+                        {followUpDraft && followUpDraft.sessionId === detail.id ? (
+                          <div data-testid="ai-followup-streaming" className="flex justify-start">
+                            <div className="max-w-[85%] rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                              {!followUpDraft.streaming && (
+                                <div className="mb-1 text-[11px] text-amber-700 dark:text-amber-300">
+                                  {followUpDraft.reason === 'web_search'
+                                    ? '本轮含网页搜索，整段返回中…'
+                                    : '本轮整段生成中…'}
+                                </div>
+                              )}
+                              {followUpDraft.accumulated ? (
+                                <div className="whitespace-pre-wrap leading-relaxed">{followUpDraft.accumulated}<span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" /></div>
+                              ) : (
+                                <div className="text-slate-400">{followUpDraft.streaming ? '生成中…' : '思考中…'}</div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded-lg bg-slate-50 px-3 py-8 text-center text-sm text-slate-400 dark:bg-slate-950/60">
+                            {sendingFollowUp ? '思考中...' : (detail.discussion ? '输入问题开始讨论' : '暂无追问记录')}
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                   {detail.discussion && (
@@ -1455,6 +1550,24 @@ export function AIAnalysis() {
                 draftQuestion={followUpInput}
                 preferredQuestion={preferredAgentQuestion}
                 openSignal={agentOpenSignal}
+                contextHints={{
+                  stockLabels: insight.candidateStocks.map((stock) => (
+                    stock.name ? `${stock.name}(${stock.code})` : stock.code
+                  )),
+                  recentUserMessages: (detail.messages ?? [])
+                    .filter((message) => message.role === 'user')
+                    .slice(-4)
+                    .map((message) => message.content),
+                  corpusTexts: [
+                    detail.discussion?.origin.title ?? '',
+                    detail.promptSent ?? '',
+                    detail.response ?? '',
+                    detail.responseRound2 ?? '',
+                    detail.content ?? '',
+                    ...(detail.messages ?? []).slice(-8).map((message) => message.content),
+                    ...insight.candidateCodes,
+                  ],
+                }}
                 onSessionBusyChange={setSessionAgentBusy}
                 onCompleted={refreshAfterResearchAgent}
               />
@@ -1497,7 +1610,7 @@ export function AIAnalysis() {
             <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
               <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">新对话</h2>
               <p className="mt-2 max-w-md text-sm text-slate-500">直接提问即可开始。持仓分析不会把成本价发给模型；已缓存个股不等于持仓。</p>
-              <p className="mt-1 max-w-md text-xs text-slate-400">说「深挖…」会建议启动深度研究 subagent（需确认）；产业研究下一期接入。</p>
+              <p className="mt-1 max-w-md text-xs text-slate-400">说「深挖…」会建议启动深度研究；确认后在上下文充足时自动开跑。</p>
             </div>
             <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900" data-testid="research-composer">
               {renderAgentSuggestCard()}

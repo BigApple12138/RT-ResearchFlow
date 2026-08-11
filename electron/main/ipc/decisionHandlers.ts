@@ -22,6 +22,7 @@ import {
   updateReviewReportSnapshot,
 } from '../database/decisionReviewReportRepository'
 import { generateReviewAiNarrative } from '../services/reviewAiNarrativeService'
+import { assertTodayBriefAiFacts, generateTodayBriefAiNarrative } from '../services/todayBriefAiService'
 import {
   getDecisionJudgment,
   listDecisionJudgments,
@@ -111,6 +112,7 @@ const DECISION_CHANNELS = [
   'decision:saveReviewReport',
   'decision:updateReviewReportSnapshot',
   'decision:generateReviewAiNarrative',
+  'decision:generateTodayBriefAi',
   'decision:listReviewReports',
   'decision:getReviewReport',
   'decision:deleteReviewReport',
@@ -266,6 +268,25 @@ export function registerDecisionHandlers(): void {
           status: 'error' as const,
           text: null,
           errorCode: 'DB_ERROR',
+          errorMessage: message,
+        },
+      }
+    }
+  })
+
+  ipcMain.handle('decision:generateTodayBriefAi', async (_event, payload: { brief?: unknown } = {}) => {
+    try {
+      const brief = assertTodayBriefAiFacts(payload.brief)
+      return await generateTodayBriefAiNarrative(getDb(), { brief })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return {
+        ok: false,
+        error: { code: 'INVALID_PARAM', message },
+        data: {
+          status: 'error' as const,
+          text: null,
+          errorCode: 'INVALID_PARAM',
           errorMessage: message,
         },
       }

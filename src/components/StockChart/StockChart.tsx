@@ -20,6 +20,7 @@ import { StockCostPriceEditor } from "./StockCostPriceEditor";
 import { StockSignalHistoryPanel } from "./StockSignalHistoryPanel";
 import { PortfolioJourneyBanner } from "./PortfolioJourneyBanner";
 import { StockFundamentalDrawer } from "./StockFundamentalDrawer";
+import { prefetchStockFundamentalsIfMissing } from "./prefetchStockFundamentals";
 import { buildStockDecisionContextModel } from "./stockDecisionContextModel";
 import { SignalLifecycleDrawer } from "../DecisionCenter/SignalLifecycleDrawer";
 import { StockJudgmentPanel } from "../DecisionCenter/StockJudgmentPanel";
@@ -863,7 +864,7 @@ export function StockChart() {
     if (PRESET_CODES.includes(selected)) return; // 预设指数不订阅 374
 
     const api = window.api.datasource as unknown as {
-      subscribeStockMinute?: (code: string) => Promise<{ ok: boolean; code?: string }>;
+      subscribeStockMinute?: (code: string) => Promise<{ ok: boolean; gotData?: boolean; code?: string }>;
       unsubscribeStockMinute?: () => Promise<unknown>;
       onStockMinuteUpdated?: (cb: (p: { stockCode: string }) => void) => () => void;
       onStockMinuteFallback?: (cb: (p: { stockCode: string }) => void) => () => void;
@@ -871,7 +872,17 @@ export function StockChart() {
     if (!api.subscribeStockMinute) return;
 
     let cancelled = false;
-    api.subscribeStockMinute(selected).catch(() => {});
+    void (async () => {
+      await api.subscribeStockMinute?.(selected).catch(() => {});
+      if (cancelled) return;
+      const [rows, ohlcv] = await Promise.all([
+        loadMinuteFromDb(selected),
+        loadMinuteOHLCVFromDb(selected),
+      ]);
+      if (cancelled) return;
+      if (rows.length > 0) setIntradayItems(rows);
+      if (ohlcv.length > 0) setIntradayOHLCV(ohlcv);
+    })();
 
     const offUpdated = api.onStockMinuteUpdated?.((payload) => {
       if (cancelled || payload.stockCode !== selected) return;
@@ -886,7 +897,7 @@ export function StockChart() {
 
     const offFallback = api.onStockMinuteFallback?.((payload) => {
       if (cancelled || payload.stockCode !== selected) return;
-      // Tushare 连续失败 → 立即拉一次东财, 退化到折线
+      // Tushare/东财分钟连续失败 → 再试东财 5 分钟折线
       (async () => {
         try {
           const result = await window.api.datasource.getIntradayData(selected) as { items?: IntradayRow[] };
@@ -902,6 +913,59 @@ export function StockChart() {
       offUpdated?.();
       offFallback?.();
       api.unsubscribeStockMinute?.().catch(() => {});
+    };
+  }, [chartMode, selected]);
+
+  // 日 K：盘中自动刷新「今日」合成 bar（无需点「更新数据」）
+  useEffect(() => {
+    if (chartMode !== "daily") return;
+    if (PRESET_CODES.includes(selected)) return;
+    const code6 = selected.replace(/\.(SH|SZ|BJ)$/i, "");
+    const api = window.api.datasource as unknown as {
+      refreshTodayBar?: (
+        stockCode: string,
+      ) => Promise<{ ok: true; updated: boolean } | { ok: false; reason?: string }>;
+      onStockMinuteUpdated?: (cb: (p: { stockCode: string }) => void) => () => void;
+    };
+    if (!api.refreshTodayBar) return;
+
+    let cancelled = false;
+    let inflight = false;
+    const softReloadToday = async () => {
+      if (cancelled || inflight) return;
+      inflight = true;
+      try {
+        const result = await api.refreshTodayBar?.(code6);
+        if (cancelled || !result || !result.ok || !result.updated) return;
+        const page = await getStockHistoryPage(selected);
+        if (cancelled || selectedRef.current !== selected) return;
+        historyCacheRef.current.set(selected, {
+          rows: page.rows,
+          hasMore: page.hasMore,
+        });
+        setPriceDataCode(selected);
+        setPrices(page.rows);
+        setHasOlderPrices(page.hasMore);
+      } catch {
+        // 静默失败，保留当前图
+      } finally {
+        inflight = false;
+      }
+    };
+
+    void softReloadToday();
+    const timer = window.setInterval(() => {
+      void softReloadToday();
+    }, 60_000);
+    const offUpdated = api.onStockMinuteUpdated?.((payload) => {
+      if (payload.stockCode !== code6 && payload.stockCode !== selected) return;
+      void softReloadToday();
+    });
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      offUpdated?.();
     };
   }, [chartMode, selected]);
 
@@ -980,7 +1044,11 @@ export function StockChart() {
         }
       };
       window.api.datasource.fetchStock(sixDigit)
-        .then(() => { ensureName(); return reloadStocks(); })
+        .then(() => {
+          ensureName();
+          void prefetchStockFundamentalsIfMissing(sixDigit);
+          return reloadStocks();
+        })
         .catch(() => { ensureName(); reloadStocks(); });
     } else if (displayName) {
       // 股票已在列表中，但 stockName 可能是脏数据（代码 fallback），直接修正 DB + state
@@ -1454,6 +1522,7 @@ export function StockChart() {
         }
         await reloadStocks();
         setSelected(result.stockCode);
+        void prefetchStockFundamentalsIfMissing(result.stockCode);
       }
     } catch {
       setSearchError("查询失败");
@@ -1490,10 +1559,23 @@ export function StockChart() {
     }
     setIntradayLoading(true);
     setChartMode("intraday");
-    // FR-123: 主数据路径 — 优先 374 rt_min（持久化, 跨日可看）, 失败/空 fallback 东财
+    // 主数据路径：优先本地分钟缓存；空则经 IPC 补拉（Tushare rt_min → 东财），再东财 5 分钟折线
     let items: IntradayRow[] = [];
+    let ohlcv: Array<{ tsMinute: string; open: number; high: number; low: number; close: number; vol: number }> = [];
     if (!PRESET_CODES.includes(selected)) {
-      items = await loadMinuteFromDb(selected);
+      try {
+        await (
+          window.api.datasource as unknown as {
+            subscribeStockMinute?: (code: string) => Promise<unknown>;
+          }
+        ).subscribeStockMinute?.(selected);
+      } catch {
+        /* 订阅失败仍继续读库 / 东财折线 */
+      }
+      ;[items, ohlcv] = await Promise.all([
+        loadMinuteFromDb(selected),
+        loadMinuteOHLCVFromDb(selected),
+      ]);
     }
     if (items.length === 0) {
       try {
@@ -1504,10 +1586,7 @@ export function StockChart() {
       }
     }
     setIntradayItems(items);
-    // T617: 并行加载 OHLCV 供蜡烛图使用
-    if (!PRESET_CODES.includes(selected)) {
-      void loadMinuteOHLCVFromDb(selected).then((ohlcv) => setIntradayOHLCV(ohlcv));
-    }
+    if (ohlcv.length > 0) setIntradayOHLCV(ohlcv);
     // FR-073: load intraday data for any already-active overlay indices
     if (overlayIndices.size > 0) {
       const overlayData: Record<string, IntradayRow[]> = {};
@@ -1880,6 +1959,35 @@ export function StockChart() {
       ? pendingStockContext
       : null;
   const latestPrice = sortedPrices[sortedPrices.length - 1] ?? null;
+  const headerQuote = useMemo(() => {
+    const todayKey = getTodayBJDate().replace(/-/g, "");
+    const prevCloseForIntraday = (() => {
+      if (sortedPrices.length === 0) return null;
+      const last = sortedPrices[sortedPrices.length - 1];
+      if (last.tradeDate === todayKey) {
+        return sortedPrices.length >= 2 ? sortedPrices[sortedPrices.length - 2].close : null;
+      }
+      return last.close;
+    })();
+
+    if (chartMode === "intraday") {
+      const last = intradayItems[intradayItems.length - 1];
+      const price = last?.price ?? null;
+      const change =
+        price != null && prevCloseForIntraday != null && prevCloseForIntraday > 0
+          ? ((price - prevCloseForIntraday) / prevCloseForIntraday) * 100
+          : null;
+      return { price, change };
+    }
+
+    const price = latestPrice?.close ?? null;
+    let change = latestPrice?.pctChg ?? null;
+    if (change == null && price != null && sortedPrices.length >= 2) {
+      const prev = sortedPrices[sortedPrices.length - 2].close;
+      if (prev != null && prev > 0) change = ((price - prev) / prev) * 100;
+    }
+    return { price, change };
+  }, [chartMode, intradayItems, latestPrice, sortedPrices]);
   const selectedCostPrice = portfolioCostMap.get(selected) ?? null;
   const stockDecisionModel = buildStockDecisionContextModel({
     stockCode: selected,
@@ -2320,6 +2428,7 @@ export function StockChart() {
         [5, "#f97316", "MA5"],
         [10, "#3b82f6", "MA10"],
         [20, "#8b5cf6", "MA20 / BOLL中轨"],
+        [30, "#14b8a6", "MA30"],
         [60, "#a16207", "MA60"],
       ] as const;
       dailyMovingAverageSeriesRefs.current = Object.fromEntries(
@@ -2515,7 +2624,7 @@ export function StockChart() {
         tradeDate: row.tradeDate,
         close: row.收盘 ?? Number.NaN,
       }));
-      for (const period of [5, 10, 20, 60]) {
+      for (const period of [5, 10, 20, 30, 60]) {
         dailyMovingAverageSeriesRefs.current[period]?.setData(
           buildMovingAverageSeries(movingAverageRows, period).map((point) => ({
             time: toISODate(point.tradeDate) as Time,
@@ -3145,6 +3254,30 @@ export function StockChart() {
               <span className="text-sm text-gray-400 dark:text-gray-500">
                 {selected}
               </span>
+              <span
+                data-testid="stock-chart-header-quote"
+                className="ml-1 flex items-baseline gap-2 tabular-nums"
+                aria-label="现价与当日涨跌幅"
+              >
+                <span className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  {headerQuote.price == null || !Number.isFinite(headerQuote.price)
+                    ? "—"
+                    : headerQuote.price.toFixed(2)}
+                </span>
+                <span
+                  className={`text-sm font-medium ${
+                    headerQuote.change == null || !Number.isFinite(headerQuote.change)
+                      ? "text-gray-400 dark:text-gray-500"
+                      : headerQuote.change > 0
+                        ? "text-red-600 dark:text-red-400"
+                        : headerQuote.change < 0
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : "text-gray-500 dark:text-gray-400"
+                  }`}
+                >
+                  {formatPercent(headerQuote.change)}
+                </span>
+              </span>
               {chartMode === "daily" && (
                 <div className="flex items-center gap-1.5">
                   <span
@@ -3474,7 +3607,20 @@ export function StockChart() {
                 savingAction={decisionActionSaving}
                 actionMessage={decisionActionMessage}
                 actionError={decisionActionError}
-                onOpenForecast={() => setIsForecastPanelOpen(true)}
+                onOpenForecast={() => {
+                  void (async () => {
+                    const shouldRunPredict = stockDecisionModel.primaryActionLabel === '发起 AI 预测'
+                    if (shouldRunPredict) {
+                      setDecisionActionSaving('forecast')
+                      try {
+                        await handlePredictTrendToday(true)
+                      } finally {
+                        setDecisionActionSaving(null)
+                      }
+                    }
+                    setIsForecastPanelOpen(true)
+                  })()
+                }}
                 onBackToDecisionCenter={() => setActiveTab('decision-center')}
                 onMarkRead={() => void handleDecisionAction('read')}
                 onWatch={() => void handleDecisionAction('watch')}
@@ -3628,8 +3774,11 @@ export function StockChart() {
                 // T617: lwc 蜡烛图（Tushare OHLCV 数据）
                 <div ref={intradayLwcContainerRef} className="flex-1 min-h-0" />
               ) : intradayItems.length === 0 ? (
-                <div className="flex-1 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
-                  当日暂无分时数据
+                <div className="flex-1 flex flex-col items-center justify-center gap-1 text-sm text-gray-400 dark:text-gray-500 px-4 text-center">
+                  <div>当日暂无分时数据</div>
+                  <div className="text-xs opacity-80">
+                    已优先尝试 Tushare 分钟接口；无权限或失败时回退东财。未开盘、停牌或源站暂无数据时也会为空。
+                  </div>
                 </div>
               ) : (
                 (() => {
@@ -4093,6 +4242,7 @@ export function StockChart() {
                           { label: "MA5",  color: "#f97316" },
                           { label: "MA10", color: "#3b82f6" },
                           { label: "MA20 / BOLL中轨", color: "#8b5cf6" },
+                          { label: "MA30", color: "#14b8a6" },
                           { label: "MA60", color: "#a16207" },
                         ].map(({ label, color }) => (
                           <span key={label} className="flex items-center gap-0.5">

@@ -107,10 +107,24 @@ function validateSnapshot(value: unknown, now: number): DecisionReviewReportSnap
   for (const field of ['holdingCount', 'portfolioSignalCount', 'processedCount', 'openRiskCount', 'evidenceGapCount', 'followUpCount']) {
     requireNonNegativeInteger(value.summary[field], `report.summary.${field}`)
   }
-  for (const field of ['processed', 'openRisks', 'evidenceGaps', 'followUps']) {
+  if (value.summary.watchingCount !== undefined) {
+    requireNonNegativeInteger(value.summary.watchingCount, 'report.summary.watchingCount')
+  }
+  for (const field of ['processed', 'openRisks', 'evidenceGaps', 'followUps'] as const) {
     if (!Array.isArray(value[field])) invalid(`report.${field} 必须为数组`)
     for (const item of value[field] as unknown[]) {
       if (!isRecord(item)) invalid(`report.${field} 包含无效条目`)
+    }
+  }
+  if (value.watchedSignals !== undefined) {
+    if (!Array.isArray(value.watchedSignals)) invalid('report.watchedSignals 必须为数组')
+    for (const item of value.watchedSignals as unknown[]) {
+      if (!isRecord(item)) invalid('report.watchedSignals 包含无效条目')
+    }
+  }
+  for (const field of ['marketEnvironment', 'capitalHighlights', 'holdingMoves'] as const) {
+    if (value[field] !== undefined && value[field] !== null && !isRecord(value[field])) {
+      invalid(`report.${field} 必须为对象`)
     }
   }
   const aiNarrative = validateAiNarrative(value.aiNarrative)

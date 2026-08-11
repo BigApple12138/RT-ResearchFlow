@@ -1567,6 +1567,16 @@ const api = {
       ipcRenderer.on('researchAgent:progress', wrapped)
       return () => { ipcRenderer.removeListener('researchAgent:progress', wrapped) }
     },
+    onDelta: (listener: (event: {
+      runId: string
+      phase: string
+      type: 'start' | 'delta' | 'reset' | 'done'
+      accumulated?: string
+    }) => void) => {
+      const wrapped = (_event: IpcRendererEvent, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('researchAgent:delta', wrapped)
+      return () => { ipcRenderer.removeListener('researchAgent:delta', wrapped) }
+    },
   },
   researchAccess: {
     getWorkbench: () => ipcRenderer.invoke('researchAccess:getWorkbench') as Promise<ResearchAccessApiResult<ResearchAccessWorkbench>>,
@@ -1860,6 +1870,22 @@ const api = {
       ipcRenderer.on('ai:analyzeProgress', (_event, data) => listener(data))
       return () => { ipcRenderer.removeAllListeners('ai:analyzeProgress') }
     },
+    onFollowUpDelta: (
+      listener: (data: {
+        type: 'start' | 'delta' | 'reset' | 'error'
+        requestId: string
+        sessionId: number
+        streaming?: boolean
+        reason?: 'web_search' | 'buffered'
+        accumulated?: string
+        provider?: string
+        message?: string
+      }) => void,
+    ) => {
+      const wrapped = (_event: unknown, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('ai:followUpDelta', wrapped)
+      return () => { ipcRenderer.removeListener('ai:followUpDelta', wrapped) }
+    },
     onTushareNotConfigured: (listener: (data: { stockCodes: string[] }) => void) => {
       ipcRenderer.on('ai:tushareNotConfigured', (_event, data) => listener(data))
       return () => { ipcRenderer.removeAllListeners('ai:tushareNotConfigured') }
@@ -1976,6 +2002,11 @@ const api = {
             message: string
           }
         | { ok: false; reason: 'invalid_code' | 'no_token' | 'not_found' | 'fetch_error' }
+      >,
+    refreshTodayBar: (stockCode: string) =>
+      ipcRenderer.invoke('datasource:refreshTodayBar', { stockCode }) as Promise<
+        | { ok: true; updated: boolean }
+        | { ok: false; reason: 'invalid_code' | 'fetch_error'; message?: string }
       >,
     fetchStock: (stockCode: string) =>
       ipcRenderer.invoke('datasource:fetchStock', { stockCode }) as Promise<
@@ -3757,6 +3788,81 @@ const api = {
         error?: { code: string; message: string } | string
         message?: string
       }>,
+    generateTodayBriefAi: (payload: {
+      brief: {
+        headline: string
+        bullets: string[]
+        marketThemeLine: string | null
+        portfolioClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        sectorClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        strategyClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        peripheralClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        noiseCount: number
+        disclaimer: string
+      }
+    }) =>
+      ipcRenderer.invoke('decision:generateTodayBriefAi', payload) as Promise<{
+        ok: boolean
+        data?: {
+          status: 'pending' | 'ready' | 'error' | 'skipped'
+          text: string | null
+          generatedAt?: number
+          provider?: string
+          model?: string
+          errorCode?: string
+          errorMessage?: string
+        }
+        error?: { code: string; message: string } | string
+        message?: string
+      }>,
     listReviewReports: (filters?: ReviewReportListFilters) =>
       ipcRenderer.invoke('decision:listReviewReports', filters ?? {}) as Promise<{
         ok: boolean
@@ -3837,8 +3943,8 @@ const api = {
       ipcRenderer.invoke('portfolio:updateCostPrice', { tsCode, costPrice }) as Promise<{ ok: boolean; code?: string; message?: string }>,
     getDashboard: (options?: { limit?: number; offset?: number }) =>
       ipcRenderer.invoke('portfolio:getDashboard', options ?? {}) as Promise<{ ok: boolean; data?: PortfolioDashboardItem[]; total?: number; code?: string; message?: string }>,
-    forecastNow: () =>
-      ipcRenderer.invoke('portfolio:forecastNow') as Promise<{ ok: boolean; code?: string }>,
+    forecastNow: (payload?: { force?: boolean }) =>
+      ipcRenderer.invoke('portfolio:forecastNow', payload ?? {}) as Promise<{ ok: boolean; code?: string }>,
     onForecastProgress: (
       cb: (data: { current: number; total: number; stockCode: string; ok: boolean; error?: string }) => void
     ) => {

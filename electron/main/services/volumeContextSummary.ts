@@ -65,3 +65,36 @@ export function summarizeVolumeEnergy(bars: VolumeContextBar[]): string {
   }
   return lines.join('\n')
 }
+
+export interface IntradayVolumeBar {
+  volume: number | null | undefined
+  amount?: number | null | undefined
+}
+
+/**
+ * 盘中分时/分钟量能摘要（成交量手；成交额千元可选）。
+ * 近5根均量 vs 全场均量，仅作观察事实。
+ */
+export function summarizeIntradayVolumeEnergy(bars: IntradayVolumeBar[], options?: { lastN?: number }): string {
+  const lastN = options?.lastN ?? 5
+  const vols = bars.map((bar) => (finite(bar.volume) ? bar.volume : null))
+  const valid = vols.filter((v): v is number => v != null)
+  if (valid.length === 0) {
+    return '- 盘中量能摘要：本包未提供成交量'
+  }
+  const totalVol = valid.reduce((s, v) => s + v, 0)
+  const amounts = bars.map((bar) => (finite(bar.amount) ? bar.amount : null)).filter((v): v is number => v != null)
+  const totalAmount = amounts.length > 0 ? amounts.reduce((s, v) => s + v, 0) : null
+  const sessionAvg = totalVol / valid.length
+  const tail = valid.slice(-Math.min(lastN, valid.length))
+  const tailAvg = tail.reduce((s, v) => s + v, 0) / tail.length
+  const vsSession = sessionAvg > 0 ? ((tailAvg / sessionAvg) - 1) * 100 : null
+
+  const lines = [
+    `- 盘中量能摘要（成交量/手，观察事实、非买卖信号）：累计成交量：${formatVolumeHand(totalVol)}手` +
+      (totalAmount != null ? `；累计成交额：${formatAmountQian(totalAmount)}千元` : ''),
+    `- 近${tail.length}根均量：${formatVolumeHand(tailAvg)}手；全场均量：${formatVolumeHand(sessionAvg)}手` +
+      (vsSession != null ? `；近段相对全场：${formatSignedPercent(vsSession)}` : ''),
+  ]
+  return lines.join('\n')
+}
