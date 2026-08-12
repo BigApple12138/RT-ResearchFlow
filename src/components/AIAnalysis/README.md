@@ -10,7 +10,7 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 
 **One-page（2026-08-12）：** 深度研究不是底部常驻账本窗，而是聊天时间线中的回合块（`DeepResearchTurnView`：可折叠过程 + 结论 + 来源提示；详情复用 `ResearchAgentRunDetail`）。`ResearchAgentPanel` 仅作启动/进度控制器（预检 modal / 确认框），经 `onTimelineContextChange` 把 runs 投影给父级。
 
-**Cursor 式会话面（2026-08-12）：** 讨论路径主表面 = 会话线程 + composer。左右栏为可折叠抽屉（`ai-drawer-toggle-left` / `ai-drawer-toggle-right`），偏好写入 localStorage（`rt-researchflow.ai-analysis.drawer.*`）；无存储时讨论默认左开右收、文章默认左右都开（按会话 kind 回退）。研究增量：`xl+` 在右抽屉，`<xl` 在主区内联面板（`ai-research-increment-inline`），避免窄屏点开后入口消失。Agent 过程在上、正文草稿在下（`ai-agent-turn-live` / `ai-agent-streaming`）；JSON 协议未出正文前明示整段返回。首轮 composer 乐观插入 user 消息以便展示过程滚动。
+**Cursor 式会话面（2026-08-12）：** 讨论路径主表面 = 会话线程 + composer。左右栏为可折叠抽屉（`ai-drawer-toggle-*-expand|collapse`），偏好写入 localStorage（`rt-researchflow.ai-analysis.drawer.*`）；只持久化被改动的一侧，避免文章默认右开被误写。无存储时讨论默认左开右收、文章默认左右都开。研究增量：`xl+` 在右抽屉，`<xl` 在主区内联面板（`ai-research-increment-inline`）。Agent 过程在上、正文草稿在下（`ai-agent-turn-live`）；`stream=final` 后清空草稿防双显；首轮乐观 user + 抛错回滚；`onAgentEvent` 用 requestId ref 避免多轮丢早期事件。
 
 ### FR：Agent 工作台（Agent Hub）
 

@@ -62,8 +62,8 @@ function storageSet(storage: SessionDrawerStorage | null, key: string, value: st
 }
 
 /**
- * 读取已存偏好；缺 key 时用 discussion 默认（左开右收）。
- * 策略：全局记住左右开关，不按会话类型重置（避免抖动）。
+ * 读取已存偏好；缺 key 时按 fallbackKind 默认。
+ * 已存 key 全局生效；未存 key 不按另一类会话的默认「偷写」进去。
  */
 export function loadSessionDrawerPrefs(
   fallbackKind: SessionDrawerKind = 'discussion',
@@ -78,16 +78,20 @@ export function loadSessionDrawerPrefs(
   }
 }
 
+/**
+ * 只持久化 partial 中显式给出的一侧，避免「只改左侧」把文章默认右开写成 false。
+ */
 export function saveSessionDrawerPrefs(
   partial: Partial<SessionDrawerPrefs>,
   storage: SessionDrawerStorage | null = defaultBrowserStorage(),
+  options: { kind?: SessionDrawerKind } = {},
 ): SessionDrawerPrefs {
-  const current = loadSessionDrawerPrefs('discussion', storage)
-  const next: SessionDrawerPrefs = {
-    leftOpen: typeof partial.leftOpen === 'boolean' ? partial.leftOpen : current.leftOpen,
-    rightOpen: typeof partial.rightOpen === 'boolean' ? partial.rightOpen : current.rightOpen,
+  const kind = options.kind ?? 'discussion'
+  if (typeof partial.leftOpen === 'boolean') {
+    storageSet(storage, SESSION_DRAWER_LEFT_KEY, String(partial.leftOpen))
   }
-  storageSet(storage, SESSION_DRAWER_LEFT_KEY, String(next.leftOpen))
-  storageSet(storage, SESSION_DRAWER_RIGHT_KEY, String(next.rightOpen))
-  return next
+  if (typeof partial.rightOpen === 'boolean') {
+    storageSet(storage, SESSION_DRAWER_RIGHT_KEY, String(partial.rightOpen))
+  }
+  return loadSessionDrawerPrefs(kind, storage)
 }
