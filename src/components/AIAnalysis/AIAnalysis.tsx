@@ -36,6 +36,7 @@ import {
   buildCompactionCheckpointListModel,
   type CompactionCheckpointItem,
 } from './compactionCheckpointListModel'
+import { loadSessionDrawerPrefs, saveSessionDrawerPrefs, type SessionDrawerKind } from './sessionDrawerPrefs'
 import { normalizeAshareTsCode } from '../../utils/normalizeAshareTsCode'
 
 /** 探测 preload 是否暴露 agentTurn；有则走 Agent 主路径。 */
@@ -491,6 +492,8 @@ export function AIAnalysis() {
   const [agentEvents, setAgentEvents] = useState<AgentTimelineEvent[]>([])
   const [agentRequestId, setAgentRequestId] = useState<string | null>(null)
   const [confirmingHitl, setConfirmingHitl] = useState(false)
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(() => loadSessionDrawerPrefs('discussion').leftOpen)
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(() => loadSessionDrawerPrefs('discussion').rightOpen)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const agentPathEnabled = isAgentTurnAvailable()
@@ -502,6 +505,17 @@ export function AIAnalysis() {
     () => deriveAgentStatusScroll(agentTimeline),
     [agentTimeline],
   )
+
+  const sessionDrawerKind: SessionDrawerKind | null = detail
+    ? (detail.discussion ? 'discussion' : 'article')
+    : null
+
+  useEffect(() => {
+    if (!sessionDrawerKind) return
+    const prefs = loadSessionDrawerPrefs(sessionDrawerKind)
+    setLeftDrawerOpen(prefs.leftOpen)
+    setRightDrawerOpen(prefs.rightOpen)
+  }, [sessionDrawerKind, detail?.id])
 
   const insight = useMemo(() => deriveInsight(detail), [detail])
   const round2Segments = useMemo(() => {
@@ -1142,6 +1156,11 @@ export function AIAnalysis() {
       await handleSelectSession(sessionId)
       clearResearchDiscussionDraft(sessionId)
       setActiveTab('chat')
+      // 乐观插入 user，保证首轮也能进「有消息」分支并展示 Agent 过程滚动
+      setDetail((prev) => prev ? {
+        ...prev,
+        messages: [...(prev.messages ?? []), { role: 'user', content: message, requestId }],
+      } : prev)
       const result = await sendSessionMessage(sessionId, message, requestId)
       if (result?.messages) {
         const latest = await window.api.ai.getSession(sessionId)
@@ -1151,6 +1170,10 @@ export function AIAnalysis() {
       } else if (result?.error) {
         showToast(`发送失败：${result.error}`)
         setFollowUpInput(message)
+        setDetail((prev) => prev ? {
+          ...prev,
+          messages: (prev.messages ?? []).filter((item) => item.requestId !== requestId),
+        } : prev)
       }
     } finally {
       followUpRequestRef.current = null
@@ -1265,9 +1288,108 @@ export function AIAnalysis() {
     setShowIndustryAnalysis(true)
   }
 
+  function toggleLeftDrawer() {
+    setLeftDrawerOpen((prev) => {
+      const next = !prev
+      saveSessionDrawerPrefs({ leftOpen: next })
+      return next
+    })
+  }
+
+  function toggleRightDrawer() {
+    setRightDrawerOpen((prev) => {
+      const next = !prev
+      saveSessionDrawerPrefs({ rightOpen: next })
+      return next
+    })
+  }
+
+  const agentStreamingText =
+    agentPathEnabled && sendingFollowUp && !agentTimeline.terminal
+      ? agentTimeline.streamingMessage
+      : ''
+
+  function renderResearchIncrementPanel() {
+    if (!detail?.discussion) return null
+    return (
+      <ResearchDiscussionChangePanel
+        discussion={detail.discussion}
+        throughMessageSequence={detail.messages?.at(-1)?.sequence ?? null}
+        onChanged={async () => {
+          const latest = await window.api.ai.getSession(detail.id)
+          if (latest) setDetail(latest)
+          await loadAISessions()
+        }}
+      />
+    )
+  }
+
+  /** 过程在上、正文草稿在下；空消息与有消息分支共用，避免首轮只剩「思考中…」。 */
+  function renderAgentTurnLive() {
+    if (!agentPathEnabled && !sendingFollowUp) return null
+    const showScroll = agentPathEnabled && agentTimeline.steps.length > 0
+    const showStreaming = Boolean(agentStreamingText)
+    const showDegradedHint =
+      agentPathEnabled && sendingFollowUp && showScroll && !showStreaming && !agentTimeline.terminal
+    const showThinking =
+      sendingFollowUp && !followUpDraft && !showStreaming && !showScroll
+
+    if (!showScroll && !showStreaming && !showThinking && !showDegradedHint) return null
+
+    return (
+      <div className="mt-2 space-y-1.5" data-testid="ai-agent-turn-live">
+        {showScroll && (
+          <>
+            <AgentStatusScroll
+              scroll={agentStatusScroll}
+              steps={agentTimeline.steps}
+              networkDisabledHint={agentTimeline.networkDisabledHint}
+            />
+            {agentTimeline.pendingHitl?.hitl && (
+              <div data-testid="agent-hitl-bar" className="flex flex-wrap items-center gap-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-800 dark:bg-amber-950/40">
+                <span className="text-[11px] text-amber-950 dark:text-amber-100">{agentTimeline.pendingHitl.detail || '需要确认写操作'}</span>
+                <button type="button" disabled={confirmingHitl} className="rounded bg-cyan-700 px-2 py-0.5 text-[11px] font-semibold text-white disabled:opacity-40" onClick={() => { void resolveHitl(true) }}>确认</button>
+                <button type="button" disabled={confirmingHitl} className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900" onClick={() => { void resolveHitl(false) }}>拒绝</button>
+              </div>
+            )}
+          </>
+        )}
+        {showDegradedHint && (
+          <div className="text-[11px] text-amber-700 dark:text-amber-300">
+            本轮助手正文将整段返回（动作协议流式中不展示半截 JSON）…
+          </div>
+        )}
+        {showStreaming && (
+          <div data-testid="ai-agent-streaming" className="flex justify-start">
+            <div className="max-w-[85%] whitespace-pre-wrap rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs leading-relaxed text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+              {agentStreamingText}
+              <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" />
+            </div>
+          </div>
+        )}
+        {showThinking && <div className="text-xs text-slate-400">思考中...</div>}
+      </div>
+    )
+  }
+
   return (
     <div className="relative flex h-full flex-1 overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
 
+      {!leftDrawerOpen && (
+        <button
+          type="button"
+          data-testid="ai-drawer-toggle-left"
+          aria-label="展开分析记录"
+          title="展开分析记录"
+          onClick={toggleLeftDrawer}
+          className="flex w-8 flex-shrink-0 flex-col items-center gap-1 border-r border-slate-200 bg-white pt-3 text-[11px] font-medium text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800"
+        >
+          <span aria-hidden>›</span>
+          <span className="text-[10px] tracking-wide">记录</span>
+        </button>
+      )}
+
+      {leftDrawerOpen && (
       <aside className="flex w-64 flex-shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <div className="border-b border-slate-200 px-3 py-3 dark:border-slate-800">
           <div className="flex items-center justify-between gap-2">
@@ -1276,6 +1398,7 @@ export function AIAnalysis() {
               <div className="mt-0.5 text-[11px] text-slate-500">{aiSessions.length} 条会话</div>
             </div>
             <div className="flex gap-1">
+              <button type="button" data-testid="ai-drawer-toggle-left" aria-label="收起分析记录" onClick={toggleLeftDrawer} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">‹</button>
               <button type="button" data-testid="new-conversation" onClick={startNewConversation} className={`rounded-md px-2 py-1 text-[11px] font-semibold ${selectedId == null ? 'bg-cyan-700 text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300'}`}>新对话</button>
               <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">高级</button>
               <button onClick={requestDeleteAll} disabled={deleting || aiSessions.length === 0} className="rounded-md border border-red-200 px-2 py-1 text-[11px] text-red-500 transition-colors hover:bg-red-50 disabled:opacity-30 dark:border-red-900 dark:hover:bg-red-950/40">清除</button>
@@ -1352,6 +1475,7 @@ export function AIAnalysis() {
           ))}
         </div>
       </aside>
+      )}
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {loadingDetail ? (
@@ -1733,23 +1857,7 @@ export function AIAnalysis() {
                             </div>
                           </div>
                         )}
-                        {sendingFollowUp && !followUpDraft && <div className="text-xs text-slate-400">思考中...</div>}
-                        {agentPathEnabled && agentTimeline.steps.length > 0 && (
-                          <div className="mt-2 space-y-1.5">
-                            <AgentStatusScroll
-                              scroll={agentStatusScroll}
-                              steps={agentTimeline.steps}
-                              networkDisabledHint={agentTimeline.networkDisabledHint}
-                            />
-                            {agentTimeline.pendingHitl?.hitl && (
-                              <div data-testid="agent-hitl-bar" className="flex flex-wrap items-center gap-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-800 dark:bg-amber-950/40">
-                                <span className="text-[11px] text-amber-950 dark:text-amber-100">{agentTimeline.pendingHitl.detail || '需要确认写操作'}</span>
-                                <button type="button" disabled={confirmingHitl} className="rounded bg-cyan-700 px-2 py-0.5 text-[11px] font-semibold text-white disabled:opacity-40" onClick={() => { void resolveHitl(true) }}>确认</button>
-                                <button type="button" disabled={confirmingHitl} className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900" onClick={() => { void resolveHitl(false) }}>拒绝</button>
-                              </div>
-                            )}
-                          </div>
-                        )}
+                        {renderAgentTurnLive()}
                       </div>
                     ) : (
                       <div className="mt-4 space-y-3">
@@ -1772,22 +1880,43 @@ export function AIAnalysis() {
                           </div>
                         ) : (
                           <div className="rounded-lg bg-slate-50 px-3 py-8 text-center text-sm text-slate-400 dark:bg-slate-950/60">
-                            {sendingFollowUp ? '思考中...' : (detail.discussion ? '输入问题开始讨论' : '暂无追问记录')}
+                            {sendingFollowUp ? '正在发送…' : (detail.discussion ? '输入问题开始讨论' : '暂无追问记录')}
                           </div>
                         )}
+                        {renderAgentTurnLive()}
                       </div>
                     )}
                   </div>
-                  {detail.discussion && (
-                    <ResearchDiscussionChangePanel
-                      discussion={detail.discussion}
-                      throughMessageSequence={detail.messages?.at(-1)?.sequence ?? null}
-                      onChanged={async () => {
-                        const latest = await window.api.ai.getSession(detail.id)
-                        if (latest) setDetail(latest)
-                        await loadAISessions()
-                      }}
-                    />
+                  {detail.discussion && !rightDrawerOpen && (
+                    <div className="border-t border-slate-200 px-5 py-2 dark:border-slate-800">
+                      <button
+                        type="button"
+                        data-testid="ai-research-increment-open"
+                        onClick={toggleRightDrawer}
+                        className="text-[11px] font-medium text-cyan-700 hover:underline dark:text-cyan-300"
+                      >
+                        查看研究增量
+                      </button>
+                    </div>
+                  )}
+                  {detail.discussion && rightDrawerOpen && (
+                    <div
+                      data-testid="ai-research-increment-inline"
+                      className="space-y-2 border-t border-slate-200 px-5 py-3 xl:hidden dark:border-slate-800"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">研究增量</div>
+                        <button
+                          type="button"
+                          data-testid="ai-research-increment-collapse"
+                          onClick={toggleRightDrawer}
+                          className="text-[11px] text-slate-500 hover:underline"
+                        >
+                          收起
+                        </button>
+                      </div>
+                      {renderResearchIncrementPanel()}
+                    </div>
                   )}
                   {detail.discussion && researchAgentTimeline && researchAgentTimeline.runs.length > 0 && (
                     <div data-testid="deep-research-timeline" className="space-y-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800">
@@ -1912,12 +2041,46 @@ export function AIAnalysis() {
         )}
       </main>
 
-      {!detail?.discussion && <aside className="hidden w-80 flex-shrink-0 flex-col border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 xl:flex">
+      {detail && !rightDrawerOpen && (
+        <button
+          type="button"
+          data-testid="ai-drawer-toggle-right"
+          aria-label="展开研判侧栏"
+          onClick={toggleRightDrawer}
+          className="hidden w-8 flex-shrink-0 flex-col items-center border-l border-slate-200 bg-white pt-3 text-[11px] text-slate-500 hover:bg-slate-50 xl:flex dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800"
+        >
+          <span>研判</span>
+          <span className="mt-2 text-slate-400">‹</span>
+        </button>
+      )}
+
+      {detail && rightDrawerOpen && <aside className="hidden w-80 flex-shrink-0 flex-col border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 xl:flex">
         <div className="border-b border-slate-200 px-4 py-4 dark:border-slate-800">
-          <div className="text-sm font-semibold">研判侧栏</div>
-          <div className="mt-1 text-xs text-slate-500">基于现有会话文本派生, 不代表交易指令</div>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="text-sm font-semibold">{detail?.discussion ? '研究侧栏' : '研判侧栏'}</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {detail?.discussion ? '研究增量与讨论附属信息' : '基于现有会话文本派生, 不代表交易指令'}
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="ai-drawer-toggle-right"
+              aria-label="收起研判侧栏"
+              onClick={toggleRightDrawer}
+              className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
+            >
+              ›
+            </button>
+          </div>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 text-xs">
+          {detail?.discussion ? (
+            <section className="rounded-xl border border-slate-200 p-1 dark:border-slate-800">
+              {renderResearchIncrementPanel()}
+            </section>
+          ) : (
+            <>
           <section className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
             <div className="font-medium text-slate-700 dark:text-slate-200">模型与来源</div>
             <div className="mt-3 space-y-2 text-slate-500">
@@ -2048,6 +2211,8 @@ export function AIAnalysis() {
               </button>
             </div>
           </section>
+            </>
+          )}
         </div>
       </aside>}
 

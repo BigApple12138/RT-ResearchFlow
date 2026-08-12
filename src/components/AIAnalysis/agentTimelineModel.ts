@@ -172,7 +172,9 @@ export function projectAgentEventToStep(event: AgentTimelineEvent, index: number
         at: event.at,
       }
     }
-    case 'message':
+    case 'message': {
+      // delta 由 buildAgentTimelineModel 单独吃进 streamingMessage，不占过程步骤
+      if (asString(payload?.stream) === 'delta') return null
       return {
         id,
         kind: 'message',
@@ -183,6 +185,7 @@ export function projectAgentEventToStep(event: AgentTimelineEvent, index: number
         rawType: event.type,
         at: event.at,
       }
+    }
     case 'hitl': {
       const hitlRequestId = asString(payload?.hitlRequestId || payload?.hitlId)
       const toolName = asString(payload?.toolName, 'write')
@@ -254,6 +257,15 @@ export function buildAgentTimelineModel(
   let pendingHitl: AgentTimelineStep | null = null
 
   filtered.forEach((event, index) => {
+    if (event.type === 'message') {
+      const text = asString(event.payload?.text || event.payload?.accumulated)
+      const stream = asString(event.payload?.stream)
+      if (stream === 'delta') {
+        if (text) streamingMessage = text
+        return
+      }
+      if (text) streamingMessage = text
+    }
     const step = projectAgentEventToStep(event, index)
     if (!step) return
     steps.push(step)

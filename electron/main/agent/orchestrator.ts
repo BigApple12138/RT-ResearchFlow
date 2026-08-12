@@ -66,6 +66,8 @@ export type ReasoningCallInput = {
   observations: Observation[]
   session: AgentSessionContext
   stepCount: number
+  /** 最终叙述路径可选；累计正文回调（与 followUp onDelta 同语义） */
+  onDelta?: (accumulated: string) => void
 }
 
 export type ReasoningCall = (input: ReasoningCallInput) => Promise<string>
@@ -197,6 +199,28 @@ function emit(
   partial: Omit<AgentEvent, 'at'> & { at?: number },
 ): void {
   onEvent({ ...partial, at: partial.at ?? now() })
+}
+
+/** 先 delta 再 final，保证 UI 在 turn 结束前可见正文（v1；真 token 流另由 onDelta 叠加）。 */
+function emitAssistantMessage(
+  onEvent: (e: AgentEvent) => void,
+  requestId: string,
+  sessionId: number,
+  text: string,
+): void {
+  if (!text) return
+  emit(onEvent, {
+    type: 'message',
+    requestId,
+    sessionId,
+    payload: { text, stream: 'delta' },
+  })
+  emit(onEvent, {
+    type: 'message',
+    requestId,
+    sessionId,
+    payload: { text, stream: 'final' },
+  })
 }
 
 function aborted(signal?: AbortSignal): boolean {
@@ -370,6 +394,21 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
             observations,
             session,
             stepCount,
+            onDelta: (accumulated) => {
+              try {
+                const action = parseAgentAction(accumulated)
+                if (action.type === 'final' && action.text) {
+                  emit(onEvent, {
+                    type: 'message',
+                    requestId,
+                    sessionId,
+                    payload: { text: action.text, stream: 'delta' },
+                  })
+                }
+              } catch {
+                // 半截 JSON：忽略
+              }
+            },
           })
           if (aborted(signal)) {
             goal = { ...goal, status: 'cancelled' }
@@ -386,12 +425,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
             finalText = lastObservation.summary || '已完成目标。'
           }
         }
-        emit(onEvent, {
-          type: 'message',
-          requestId,
-          sessionId,
-          payload: { text: finalText },
-        })
+        emitAssistantMessage(onEvent, requestId, sessionId, finalText ?? '')
         goal = { ...goal, status: 'completed' }
         return finish('done', { text: finalText })
       }
@@ -399,12 +433,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
       if (evaluation.decision === 'blocked') {
         const text = `未能完成：${evaluation.reason ?? '阻塞'}`
         finalText = text
-        emit(onEvent, {
-          type: 'message',
-          requestId,
-          sessionId,
-          payload: { text },
-        })
+        emitAssistantMessage(onEvent, requestId, sessionId, text)
         goal = { ...goal, status: 'blocked' }
         return finish('done', { text })
       }
@@ -414,7 +443,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
         if (revisionCount > maxRevisions) {
           const text = `未能完成：已达 maxRevisions=${maxRevisions}`
           finalText = text
-          emit(onEvent, { type: 'message', requestId, sessionId, payload: { text } })
+          emitAssistantMessage(onEvent, requestId, sessionId, text)
           goal = { ...goal, status: 'blocked' }
           return finish('done', { text })
         }
@@ -469,6 +498,21 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
         observations,
         session,
         stepCount,
+        onDelta: (accumulated) => {
+          try {
+            const action = parseAgentAction(accumulated)
+            if (action.type === 'final' && action.text) {
+              emit(onEvent, {
+                type: 'message',
+                requestId,
+                sessionId,
+                payload: { text: action.text, stream: 'delta' },
+              })
+            }
+          } catch {
+            // 半截 JSON 或 tool 动作：不推正文
+          }
+        },
       })
 
       if (aborted(signal)) {
@@ -493,7 +537,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
         if (stepCount >= maxSteps) {
           const text = `未能完成：动作解析反复失败（maxSteps）`
           finalText = text
-          emit(onEvent, { type: 'message', requestId, sessionId, payload: { text } })
+          emitAssistantMessage(onEvent, requestId, sessionId, text)
           return finish('done', { text })
         }
         continue
@@ -506,13 +550,13 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
           if (pending.length > 0 && observations.length === 0) {
             // 仍允许模型在工具失败后 final 收尾；零观察时视为 0 工具收尾说明
             finalText = action.text
-            emit(onEvent, { type: 'message', requestId, sessionId, payload: { text: finalText } })
+            emitAssistantMessage(onEvent, requestId, sessionId, action.text)
             goal = { ...goal, status: 'completed' }
             return finish('done', { text: finalText })
           }
         }
         finalText = action.text
-        emit(onEvent, { type: 'message', requestId, sessionId, payload: { text: finalText } })
+        emitAssistantMessage(onEvent, requestId, sessionId, action.text)
         goal = { ...goal, status: 'completed' }
         return finish('done', { text: finalText })
       }
@@ -528,7 +572,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
           sessionId,
           payload: { decision: 'fuse', fingerprint: fp },
         })
-        emit(onEvent, { type: 'message', requestId, sessionId, payload: { text } })
+        emitAssistantMessage(onEvent, requestId, sessionId, text)
         goal = { ...goal, status: 'blocked' }
         return finish('done', { text })
       }

@@ -1,8 +1,8 @@
 # AI 分析 One-Page（Cursor 式会话面）设计
 
-**状态：** 已批准；误完成刹车随候选桥接同批落地，抽屉/流式另开 plan  
+**状态：** 已完成（2026-08-12；抽屉 + Agent 流式已落地，待手工观感确认）  
 **日期：** 2026-08-12  
-**Plan：** （抽屉与流式待写；刹车见候选桥接 plan Task 1）  
+**Plan：** [`../plans/2026-08-12-ai-analysis-cursor-onepage-session.md`](../plans/2026-08-12-ai-analysis-cursor-onepage-session.md)（刹车见候选桥接 plan）  
 **关联：**  
 - [`2026-08-12-ai-analysis-onepage-deep-research-design.md`](./2026-08-12-ai-analysis-onepage-deep-research-design.md)（深度研究并入时间线；**本文修订「讨论路径整体信息架构」**）  
 - [`2026-08-11-ai-analysis-agent-hub-design.md`](./2026-08-11-ai-analysis-agent-hub-design.md)（北星：单交互页 Agent）  
@@ -123,3 +123,4 @@
 ## 10. 修订记录
 
 - 2026-08-12：用户纠正 one-page = 会话内容不分散、对齐 Cursor 中心线程 + 小按钮藏抽屉；并要求借鉴 OpenClaw/成熟产品会话面；纳入误完成刹车与 Agent 流式。
+- 2026-08-12：抽屉 + Agent 流式实现 plan 落盘并执行完成（`2026-08-12-ai-analysis-cursor-onepage-session.md`）。

@@ -65,6 +65,18 @@ describe('agentTimelineModel', () => {
     expect(model.pendingHitl).toBeNull()
   })
 
+  it('message stream=delta 只更新 streamingMessage 不占过程步骤', () => {
+    const model = buildAgentTimelineModel([
+      ev({ type: 'status', payload: { decision: 'continue' } }),
+      ev({ type: 'message', payload: { text: '草稿一段', stream: 'delta' } }),
+      ev({ type: 'message', payload: { text: '草稿全文', stream: 'delta' } }),
+      ev({ type: 'message', payload: { text: '草稿全文', stream: 'final' } }),
+    ])
+    expect(model.streamingMessage).toBe('草稿全文')
+    expect(model.steps.filter((s) => s.kind === 'message')).toHaveLength(1)
+    expect(model.steps.find((s) => s.kind === 'message')?.detail).toBe('草稿全文')
+  })
+
   it('HITL 未结束时 pendingHitl 可用', () => {
     const model = buildAgentTimelineModel([
       ev({
