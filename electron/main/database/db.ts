@@ -4961,6 +4961,7 @@ const MIGRATIONS: DatabaseMigration[] = [
         ON trend_structure_review_revisions(ts_code, score_trade_date, facts_hash);
     `
   },
+  {
     // Agent Hub 执行账本：turn / step / observation（独立于 ai_analysis_sessions.messages）
     version: 148,
     sql: `
