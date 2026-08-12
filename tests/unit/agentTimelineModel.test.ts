@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildAgentTimelineModel,
+  deriveAgentStatusScroll,
   projectAgentEventToStep,
   type AgentTimelineEvent,
 } from '../../src/components/AIAnalysis/agentTimelineModel'
@@ -87,7 +88,7 @@ describe('agentTimelineModel', () => {
       }),
       0,
     )
-    expect(step?.networkHint).toMatch(/设置/)
+    expect(step?.networkHint).toMatch(/配置中心|允许 Agent 联网/)
     const model = buildAgentTimelineModel([
       ev({
         type: 'tool_result',
@@ -112,5 +113,18 @@ describe('agentTimelineModel', () => {
     )
     expect(model.steps).toHaveLength(1)
     expect(model.streamingMessage).toBe('A')
+  })
+
+  it('deriveAgentStatusScroll 只露短状态行', () => {
+    const model = buildAgentTimelineModel([
+      ev({ type: 'status', at: 1, payload: { decision: '正在校验上下文' } }),
+      ev({ type: 'tool_call', at: 2, payload: { name: 'company.fundamentals_refresh', args: {} } }),
+      ev({ type: 'status', at: 3, payload: { decision: '规划下一步…' } }),
+    ])
+    const scroll = deriveAgentStatusScroll(model)
+    expect(scroll.running).toBe(true)
+    expect(scroll.primary).toContain('规划下一步')
+    expect(scroll.secondary.length).toBeGreaterThan(0)
+    expect(scroll.secondary.length).toBeLessThanOrEqual(2)
   })
 })

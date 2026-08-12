@@ -223,9 +223,10 @@ async function runAgentTurnWithinLock(
   }
   const requestMessages: ConversationMessage[] = [...messages, userMessage]
 
+  // 有 onEvent（IPC 已订阅/直推）时不再走全局 emit，避免时间线每条事件翻倍。
   const pushEvent = (event: AgentEvent) => {
-    emitAgentEvent(event)
-    options.onEvent?.(event)
+    if (options.onEvent) options.onEvent(event)
+    else emitAgentEvent(event)
   }
 
   // 桥接保留到 wait_subagent 之后：本轮若启动深挖，progress/delta 继续扇出

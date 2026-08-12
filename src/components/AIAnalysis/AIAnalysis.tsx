@@ -23,12 +23,15 @@ import { prepareRound2MarketMarkdown } from './round2MarketVisualModel'
 import { AppConfirmDialog } from '../shared/AppConfirmDialog'
 import { publishAppToast } from '../shared/appToastBus'
 import { ResearchAuditTrace, type ResearchAuditTraceView } from '../shared/ResearchAuditTrace'
-import { ResearchAgentPanel } from './ResearchAgentPanel'
+import { ResearchAgentPanel, type ResearchAgentTimelineContext } from './ResearchAgentPanel'
+import { DeepResearchTurnView } from './DeepResearchTurnView'
 import { detectResearchAgentIntent } from './researchAgentIntent'
 import {
   buildAgentTimelineModel,
+  deriveAgentStatusScroll,
   type AgentTimelineEvent,
 } from './agentTimelineModel'
+import { AgentStatusScroll } from './AgentStatusScroll'
 
 /** 探测 preload 是否暴露 agentTurn；有则走 Agent 主路径。 */
 function isAgentTurnAvailable(): boolean {
@@ -472,6 +475,10 @@ export function AIAnalysis() {
   const [agentOpenSignal, setAgentOpenSignal] = useState(0)
   const [preferredAgentQuestion, setPreferredAgentQuestion] = useState<string | null>(null)
   const [sessionAgentBusy, setSessionAgentBusy] = useState(false)
+  const [researchAgentTimeline, setResearchAgentTimeline] = useState<ResearchAgentTimelineContext | null>(null)
+  const handleResearchAgentTimeline = useCallback((ctx: ResearchAgentTimelineContext | null) => {
+    setResearchAgentTimeline(ctx)
+  }, [])
   const [agentEvents, setAgentEvents] = useState<AgentTimelineEvent[]>([])
   const [agentRequestId, setAgentRequestId] = useState<string | null>(null)
   const [confirmingHitl, setConfirmingHitl] = useState(false)
@@ -481,6 +488,10 @@ export function AIAnalysis() {
   const agentTimeline = useMemo(
     () => buildAgentTimelineModel(agentEvents, agentRequestId ? { requestId: agentRequestId } : {}),
     [agentEvents, agentRequestId],
+  )
+  const agentStatusScroll = useMemo(
+    () => deriveAgentStatusScroll(agentTimeline),
+    [agentTimeline],
   )
 
   const insight = useMemo(() => deriveInsight(detail), [detail])
@@ -1581,24 +1592,12 @@ export function AIAnalysis() {
                         )}
                         {sendingFollowUp && !followUpDraft && <div className="text-xs text-slate-400">思考中...</div>}
                         {agentPathEnabled && agentTimeline.steps.length > 0 && (
-                          <div data-testid="agent-timeline" className="mt-3 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50/80 p-2 dark:border-slate-700 dark:bg-slate-950/50">
-                            <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">Agent 工作台</div>
-                            {agentTimeline.networkDisabledHint && (
-                              <div data-testid="agent-network-hint" className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
-                                {agentTimeline.networkDisabledHint}
-                              </div>
-                            )}
-                            {agentTimeline.steps.filter((s) => s.kind === 'plan' || s.kind === 'status' || s.kind === 'tool' || s.kind === 'hitl').slice(-12).map((step) => (
-                              <details key={step.id} className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-900" open={!step.collapsedByDefault}>
-                                <summary className={`cursor-pointer font-medium ${
-                                  step.tone === 'danger' ? 'text-red-700 dark:text-red-300'
-                                    : step.tone === 'warning' ? 'text-amber-700 dark:text-amber-300'
-                                      : step.tone === 'success' ? 'text-emerald-700 dark:text-emerald-300'
-                                        : 'text-slate-700 dark:text-slate-200'
-                                }`}>{step.title}</summary>
-                                {step.detail && <div className="mt-1 whitespace-pre-wrap text-slate-600 dark:text-slate-300">{step.detail}</div>}
-                              </details>
-                            ))}
+                          <div className="mt-2 space-y-1.5">
+                            <AgentStatusScroll
+                              scroll={agentStatusScroll}
+                              steps={agentTimeline.steps}
+                              networkDisabledHint={agentTimeline.networkDisabledHint}
+                            />
                             {agentTimeline.pendingHitl?.hitl && (
                               <div data-testid="agent-hitl-bar" className="flex flex-wrap items-center gap-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-800 dark:bg-amber-950/40">
                                 <span className="text-[11px] text-amber-950 dark:text-amber-100">{agentTimeline.pendingHitl.detail || '需要确认写操作'}</span>
@@ -1647,6 +1646,28 @@ export function AIAnalysis() {
                       }}
                     />
                   )}
+                  {detail.discussion && researchAgentTimeline && researchAgentTimeline.runs.length > 0 && (
+                    <div data-testid="deep-research-timeline" className="space-y-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800">
+                      {researchAgentTimeline.error && (
+                        <div role="alert" className="border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+                          {researchAgentTimeline.error}
+                        </div>
+                      )}
+                      {[...researchAgentTimeline.runs].reverse().map((run) => (
+                        <DeepResearchTurnView
+                          key={run.id}
+                          run={run}
+                          detail={researchAgentTimeline.detail?.run.id === run.id ? researchAgentTimeline.detail : null}
+                          liveProgress={researchAgentTimeline.liveProgress}
+                          streamDraft={researchAgentTimeline.streamDraft}
+                          busy={researchAgentTimeline.busy}
+                          onResume={() => researchAgentTimeline.onResume(run.id)}
+                          onCancel={() => researchAgentTimeline.onCancel(run.id)}
+                          onStartReview={() => researchAgentTimeline.onStartReview(run.id)}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </section>
               )}
             </div>
@@ -1657,6 +1678,7 @@ export function AIAnalysis() {
                 draftQuestion={followUpInput}
                 preferredQuestion={preferredAgentQuestion}
                 openSignal={agentOpenSignal}
+                onTimelineContextChange={handleResearchAgentTimeline}
                 contextHints={{
                   stockLabels: insight.candidateStocks.map((stock) => (
                     stock.name ? `${stock.name}(${stock.code})` : stock.code

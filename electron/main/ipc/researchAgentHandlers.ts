@@ -78,11 +78,12 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
     console.info(`[ResearchAgent] paused ${recovery.count} expired run(s) at startup`)
   }
 
-  // 绑定 Agent Hub research.deep_start → 既有 startRun（不改租约语义）
+  // 绑定 Agent Hub research.deep_start → 既有 start（不改租约语义）
+  // Agent turn 已持 discussionSessionLock，必须用 startAssumingSessionLockHeld，禁止再抢锁死锁。
   try {
     getAgentToolRegistry()
     setResearchDeepStartRunner(async (input) => {
-      const started = await requireManager().start({
+      const started = requireManager().startAssumingSessionLockHeld({
         requestId: input.requestId,
         sessionId: input.sessionId,
         question: input.question,

@@ -110,6 +110,29 @@ export interface ExternalMcpCallToolResult {
   toolName: string
 }
 
+const MCP_IS_ERROR_MESSAGE_MAX = 300
+
+/** 从 MCP callTool 结果抽取 isError 可读摘要（单测可直接调用）。 */
+export function formatMcpToolIsErrorMessage(result: unknown, maxLen = MCP_IS_ERROR_MESSAGE_MAX): string {
+  const chunks: string[] = []
+  if (result && typeof result === 'object') {
+    const content = (result as { content?: unknown }).content
+    if (Array.isArray(content)) {
+      for (const item of content) {
+        if (!item || typeof item !== 'object') continue
+        const text = (item as { text?: unknown }).text
+        if (typeof text === 'string' && text.trim()) chunks.push(text.trim())
+      }
+    }
+    const topText = (result as { text?: unknown }).text
+    if (typeof topText === 'string' && topText.trim()) chunks.push(topText.trim())
+  }
+  const joined = chunks.join(' ').replace(/\s+/g, ' ').trim()
+  if (!joined) return 'MCP tool 返回 isError'
+  const clipped = joined.length > maxLen ? `${joined.slice(0, maxLen)}…` : joined
+  return `MCP tool 返回 isError：${clipped}`
+}
+
 /**
  * 主进程调用已配置服务器上的单个 MCP tool（短连：connect → callTool → close）。
  * Renderer 禁止直连；禁用服务器仍可在本函数层被上层白名单挡住。
@@ -148,7 +171,7 @@ export async function callExternalMcpTool(
       serverId,
       toolName: name,
       ...(isError
-        ? { error: { code: 'TOOL_ERROR', message: 'MCP tool 返回 isError' } }
+        ? { error: { code: 'TOOL_ERROR', message: formatMcpToolIsErrorMessage(result) } }
         : {}),
     }
   } catch (error) {

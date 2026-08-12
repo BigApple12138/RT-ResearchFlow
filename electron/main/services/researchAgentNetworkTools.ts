@@ -2,7 +2,13 @@ import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import * as cheerio from 'cheerio'
 import { PDFParse } from 'pdf-parse'
+import { getDataSourceConfig } from '../database/dataSourceRepository'
 import { getResearchWebSearchConfig } from '../database/industryResearchGenerationRepository'
+import {
+  AppWebSearchError,
+  isAppWebSearchConfigured,
+  runAppWebSearch,
+} from './appWebSearchGateway'
 import type {
   ResearchAgentRunRow,
   ResearchAgentToolCallRow,
@@ -21,6 +27,14 @@ import {
   type ResearchAgentNetworkRequest,
   type ResearchAgentNetworkResponse,
 } from './researchAgentNetworkPolicy'
+import {
+  fetchFinancialExpressRows,
+  fetchFinancialForecastRows,
+  fetchFinancialDisclosureDateRows,
+  fetchFinancialIndicatorRows,
+  fetchIncomeFinancialRows,
+  type TushareFinancialRow,
+} from './tushareService'
 
 export const RESEARCH_AGENT_TOOL_REGISTRY_VERSION = 'research-agent-tools.v6'
 
@@ -66,6 +80,52 @@ export interface ResearchAgentNetworkToolDependencies {
   resolveSearchCredentials?: (db: Database.Database) => ResearchAgentSearchCredentials | null
   /** Task M2：mcp.invoke 注入点（单测 / 主进程默认走 externalMcpClientService） */
   mcp?: import('./researchAgentMcpTool').ResearchAgentMcpInvokeDeps
+  isWebSearchConfigured?: (db: Database.Database) => boolean
+  runWebSearch?: (
+    db: Database.Database,
+    input: { query: string; maxResults: number; timeoutMs?: number },
+  ) => Promise<Array<{ title: string; url: string; snippet: string | null; publishedAt?: string | null; providerId?: string }>>
+  resolveTushareToken?: (db: Database.Database) => string | null
+  fetchTushareDisclosureRows?: (
+    token: string,
+    tsCode: string,
+    asOf: string,
+  ) => Promise<StructuredDisclosureRow[]>
+  fetchTushareFundamentalsReports?: (
+    token: string,
+    tsCode: string,
+    asOf: string,
+  ) => Promise<FundamentalsReportRow[]>
+}
+
+export interface StructuredDisclosureRow {
+  dataset: 'forecast' | 'express' | 'disclosure_date'
+  tsCode: string
+  annDate: string | null
+  endDate: string
+  summary: string
+  values: Record<string, string | number | null>
+}
+
+export interface FundamentalsReportRow {
+  reportDate: string
+  reportType: string | null
+  noticeDate: string | null
+  currency: string | null
+  totalRevenue: number | null
+  parentNetProfit: number | null
+  deductedNetProfit: number | null
+  revenueYoy: number | null
+  parentNetProfitYoy: number | null
+  deductedNetProfitYoy: number | null
+  weightedRoe: number | null
+  grossMargin: number | null
+  netMargin: number | null
+  debtRatio: number | null
+  operatingCashFlow: number | null
+  basicEps: number | null
+  bookValuePerShare: number | null
+  source?: string
 }
 
 export interface ExecuteResearchAgentNetworkToolInput {
@@ -122,6 +182,22 @@ const OFFICIAL_DOMAIN_ROOTS = [
   'szse.cn',
 ] as const
 
+/** 官方披露网页检索用的短 site 域（避免超长 OR 触发 MCP isError） */
+export const OFFICIAL_DISCLOSURE_WEB_DOMAIN_ROOTS = [
+  'cninfo.com.cn',
+  'sse.com.cn',
+  'szse.cn',
+  'bse.cn',
+] as const
+
+export function buildOfficialDisclosureWebQuery(query: string, companyDomains: Iterable<string> = []): string {
+  const domains = [...new Set([
+    ...OFFICIAL_DISCLOSURE_WEB_DOMAIN_ROOTS,
+    ...[...companyDomains].map((domain) => domain.trim().toLowerCase()).filter(Boolean),
+  ])].sort()
+  return `${query} (${domains.map((domain) => `site:${domain}`).join(' OR ')})`
+}
+
 const SEARCH_TOOL_IDS = new Set<ResearchAgentNetworkToolId>([
   'web.search',
   'official.disclosure_search',
@@ -176,7 +252,7 @@ export const RESEARCH_AGENT_NETWORK_TOOL_DEFINITIONS = [
   {
     id: 'official.disclosure_search',
     externalName: 'official_disclosure_search',
-    description: '在交易所、监管、政府或已知公司官网中发现正式披露候选；候选页本身不是正文证据。',
+    description: '在交易所/巨潮等官方域发现正式披露URL候选；若已配置Tushare且有股票主体，可并行返回预告/快报等结构化事实（结构化行不是candidateId，不能当正文抓取）。',
     scope: 'research.read',
     asOf: 'supported',
     maxItems: 8,
@@ -199,7 +275,7 @@ export const RESEARCH_AGENT_NETWORK_TOOL_DEFINITIONS = [
   {
     id: 'company.fundamentals_refresh',
     externalName: 'company_fundamentals_refresh',
-    description: '通过固定东方财富公开接口按需取得已确认A股主体的结构化主要财务事实，不遍历其他证券。',
+    description: '按需取得已确认A股主体的结构化主要财务事实：已启用Tushare时优先，否则降级东财公开接口；不替代正式披露正文。',
     scope: 'market.read',
     asOf: 'supported',
     maxItems: 8,
@@ -289,6 +365,13 @@ export function resolveConfiguredResearchAgentSearch(
 ): ResearchAgentSearchCredentials | null {
   const row = getResearchWebSearchConfig(db)
   if (!row || row.enabled !== 1 || !row.api_key_encrypted) return null
+  if (
+    row.provider_id !== 'tavily'
+    && row.provider_id !== 'bing'
+    && row.provider_id !== 'custom_openai_compatible_search'
+  ) {
+    return null
+  }
   const apiKey = decryptApiKey(row.api_key_encrypted)
   if (!apiKey) return null
   return { providerId: row.provider_id, apiKey, baseUrl: row.base_url }
@@ -306,22 +389,327 @@ async function executeSearch(
   if (stockCode && !input.subjects.some((subject) => subject.kind === 'stock' && subject.tsCode === stockCode)) {
     throw new ResearchAgentNetworkToolError('SUBJECT_DENIED', '正式披露搜索只能使用已确认股票主体')
   }
-  const credentials = (input.dependencies?.resolveSearchCredentials ?? resolveConfiguredResearchAgentSearch)(input.db)
-  if (!credentials) {
-    throw new ResearchAgentNetworkToolError('WEB_SEARCH_NOT_CONFIGURED', '尚未配置可用的联网搜索服务')
-  }
+  const credentialsResolver = input.dependencies?.resolveSearchCredentials
   const maxResults = boundedInteger(input.toolInput.maxResults, 6, 1, 8)
   const companyDomains = knownCompanyDomains(input.db, input.subjects)
-  const officialSearchDomains = [...new Set([...OFFICIAL_DOMAIN_ROOTS, ...companyDomains])].sort()
-  const effectiveQuery = officialOnly
-    ? `${query} (${officialSearchDomains.map((domain) => `site:${domain}`).join(' OR ')})`
-    : query
-  const request = buildSearchRequest(credentials, effectiveQuery, maxResults)
-  const response = await network(input, request)
-  assertSuccessfulResponse(response, 'WEB_SEARCH_PROVIDER_FAILED')
-  const hits = parseSearchResponse(credentials.providerId, response.body)
+  const tsCodeForTushare = resolveDisclosureStockTsCode(input.subjects, stockCode, query)
+  const probes = buildDisclosureProbes(input, tsCodeForTushare)
+
+  if (!officialOnly) {
+    return executePlainWebSearch(input, {
+      query,
+      maxResults,
+      companyDomains,
+      credentialsResolver,
+    })
+  }
+
+  const sources: ResearchFactSource[] = []
+  const warnings: string[] = [
+    '搜索标题、摘要与URL仅用于发现候选，不计为正文证据。',
+    'Tushare 结构化预告/快报不替代公司、交易所或监管正式披露正文。',
+  ]
+  const channelErrors: string[] = []
+  let candidates: SearchCandidate[] = []
+  let structuredDisclosures: StructuredDisclosureRow[] = []
+  let providerId = 'none'
+  let networkEnvelope: ResearchAgentNetworkResponse['envelope'] | null = null
+  let webAttempted = false
+  let tushareAttempted = false
+
+  const webConfigured = probes.webSearch.status === 'configured' || Boolean(credentialsResolver?.(input.db))
+  if (webConfigured) {
+    webAttempted = true
+    try {
+      const web = await runOfficialWebSearchChannel(input, {
+        query,
+        maxResults,
+        companyDomains,
+        credentialsResolver,
+      })
+      candidates = web.candidates
+      providerId = web.providerId
+      networkEnvelope = web.networkEnvelope
+      warnings.push(...web.warnings)
+      sources.push({
+        id: `search.${providerId}`,
+        status: candidates.length > 0 ? 'ready' : 'missing',
+        factDate: input.run.as_of,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      channelErrors.push(`网页检索：${message}`)
+      sources.push({
+        id: 'search.web',
+        status: 'failed',
+        factDate: null,
+      })
+      warnings.push(`官方域网页检索失败：${message.slice(0, 200)}`)
+    }
+  } else {
+    sources.push({ id: 'search.web', status: 'missing', factDate: null })
+    warnings.push('未配置本应用联网搜索，已跳过网页披露检索。')
+  }
+
+  const tushareToken = (input.dependencies?.resolveTushareToken ?? defaultResolveTushareToken)(input.db)
+  if (tushareToken && tsCodeForTushare) {
+    tushareAttempted = true
+    try {
+      const fetchRows = input.dependencies?.fetchTushareDisclosureRows ?? defaultFetchTushareDisclosureRows
+      structuredDisclosures = await fetchRows(tushareToken, tsCodeForTushare, input.run.as_of)
+      structuredDisclosures = structuredDisclosures.slice(0, Math.max(maxResults, 8))
+      sources.push({
+        id: 'tushare.disclosure',
+        status: structuredDisclosures.length > 0 ? 'ready' : 'missing',
+        factDate: structuredDisclosures.map((row) => row.annDate ?? row.endDate).filter(Boolean).sort().at(-1) ?? null,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      channelErrors.push(`Tushare：${message}`)
+      sources.push({ id: 'tushare.disclosure', status: 'failed', factDate: null })
+      warnings.push(`Tushare 披露结构化取数失败：${message.slice(0, 200)}`)
+    }
+  } else if (!tushareToken) {
+    sources.push({ id: 'tushare.disclosure', status: 'missing', factDate: null })
+    warnings.push('未启用 Tushare，已跳过业绩预告/快报结构化取数。')
+  } else {
+    sources.push({ id: 'tushare.disclosure', status: 'missing', factDate: null })
+    warnings.push('缺少可绑定的股票主体，已跳过 Tushare 结构化取数。')
+  }
+
+  const hasData = candidates.length > 0 || structuredDisclosures.length > 0
+  if (!webAttempted && !tushareAttempted) {
+    throw new ResearchAgentNetworkToolError(
+      'WEB_SEARCH_NOT_CONFIGURED',
+      '尚未配置可用的联网搜索或 Tushare（配置中心 → Agent / 数据源）',
+    )
+  }
+  if (!hasData) {
+    const attempted = (webAttempted ? 1 : 0) + (tushareAttempted ? 1 : 0)
+    if (channelErrors.length > 0 && channelErrors.length >= attempted) {
+      throw new ResearchAgentNetworkToolError(
+        'WEB_SEARCH_PROVIDER_FAILED',
+        channelErrors.join('；').slice(0, 500),
+      )
+    }
+  }
+
+  if (candidates.length === 0 && structuredDisclosures.length === 0) {
+    warnings.push('搜索没有返回符合当前运行边界的候选或结构化披露。')
+  } else if (candidates.length === 0 && structuredDisclosures.length > 0) {
+    warnings.push('网页未返回官方URL候选，但已取得 Tushare 结构化披露事实。')
+  }
+
+  const status: ResearchFactToolStatus = hasData ? 'ready' : 'missing'
+  return envelope('official.disclosure_search', status, input, sources, {
+    available: candidates.length + structuredDisclosures.length,
+    required: 1,
+    unit: 'candidates',
+  }, warnings, {
+    query,
+    providerId,
+    probes,
+    sources: sources.map((source) => ({ id: source.id, status: source.status })),
+    candidates,
+    structuredDisclosures,
+    networkEnvelope,
+  })
+}
+
+async function executePlainWebSearch(
+  input: ExecuteResearchAgentNetworkToolInput,
+  options: {
+    query: string
+    maxResults: number
+    companyDomains: Set<string>
+    credentialsResolver?: ResearchAgentNetworkToolDependencies['resolveSearchCredentials']
+  },
+): Promise<ResearchAgentNetworkToolEnvelope> {
+  const { query, maxResults, companyDomains, credentialsResolver } = options
+  let hits: SearchHit[]
+  let providerId: string
+  let networkEnvelope: ResearchAgentNetworkResponse['envelope'] | null = null
+
+  if (credentialsResolver) {
+    const credentials = credentialsResolver(input.db)
+    if (!credentials) {
+      throw new ResearchAgentNetworkToolError(
+        'WEB_SEARCH_NOT_CONFIGURED',
+        '尚未配置可用的联网搜索服务（配置中心 → Agent → 本应用联网搜索）',
+      )
+    }
+    const request = buildSearchRequest(credentials, query, maxResults)
+    const response = await network(input, request)
+    assertSuccessfulResponse(response, 'WEB_SEARCH_PROVIDER_FAILED')
+    hits = parseSearchResponse(credentials.providerId, response.body)
+    providerId = credentials.providerId
+    networkEnvelope = response.envelope
+  } else {
+    try {
+      const runSearch = input.dependencies?.runWebSearch ?? defaultRunWebSearch
+      const appHits = await runSearch(input.db, {
+        query,
+        maxResults,
+        timeoutMs: 15_000,
+      })
+      hits = appHits.map((hit) => ({
+        title: hit.title,
+        url: hit.url,
+        snippet: hit.snippet,
+        publishedAt: hit.publishedAt ?? null,
+      }))
+      providerId = appHits[0]?.providerId
+        ?? getResearchWebSearchConfig(input.db)?.provider_id
+        ?? 'app_web_search'
+    } catch (error) {
+      const code = error instanceof AppWebSearchError ? error.code : 'WEB_SEARCH_PROVIDER_FAILED'
+      const message = error instanceof Error ? error.message : String(error)
+      throw new ResearchAgentNetworkToolError(code, message)
+    }
+  }
+
+  const candidates = buildSearchCandidates(input, hits, companyDomains, false, query, maxResults)
+  const warnings = [
+    '搜索标题、摘要与URL仅用于发现候选，不计为正文证据。',
+    ...(hits.length > candidates.length ? ['部分候选因来源、截点、URL或排除策略被过滤。'] : []),
+    ...(candidates.length === 0 ? ['搜索没有返回符合当前运行边界的候选。'] : []),
+  ]
+  return envelope('web.search', candidates.length > 0 ? 'ready' : 'missing', input, [
+    { id: `search.${providerId}`, status: candidates.length > 0 ? 'ready' : 'missing', factDate: input.run.as_of },
+  ], {
+    available: candidates.length,
+    required: 1,
+    unit: 'candidates',
+  }, warnings, {
+    query,
+    providerId,
+    candidates,
+    networkEnvelope,
+  })
+}
+
+async function runOfficialWebSearchChannel(
+  input: ExecuteResearchAgentNetworkToolInput,
+  options: {
+    query: string
+    maxResults: number
+    companyDomains: Set<string>
+    credentialsResolver?: ResearchAgentNetworkToolDependencies['resolveSearchCredentials']
+  },
+): Promise<{
+  candidates: SearchCandidate[]
+  providerId: string
+  networkEnvelope: ResearchAgentNetworkResponse['envelope'] | null
+  warnings: string[]
+}> {
+  const shortQuery = buildOfficialDisclosureWebQuery(options.query, options.companyDomains)
+  const warnings: string[] = []
+  try {
+    const first = await runWebSearchHits(input, shortQuery, options.maxResults, options.credentialsResolver)
+    const candidates = buildSearchCandidates(
+      input,
+      first.hits,
+      options.companyDomains,
+      true,
+      options.query,
+      options.maxResults,
+    )
+    if (first.hits.length > candidates.length) {
+      warnings.push('部分候选因来源、截点、URL或排除策略被过滤。')
+    }
+    return {
+      candidates,
+      providerId: first.providerId,
+      networkEnvelope: first.networkEnvelope,
+      warnings,
+    }
+  } catch (primaryError) {
+    const fallback = await runWebSearchHits(input, options.query, options.maxResults, options.credentialsResolver)
+    const candidates = buildSearchCandidates(
+      input,
+      fallback.hits,
+      options.companyDomains,
+      true,
+      options.query,
+      options.maxResults,
+    )
+    warnings.push('官方域定向检索失败，已降级为通用检索并过滤官方来源。')
+    warnings.push(`定向失败原因：${(primaryError instanceof Error ? primaryError.message : String(primaryError)).slice(0, 200)}`)
+    if (fallback.hits.length > candidates.length) {
+      warnings.push('部分候选因来源、截点、URL或排除策略被过滤。')
+    }
+    return {
+      candidates,
+      providerId: fallback.providerId,
+      networkEnvelope: fallback.networkEnvelope,
+      warnings,
+    }
+  }
+}
+
+async function runWebSearchHits(
+  input: ExecuteResearchAgentNetworkToolInput,
+  effectiveQuery: string,
+  maxResults: number,
+  credentialsResolver?: ResearchAgentNetworkToolDependencies['resolveSearchCredentials'],
+): Promise<{
+  hits: SearchHit[]
+  providerId: string
+  networkEnvelope: ResearchAgentNetworkResponse['envelope'] | null
+}> {
+  if (credentialsResolver) {
+    const credentials = credentialsResolver(input.db)
+    if (!credentials) {
+      throw new ResearchAgentNetworkToolError(
+        'WEB_SEARCH_NOT_CONFIGURED',
+        '尚未配置可用的联网搜索服务（配置中心 → Agent → 本应用联网搜索）',
+      )
+    }
+    const request = buildSearchRequest(credentials, effectiveQuery, maxResults)
+    const response = await network(input, request)
+    assertSuccessfulResponse(response, 'WEB_SEARCH_PROVIDER_FAILED')
+    return {
+      hits: parseSearchResponse(credentials.providerId, response.body),
+      providerId: credentials.providerId,
+      networkEnvelope: response.envelope,
+    }
+  }
+  try {
+    const runSearch = input.dependencies?.runWebSearch ?? defaultRunWebSearch
+    const appHits = await runSearch(input.db, {
+      query: effectiveQuery,
+      maxResults,
+      timeoutMs: 15_000,
+    })
+    return {
+      hits: appHits.map((hit) => ({
+        title: hit.title,
+        url: hit.url,
+        snippet: hit.snippet,
+        publishedAt: hit.publishedAt ?? null,
+      })),
+      providerId: appHits[0]?.providerId
+        ?? getResearchWebSearchConfig(input.db)?.provider_id
+        ?? 'app_web_search',
+      networkEnvelope: null,
+    }
+  } catch (error) {
+    const code = error instanceof AppWebSearchError ? error.code : 'WEB_SEARCH_PROVIDER_FAILED'
+    const message = error instanceof Error ? error.message : String(error)
+    throw new ResearchAgentNetworkToolError(code, message)
+  }
+}
+
+function buildSearchCandidates(
+  input: ExecuteResearchAgentNetworkToolInput,
+  hits: SearchHit[],
+  companyDomains: Set<string>,
+  officialOnly: boolean,
+  query: string,
+  maxResults: number,
+): SearchCandidate[] {
   const excluded = excludedUrlKeys(input.run.context_snapshot_json)
-  const candidates = rankSearchCandidates(uniqueByUrl(hits).flatMap((hit): SearchCandidate[] => {
+  return rankSearchCandidates(uniqueByUrl(hits).flatMap((hit): SearchCandidate[] => {
     const normalizedUrl = normalizePublicUrl(hit.url)
     if (!normalizedUrl || excluded.has(urlKey(normalizedUrl))) return []
     const domain = new URL(normalizedUrl).hostname.toLowerCase()
@@ -340,24 +728,174 @@ async function executeSearch(
       sourceClass,
     }]
   }), query, input.subjects).slice(0, maxResults)
-  const toolId = officialOnly ? 'official.disclosure_search' : 'web.search'
-  const warnings = [
-    '搜索标题、摘要与URL仅用于发现候选，不计为正文证据。',
-    ...(hits.length > candidates.length ? ['部分候选因来源、截点、URL或排除策略被过滤。'] : []),
-    ...(candidates.length === 0 ? ['搜索没有返回符合当前运行边界的候选。'] : []),
-  ]
-  return envelope(toolId, candidates.length > 0 ? 'ready' : 'missing', input, [
-    { id: `search.${credentials.providerId}`, status: candidates.length > 0 ? 'ready' : 'missing', factDate: input.run.as_of },
-  ], {
-    available: candidates.length,
-    required: 1,
-    unit: 'candidates',
-  }, warnings, {
-    query,
-    providerId: credentials.providerId,
-    candidates,
-    networkEnvelope: response.envelope,
-  })
+}
+
+function buildDisclosureProbes(
+  input: ExecuteResearchAgentNetworkToolInput,
+  tsCode: string | null,
+): {
+  webSearch: { status: 'configured' | 'unavailable' }
+  tushare: { status: 'configured' | 'unavailable' }
+  stockSubject: { status: 'configured' | 'skipped'; tsCode?: string }
+} {
+  const webConfigured = resolveWebSearchConfigured(input)
+  const tushareToken = (input.dependencies?.resolveTushareToken ?? defaultResolveTushareToken)(input.db)
+  return {
+    webSearch: { status: webConfigured ? 'configured' : 'unavailable' },
+    tushare: { status: tushareToken ? 'configured' : 'unavailable' },
+    stockSubject: tsCode
+      ? { status: 'configured', tsCode }
+      : { status: 'skipped' },
+  }
+}
+
+function resolveWebSearchConfigured(input: ExecuteResearchAgentNetworkToolInput): boolean {
+  if (input.dependencies?.isWebSearchConfigured) {
+    return input.dependencies.isWebSearchConfigured(input.db)
+  }
+  if (input.dependencies?.resolveSearchCredentials?.(input.db)) return true
+  try {
+    return isAppWebSearchConfigured(input.db)
+  } catch {
+    return false
+  }
+}
+
+function resolveDisclosureStockTsCode(
+  subjects: readonly ResearchAgentNetworkSubject[],
+  stockCode: string | null,
+  query: string,
+): string | null {
+  if (stockCode) return stockCode
+  const stocks = subjects.filter((subject): subject is Extract<ResearchAgentNetworkSubject, { kind: 'stock' }> => subject.kind === 'stock')
+  if (stocks.length === 1) return stocks[0].tsCode
+  const normalizedQuery = query.toLowerCase().replace(/\s+/g, '')
+  for (const stock of stocks) {
+    if (normalizedQuery.includes(stock.tsCode.slice(0, 6).toLowerCase())) return stock.tsCode
+  }
+  return null
+}
+
+function defaultResolveTushareToken(db: Database.Database): string | null {
+  try {
+    const cfg = getDataSourceConfig(db)
+    if (cfg.tushareEnabled !== 1 || !cfg.tushareTokenEncrypted) return null
+    return decryptApiKey(cfg.tushareTokenEncrypted) || null
+  } catch {
+    return null
+  }
+}
+
+async function defaultRunWebSearch(
+  db: Database.Database,
+  input: { query: string; maxResults: number; timeoutMs?: number },
+) {
+  return runAppWebSearch(db, input)
+}
+
+async function defaultFetchTushareDisclosureRows(
+  token: string,
+  tsCode: string,
+  asOf: string,
+): Promise<StructuredDisclosureRow[]> {
+  const [forecast, express, disclosureDates] = await Promise.all([
+    fetchFinancialForecastRows(token, tsCode),
+    fetchFinancialExpressRows(token, tsCode),
+    fetchFinancialDisclosureDateRows(token, tsCode),
+  ])
+  const rows: StructuredDisclosureRow[] = []
+  for (const row of forecast) {
+    if (!isFinancialRowWithinAsOf(row, asOf)) continue
+    rows.push({
+      dataset: 'forecast',
+      tsCode: row.tsCode,
+      annDate: compactDate(row.annDate),
+      endDate: row.endDate,
+      summary: summarizeForecastRow(row),
+      values: row.values,
+    })
+  }
+  for (const row of express) {
+    if (!isFinancialRowWithinAsOf(row, asOf)) continue
+    rows.push({
+      dataset: 'express',
+      tsCode: row.tsCode,
+      annDate: compactDate(row.annDate),
+      endDate: row.endDate,
+      summary: summarizeExpressRow(row),
+      values: row.values,
+    })
+  }
+  for (const row of disclosureDates) {
+    if (!isFinancialRowWithinAsOf(row, asOf)) continue
+    rows.push({
+      dataset: 'disclosure_date',
+      tsCode: row.tsCode,
+      annDate: compactDate(row.annDate),
+      endDate: row.endDate,
+      summary: `披露计划 end=${row.endDate} pre=${String(row.values.pre_date ?? '')} actual=${String(row.values.actual_date ?? '')}`,
+      values: row.values,
+    })
+  }
+  return rows
+}
+
+function isFinancialRowWithinAsOf(row: TushareFinancialRow, asOf: string): boolean {
+  const ann = compactDate(row.annDate) ?? compactDate(row.fAnnDate)
+  if (ann && ann > asOf) return false
+  const end = compactDate(row.endDate)
+  if (end && end > asOf) return false
+  return true
+}
+
+function summarizeForecastRow(row: TushareFinancialRow): string {
+  const type = row.values.type ?? '业绩预告'
+  const min = row.values.p_change_min
+  const max = row.values.p_change_max
+  return `${String(type)} end=${row.endDate} 净利同比[${min ?? '?'},${max ?? '?'}]%`
+}
+
+function summarizeExpressRow(row: TushareFinancialRow): string {
+  return `业绩快报 end=${row.endDate} 营收=${row.values.revenue ?? '?'} 净利=${row.values.n_income ?? '?'}`
+}
+
+async function defaultFetchTushareFundamentalsReports(
+  token: string,
+  tsCode: string,
+  asOf: string,
+): Promise<FundamentalsReportRow[]> {
+  const [indicators, incomes] = await Promise.all([
+    fetchFinancialIndicatorRows(token, tsCode),
+    fetchIncomeFinancialRows(token, tsCode),
+  ])
+  const incomeByEnd = new Map(incomes.map((row) => [row.endDate, row]))
+  return indicators.flatMap((row) => {
+    if (!isFinancialRowWithinAsOf(row, asOf)) return []
+    const income = incomeByEnd.get(row.endDate)
+    const noticeDate = compactDate(row.annDate) ?? compactDate(row.fAnnDate)
+    const reportDate = compactDate(row.endDate)
+    if (!reportDate) return []
+    return [{
+      reportDate,
+      reportType: row.reportType,
+      noticeDate,
+      currency: 'CNY',
+      totalRevenue: finiteNumber(income?.values.total_revenue ?? income?.values.revenue),
+      parentNetProfit: finiteNumber(income?.values.n_income_attr_p),
+      deductedNetProfit: finiteNumber(row.values.profit_dedt),
+      revenueYoy: null,
+      parentNetProfitYoy: null,
+      deductedNetProfitYoy: null,
+      weightedRoe: finiteNumber(row.values.roe),
+      grossMargin: finiteNumber(row.values.grossprofit_margin),
+      netMargin: finiteNumber(row.values.netprofit_margin),
+      debtRatio: finiteNumber(row.values.debt_to_assets),
+      operatingCashFlow: null,
+      basicEps: finiteNumber(row.values.eps),
+      bookValuePerShare: finiteNumber(row.values.bps),
+      source: 'tushare',
+    }]
+  }).slice(0, 8)
 }
 
 async function executeDocumentFetch(
@@ -552,6 +1090,60 @@ async function executeFundamentalsRefresh(
   input: ExecuteResearchAgentNetworkToolInput,
 ): Promise<ResearchAgentNetworkToolEnvelope> {
   const normalized = requireAllowedStock(input)
+  const tushareToken = (input.dependencies?.resolveTushareToken ?? defaultResolveTushareToken)(input.db)
+  const probes = {
+    tushare: { status: tushareToken ? 'configured' as const : 'unavailable' as const },
+    stockSubject: { status: 'configured' as const, tsCode: normalized },
+  }
+  const warnings: string[] = [
+    '结构化公开财务事实不替代公司、交易所或监管正式披露正文。',
+  ]
+
+  if (tushareToken) {
+    try {
+      const fetchReports = input.dependencies?.fetchTushareFundamentalsReports ?? defaultFetchTushareFundamentalsReports
+      const rows = await fetchReports(tushareToken, normalized, input.run.as_of)
+      if (rows.length > 0) {
+        const factDate = rows.map((row) => row.noticeDate ?? row.reportDate).sort().at(-1) ?? null
+        return envelope('company.fundamentals_refresh', 'ready', input, [{
+          id: 'tushare.fina_indicator',
+          status: 'ready',
+          factDate,
+        }], {
+          available: rows.length,
+          required: 1,
+          unit: 'reports',
+        }, warnings, {
+          stockCode: normalized.slice(0, 6),
+          tsCode: normalized,
+          stockName: null,
+          reports: rows,
+          probes,
+          providerId: 'tushare',
+          fetchedAt: input.now,
+        })
+      }
+      warnings.push('Tushare 未返回截点内有效财务报告，已尝试降级东财公开接口。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      warnings.push(`Tushare 财务刷新失败，已降级东财：${message.slice(0, 200)}`)
+    }
+  } else {
+    warnings.push('未启用 Tushare，使用东财公开财务接口。')
+  }
+
+  return executeEastmoneyFundamentalsRefresh(input, normalized, probes, warnings)
+}
+
+async function executeEastmoneyFundamentalsRefresh(
+  input: ExecuteResearchAgentNetworkToolInput,
+  normalized: string,
+  probes: {
+    tushare: { status: 'configured' | 'unavailable' }
+    stockSubject: { status: 'configured'; tsCode: string }
+  },
+  warnings: string[],
+): Promise<ResearchAgentNetworkToolEnvelope> {
   const url = new URL('https://datacenter.eastmoney.com/securities/api/data/v1/get')
   url.searchParams.set('reportName', 'RPT_F10_FINANCE_MAINFINADATA')
   url.searchParams.set('columns', 'SECUCODE,SECURITY_NAME_ABBR,REPORT_DATE,REPORT_TYPE,NOTICE_DATE,CURRENCY,TOTALOPERATEREVE,PARENTNETPROFIT,KCFJCXSYJLR,TOTALOPERATEREVETZ,PARENTNETPROFITTZ,KCFJCXSYJLRTZ,ROEJQ,XSMLL,XSJLL,ZCFZL,NETCASH_OPERATE_PK,EPSJB,BPS')
@@ -597,6 +1189,7 @@ async function executeFundamentalsRefresh(
       operatingCashFlow: finiteNumber(row.NETCASH_OPERATE_PK),
       basicEps: finiteNumber(row.EPSJB),
       bookValuePerShare: finiteNumber(row.BPS),
+      source: 'eastmoney',
     }]
   }).slice(0, 8)
   const factDate = rows.map((row) => row.noticeDate ?? row.reportDate).sort().at(-1) ?? null
@@ -608,13 +1201,13 @@ async function executeFundamentalsRefresh(
     available: rows.length,
     required: 1,
     unit: 'reports',
-  }, rows.length > 0 ? [
-    '结构化公开财务事实不替代公司、交易所或监管正式披露正文。',
-  ] : ['公开财务接口没有返回截点内的有效报告。'], {
+  }, rows.length > 0 ? warnings : [...warnings, '公开财务接口没有返回截点内的有效报告。'], {
     stockCode: normalized.slice(0, 6),
     tsCode: normalized,
     stockName: text(record((Array.isArray(result?.data) ? result.data : [])[0])?.SECURITY_NAME_ABBR, 100),
     reports: rows,
+    probes,
+    providerId: 'eastmoney',
     fetchedAt: response.envelope.response.fetchedAt,
     bodySha256: response.envelope.response.bodySha256,
     networkEnvelope: response.envelope,

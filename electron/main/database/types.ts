@@ -71,7 +71,12 @@ export type IndustryResearchFinancialDataset =
   | 'disclosure_date'
   | 'fina_mainbz'
 
-export type ResearchWebSearchProviderId = 'tavily' | 'bing' | 'custom_openai_compatible_search'
+export type ResearchWebSearchProviderId =
+  | 'tavily'
+  | 'bing'
+  | 'custom_openai_compatible_search'
+  | 'external_mcp'
+  | 'builtin_web'
 export type ResearchEvidenceCandidateStatus = 'fetched' | 'partial' | 'failed' | 'confirmed' | 'rejected'
 export type ResearchEvidenceSourceKind =
   | 'web_search'
@@ -378,6 +383,8 @@ export interface ResearchWebSearchConfigRow {
   enabled: number
   api_key_encrypted: Buffer | null
   base_url: string | null
+  mcp_server_id: string | null
+  mcp_tool_name: string | null
   last_validated_at: number | null
   last_error_code: string | null
   updated_at: number

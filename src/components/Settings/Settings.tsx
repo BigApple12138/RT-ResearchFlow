@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 import type { AppSettingsRow } from '../../../electron/main/database/types'
 import { SupplyChainSettingsPanel } from '../SupplyChain/SupplyChainSettingsPanel'
-import { ResearchAccessSettings } from './ResearchAccessSettings'
-import { ExternalMcpSettings } from './ExternalMcpSettings'
 import { PremarketCaptureSettings } from './PremarketCaptureSettings'
 
 const INTERVALS: { value: AppSettingsRow['scanIntervalMinutes']; label: string }[] = [
@@ -215,19 +213,6 @@ export function Settings() {
         </div>
       </section>
 
-      {/* Agent 联网授权（与盘前采集等独立联网开关分离） */}
-      <section className="mb-6 border-t border-gray-100 dark:border-gray-700 pt-6">
-        <h3 className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">AI Agent</h3>
-        <div className="border-y border-slate-100 dark:border-slate-800">
-          <NotificationToggle
-            label="允许 Agent 联网"
-            description="开启后，AI 分析 Agent 可按任务自主调用联网类工具（含深度研究外源取证），并可能产生模型/数据成本，不再逐次询问。关闭时主进程会阻断新的联网调用。本开关不影响盘前采集等其他独立联网设置。"
-            checked={(settings.ai_agent_network_enabled ?? 0) === 1}
-            onChange={(checked) => { void updateSettings({ ai_agent_network_enabled: checked ? 1 : 0 }) }}
-          />
-        </div>
-      </section>
-
       {/* FR-102: 行业动量窗口 */}
       <section className="mb-6">
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -341,10 +326,6 @@ export function Settings() {
           <p className="text-xs text-green-600 mt-2">{clearResult}</p>
         )}
       </section>
-
-      <ExternalMcpSettings />
-
-      <ResearchAccessSettings />
 
       {/* ── 产业链传导分析 ──────────────────────────────────── */}
       <section className="border-t border-gray-200 dark:border-gray-700 pt-5">

@@ -96,6 +96,8 @@ export function saveResearchWebSearchConfig(
     apiKeyEncrypted?: Buffer | null
     clearApiKey?: boolean
     baseUrl?: string | null
+    mcpServerId?: string | null
+    mcpToolName?: string | null
     lastValidatedAt?: number | null
     lastErrorCode?: string | null
   },
@@ -107,17 +109,27 @@ export function saveResearchWebSearchConfig(
     : input.apiKeyEncrypted !== undefined
       ? input.apiKeyEncrypted
       : existing?.api_key_encrypted ?? null
+  const mcpServerId = input.mcpServerId !== undefined
+    ? (input.mcpServerId?.trim() || null)
+    : existing?.mcp_server_id ?? null
+  const mcpToolName = input.mcpToolName !== undefined
+    ? (input.mcpToolName?.trim() || null)
+    : existing?.mcp_tool_name ?? null
   db.prepare(`
     INSERT INTO research_web_search_config (
-      id, provider_id, enabled, api_key_encrypted, base_url, last_validated_at, last_error_code, updated_at
+      id, provider_id, enabled, api_key_encrypted, base_url,
+      mcp_server_id, mcp_tool_name, last_validated_at, last_error_code, updated_at
     ) VALUES (
-      1, @providerId, @enabled, @apiKeyEncrypted, @baseUrl, @lastValidatedAt, @lastErrorCode, @updatedAt
+      1, @providerId, @enabled, @apiKeyEncrypted, @baseUrl,
+      @mcpServerId, @mcpToolName, @lastValidatedAt, @lastErrorCode, @updatedAt
     )
     ON CONFLICT(id) DO UPDATE SET
       provider_id = excluded.provider_id,
       enabled = excluded.enabled,
       api_key_encrypted = excluded.api_key_encrypted,
       base_url = excluded.base_url,
+      mcp_server_id = excluded.mcp_server_id,
+      mcp_tool_name = excluded.mcp_tool_name,
       last_validated_at = excluded.last_validated_at,
       last_error_code = excluded.last_error_code,
       updated_at = excluded.updated_at
@@ -126,6 +138,8 @@ export function saveResearchWebSearchConfig(
     enabled: input.enabled ? 1 : 0,
     apiKeyEncrypted,
     baseUrl: input.baseUrl ?? null,
+    mcpServerId,
+    mcpToolName,
     lastValidatedAt: input.lastValidatedAt !== undefined
       ? input.lastValidatedAt
       : existing?.last_validated_at ?? null,

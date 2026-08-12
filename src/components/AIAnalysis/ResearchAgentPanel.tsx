@@ -15,6 +15,17 @@ import {
   decideAutoDeepResearchStart,
   resolveAutoDeepResearchStocks,
 } from './researchAgentIntent'
+import {
+  researchConclusionMeta,
+  researchPhaseLabel,
+  researchRunStatusMeta,
+} from './deepResearchTurnModel'
+
+export {
+  researchConclusionMeta,
+  researchPhaseLabel,
+  researchRunStatusMeta,
+} from './deepResearchTurnModel'
 
 const BUTTON = 'min-h-11 rounded-md border px-3 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/40 disabled:cursor-not-allowed disabled:opacity-45 motion-reduce:transition-none'
 const SECONDARY = `${BUTTON} border-slate-300 bg-white text-slate-700 hover:border-cyan-500 hover:text-cyan-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-cyan-600 dark:hover:text-cyan-200`
@@ -35,47 +46,22 @@ interface Props {
     corpusTexts?: string[]
   }
   onSessionBusyChange?: (busy: boolean) => void
+  /** One-page：向父级同步时间线上下文（父级渲染 DeepResearchTurnView，本组件不占底部半屏） */
+  onTimelineContextChange?: (ctx: ResearchAgentTimelineContext | null) => void
 }
 
-const BASE_STATUS_META: Record<ResearchAgentRunSummaryView['status'], { label: string; tone: string }> = {
-  queued: { label: '等待启动', tone: 'text-slate-600 dark:text-slate-300' },
-  running: { label: '运行中', tone: 'text-cyan-700 dark:text-cyan-300' },
-  paused: { label: '已暂停', tone: 'text-amber-700 dark:text-amber-300' },
-  needs_attention: { label: '需处理', tone: 'text-red-700 dark:text-red-300' },
-  succeeded: { label: '已完成', tone: 'text-emerald-700 dark:text-emerald-300' },
-  failed: { label: '失败', tone: 'text-red-700 dark:text-red-300' },
-  cancelled: { label: '已取消', tone: 'text-slate-500 dark:text-slate-400' },
-}
-
-export function researchRunStatusMeta(run: Pick<ResearchAgentRunSummaryView, 'status' | 'resultSemantics'>): { label: string; tone: string } {
-  return { ...BASE_STATUS_META[run.status], label: run.resultSemantics.executionLabel }
-}
-
-function researchConclusionMeta(run: Pick<ResearchAgentRunSummaryView, 'resultSemantics'>): { label: string; tone: string } {
-  const tone = {
-    pending: 'text-slate-500 dark:text-slate-400',
-    complete: 'text-emerald-700 dark:text-emerald-300',
-    limited: 'text-amber-700 dark:text-amber-300',
-    blocked: 'text-red-700 dark:text-red-300',
-    unavailable: 'text-slate-500 dark:text-slate-400',
-  }[run.resultSemantics.conclusionCoverage]
-  return { label: run.resultSemantics.conclusionLabel, tone }
-}
-
-const PHASE_LABEL: Record<ResearchAgentRunSummaryView['phase'], string> = {
-  planning: '研究计划',
-  tooling: '本地事实',
-  synthesis: '证据门禁 / 综合',
-  audit: '确定性审计',
-  persist: '本地写回',
-}
-
-const MULTI_PERSPECTIVE_PHASE_LABEL: Record<ResearchAgentRunSummaryView['phase'], string> = {
-  planning: '锁定证据',
-  tooling: '正反研判',
-  synthesis: '中立主持',
-  audit: '引用审计',
-  persist: '讨论写回',
+export interface ResearchAgentTimelineContext {
+  runs: ResearchAgentRunSummaryView[]
+  selectedRunId: string | null
+  detail: ResearchAgentRunDetailView | null
+  busy: string | null
+  error: string | null
+  liveProgress: { runId: string; message: string; phase: string } | null
+  streamDraft: { runId: string; phase: string; accumulated: string } | null
+  selectRun: (runId: string) => void
+  onResume: (runId: string) => void
+  onCancel: (runId: string) => void
+  onStartReview: (runId: string) => void
 }
 
 export function ResearchAgentPanel({
@@ -86,6 +72,7 @@ export function ResearchAgentPanel({
   preferredQuestion = null,
   contextHints,
   onSessionBusyChange,
+  onTimelineContextChange,
 }: Props) {
   const [runs, setRuns] = useState<ResearchAgentRunSummaryView[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
@@ -339,7 +326,26 @@ export function ResearchAgentPanel({
     window.setTimeout(() => openButtonRef.current?.focus(), 0)
   }, [busy])
 
-  const showLedger = runs.length > 0 || Boolean(error)
+  useEffect(() => {
+    if (!onTimelineContextChange) return
+    onTimelineContextChange({
+      runs,
+      selectedRunId,
+      detail,
+      busy,
+      error,
+      liveProgress,
+      streamDraft,
+      selectRun: (runId) => { void selectRun(runId) },
+      onResume: (runId) => { void mutate(runId, 'resume') },
+      onCancel: (runId) => setPendingCancelRunId(runId),
+      onStartReview: (runId) => setPendingReviewRunId(runId),
+    })
+  }, [busy, detail, error, liveProgress, onTimelineContextChange, runs, selectedRunId, streamDraft])
+
+  useEffect(() => () => {
+    onTimelineContextChange?.(null)
+  }, [onTimelineContextChange])
 
   return (
     <>
@@ -355,56 +361,10 @@ export function ResearchAgentPanel({
         打开深度研究预检
       </button>
 
-      {showLedger && (
-        <section data-testid="research-agent-panel" className="max-h-[40vh] flex-shrink-0 overflow-y-auto border-t border-slate-200 bg-slate-50/70 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/35">
-          <div className="min-w-0">
-            <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">深度研究</div>
-            <div className="mt-0.5 text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
-              {runs.length > 0
-                ? `${runs.length} 次运行 · ${researchRunStatusMeta(runs[0]).label}${runs[0].status === 'succeeded' ? ` · ${researchConclusionMeta(runs[0]).label}` : ''}`
-                : '在输入框说「深挖…」可启动'}
-            </div>
-          </div>
-
-          {error && <div role="alert" className="mt-3 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{error}</div>}
-
-          {runs.length > 0 && (
-            <div className="mt-3 grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
-              <div className="max-h-72 space-y-1 overflow-y-auto pr-1" aria-label="深度研究运行列表">
-                {runs.map((run) => {
-                  const meta = researchRunStatusMeta(run)
-                  const conclusion = researchConclusionMeta(run)
-                  return (
-                    <button
-                      key={run.id}
-                      type="button"
-                      data-testid={`research-agent-run-${run.id}`}
-                      onClick={() => { void selectRun(run.id) }}
-                      className={`min-h-11 w-full border-l-2 px-3 py-2 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/40 motion-reduce:transition-none ${selectedRunId === run.id ? 'border-cyan-600 bg-white dark:bg-slate-900' : 'border-transparent hover:bg-white dark:hover:bg-slate-900'}`}
-                    >
-                      <div className="flex items-center justify-between gap-2"><span className={`font-semibold ${meta.tone}`}>{meta.label}</span><span className="text-slate-400">{phaseLabel(run.runKind, run.phase)}</span></div>
-                      {run.status === 'succeeded' && <div className={`mt-0.5 text-[11px] ${conclusion.tone}`}>{conclusion.label} · {run.runKind === 'multi_perspective' ? '多视角' : '单 Agent'}</div>}
-                      <div className="mt-1 truncate text-slate-600 dark:text-slate-300">{run.question}</div>
-                    </button>
-                  )
-                })}
-              </div>
-              <div className="min-w-0 border-l border-slate-200 pl-3 dark:border-slate-800">
-                {detail ? (
-                  <ResearchAgentRunDetail
-                    detail={detail}
-                    busy={busy}
-                    liveProgress={liveProgress?.runId === detail.run.id ? liveProgress : null}
-                    streamDraft={streamDraft?.runId === detail.run.id ? streamDraft : null}
-                    onResume={() => { void mutate(detail.run.id, 'resume') }}
-                    onCancel={() => setPendingCancelRunId(detail.run.id)}
-                    onStartReview={() => setPendingReviewRunId(detail.run.id)}
-                  />
-                ) : <div className="flex min-h-24 items-center justify-center text-xs text-slate-400">选择一次运行查看账本</div>}
-              </div>
-            </div>
-          )}
-        </section>
+      {error && runs.length === 0 && (
+        <div role="alert" className="mx-5 mb-2 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+          {error}
+        </div>
       )}
 
       {dialogOpen && (
@@ -596,11 +556,13 @@ function ResearchAgentStartDialog({
   )
 }
 
-export function ResearchAgentRunDetail({ detail, busy, liveProgress = null, streamDraft = null, onResume, onCancel, onRetry, onDelete, onStartReview, onOpenDiscussion }: {
+export function ResearchAgentRunDetail({ detail, busy, liveProgress = null, streamDraft = null, embedded = false, onResume, onCancel, onRetry, onDelete, onStartReview, onOpenDiscussion }: {
   detail: ResearchAgentRunDetailView
   busy: string | null
   liveProgress?: { runId: string; message: string; phase: string } | null
   streamDraft?: { runId: string; phase: string; accumulated: string } | null
+  /** 时间线嵌入：过程进度由外层 TurnView 展示，此处不再重复 */
+  embedded?: boolean
   onResume: () => void
   onCancel: () => void
   onRetry?: () => void
@@ -641,7 +603,7 @@ export function ResearchAgentRunDetail({ detail, busy, liveProgress = null, stre
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span data-testid="research-agent-execution-status" className={`font-semibold ${status.tone}`}>执行状态：{status.label}</span>
             {run.status === 'succeeded' && <span data-testid="research-agent-conclusion-coverage" className={`font-semibold ${conclusion.tone}`}>结论覆盖：{researchConclusionCoverageLabel(run.resultSemantics.conclusionCoverage)}</span>}
-            <span className="text-slate-400">{run.runKind === 'multi_perspective' ? '多视角复核' : '单 Agent 研究'} · {phaseLabel(run.runKind, run.phase)}</span>
+            <span className="text-slate-400">{run.runKind === 'multi_perspective' ? '多视角复核' : '单 Agent 研究'} · {researchPhaseLabel(run.runKind, run.phase)}</span>
           </div>
           <div className="mt-1 break-words text-slate-600 dark:text-slate-300">{run.question}</div>
         </div>
@@ -656,14 +618,14 @@ export function ResearchAgentRunDetail({ detail, busy, liveProgress = null, stre
       </div>
       {run.status === 'needs_attention' && <div className="mt-3 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-red-700 dark:bg-red-950/30 dark:text-red-300">模型或联网请求可能已经送达并产生费用，但没有取得可验证的完整响应。同一账本不能继续；可使用“重新研究”创建新的可追溯运行。</div>}
       {run.errorMessage && run.status !== 'needs_attention' && <div className="mt-3 border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{run.errorMessage}</div>}
-      {liveProgress && (run.status === 'running' || run.status === 'queued') && (
+      {!embedded && liveProgress && (run.status === 'running' || run.status === 'queued') && (
         <div data-testid="research-agent-live-progress" className="mt-3 border-l-2 border-cyan-500 bg-cyan-50 px-3 py-2 text-cyan-900 dark:bg-cyan-950/30 dark:text-cyan-100">
           {liveProgress.message}
         </div>
       )}
-      {streamDraft && (run.status === 'running' || run.status === 'paused') && (
+      {!embedded && streamDraft && (run.status === 'running' || run.status === 'paused') && (
         <div data-testid="research-agent-stream-draft" className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-950">
-          <div className="mb-1 text-[11px] font-semibold text-slate-500">写作草稿 · {phaseLabel(run.runKind, streamDraft.phase as ResearchAgentRunSummaryView['phase'])}</div>
+          <div className="mb-1 text-[11px] font-semibold text-slate-500">写作草稿 · {researchPhaseLabel(run.runKind, streamDraft.phase as ResearchAgentRunSummaryView['phase'])}</div>
           <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-slate-700 dark:text-slate-200">
             {streamDraft.accumulated || '生成中…'}
             <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" />
@@ -770,7 +732,7 @@ export function ResearchAgentRunDetail({ detail, busy, liveProgress = null, stre
           <summary className="flex min-h-11 cursor-pointer items-center font-semibold">步骤与证据账本</summary>
           <div className="space-y-3 pb-3">
             <ol className="space-y-1">
-              {detail.steps.map((step) => <li key={step.id} className="flex justify-between gap-3"><span>{step.ordinal}. {phaseLabel(run.runKind, step.kind)}</span><span className="text-slate-500">{step.status} · {step.attemptCount} 次</span></li>)}
+              {detail.steps.map((step) => <li key={step.id} className="flex justify-between gap-3"><span>{step.ordinal}. {researchPhaseLabel(run.runKind, step.kind)}</span><span className="text-slate-500">{step.status} · {step.attemptCount} 次</span></li>)}
             </ol>
             {detail.modelCalls.length > 0 && (
               <div data-testid="research-agent-model-calls" className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
@@ -1132,13 +1094,6 @@ function readResearchPlan(value: unknown): { questions: string[]; stopConditions
     ? record.stopConditions.filter((item): item is string => typeof item === 'string').slice(0, 6)
     : []
   return questions.length > 0 || stopConditions.length > 0 ? { questions, stopConditions } : null
-}
-
-function phaseLabel(
-  runKind: ResearchAgentRunSummaryView['runKind'],
-  phase: ResearchAgentRunSummaryView['phase'],
-): string {
-  return runKind === 'multi_perspective' ? MULTI_PERSPECTIVE_PHASE_LABEL[phase] : PHASE_LABEL[phase]
 }
 
 function modelCallPurposeLabel(value: string): string {

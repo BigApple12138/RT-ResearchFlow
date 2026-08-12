@@ -6,7 +6,7 @@
 
 
 
-`Settings` 组件负责应用级偏好设置展示与修改, 包括扫描频率、数据保留、启动补漏、资讯分组、扫描后 AI 分析、**允许 Agent 联网**、行业动量窗口、今日看板系统通知、详情缓存管理、**外部 MCP 客户端**和受控本机研究访问。
+`Settings` 组件负责应用级偏好设置展示与修改, 包括扫描频率、数据保留、启动补漏、资讯分组、扫描后 AI 分析、行业动量窗口、今日看板系统通知、详情缓存管理、盘前采集与产业链等。**允许 Agent 联网**、**本机研究访问**、**外部 MCP 客户端**已迁至配置中心 **Agent** 页签（`AgentSettings.tsx`）。
 
 
 
@@ -22,17 +22,19 @@
 
 
 
-**允许 Agent 联网**（`ai_agent_network_enabled`，默认 `0`）：开启后 AI 分析 Agent 可按任务自主调用 Registry 中 `sideEffect='network'` 的 Tool（可能产生模型/数据成本，不再逐次确认）；关闭时主进程 `networkGate` 阻断新联网调用。本开关不合并、不覆盖盘前采集等已有独立联网开关；真正的授权校验在主进程 Tool 执行边界，不依赖 UI 禁用或模型自律。
+### Agent 页签（`AgentSettings.tsx`）
 
+信息架构（自上而下）：
 
+1. **本应用联网搜索**（`AppWebSearchSettings` / `research_web_search_config`）：显式选 Tavily / Bing / 自定义 / 外部 MCP / 内置弱检索。观察池「联网补充分类」、深度研究回退 / `web.search` 优先用；与「允许 Agent 联网」**解耦**。
+2. **Agent 回合联网**：仅闸门控制聊天里 Agent 是否可自主调联网 Tool（含 MCP 投影、`research.deep_start`），以及深度研究 `mcp.invoke`；不关闭上方搜索通道。
+3. **本机研究访问** → **高级/实验 · 外部 MCP 客户端**（密钥维护，可被联网搜索选用）。
 
-`ExternalMcpSettings`（Agent Hub 第二期）通过 `window.api.externalMcp` 窄方法管理外部 MCP **客户端**配置：增删改、启停、连通测试与 `list_tools`。第一期传输仅 `stdio`（command + argv 数组 + 可选 cwd）；环境变量仅在保存时以明文写入 IPC，主进程用 `encryptApiKey` 整段加密落库；列表视图只回 `hasEnv`，不回显密钥。连通测试由主进程短时拉起子进程、`list_tools` 后关闭；Renderer 不起子进程、不持密钥明文常驻。文案明确区分：本面板是「本应用去连外部 MCP 服务器」；「本机研究访问」是方向相反的 MCP **服务端**旁路。
+闸门速查：观察池补充分类 / 产业研究回退 / 深度研究 `web.search` → 只看搜索配置；Agent Hub network Tool / 深度研究 `mcp.invoke` → 只看「允许 Agent 联网」。
 
-**M1 投影命名：** 已启用服务器的 tools 在 Agent 回合中注册为 `mcp__<serverId>__<toolName>`（`serverId` 为配置主键 UUID；与 `local.*` / `research.*` 隔离）。`sideEffect` 一律 `network`（外部 MCP 无法证明「只读本地」）。关闭「允许 Agent 联网」时 `networkGate` 拒绝执行。disabled 服务器不注册。
+详见 `docs/superpowers/specs/2026-08-12-app-web-search-gateway-design.md`。
 
-
-
-`ResearchAccessSettings` 通过 `window.api.researchAccess` 的六个窄方法管理访问配置和读取最近50条有界审计。创建配置至少选择一个权限，`market.read` 默认选中；创建或轮换后的明文凭据及MCP配置只显示一次，以“我已保存”结束交付。权限清空会停用配置，轮换与撤销使用应用内确认区；renderer不获得事实工具执行入口。
+`ResearchAccessSettings` / `ExternalMcpSettings` 行为同前（窄 IPC、凭据不回显、stdio）。
 
 
 

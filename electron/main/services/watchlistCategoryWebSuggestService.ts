@@ -12,11 +12,17 @@ import {
   mapWatchlistCategory,
   type WatchlistCategoryTags,
 } from './watchlistCategoryMap'
-import { resolveConfiguredResearchAgentSearch } from './researchAgentNetworkTools'
-import { runWebSearch, searchWithBuiltinWebTool } from './researchToolRuntime/searchProviders'
+import {
+  APP_WEB_SEARCH_MCP_TIMEOUT_MS,
+  AppWebSearchError,
+  runAppWebSearch,
+} from './appWebSearchGateway'
+import { getResearchWebSearchConfig } from '../database/industryResearchGenerationRepository'
+import { searchWithBuiltinWebTool } from './researchToolRuntime/searchProviders'
 import type { ResearchSearchHit } from './researchToolRuntime/types'
 
 const WEB_SUGGEST_TIMEOUT_MS = 8_000
+const WEB_SUGGEST_MCP_TIMEOUT_MS = APP_WEB_SEARCH_MCP_TIMEOUT_MS
 
 export type WatchlistCategoryWebPending = {
   label: string
@@ -67,18 +73,19 @@ function findTreePairFromText(
 }
 
 async function defaultSearch(db: Database.Database, query: string): Promise<ResearchSearchHit[]> {
-  const credentials = resolveConfiguredResearchAgentSearch(db)
-  if (credentials) {
-    return runWebSearch({
-      providerId: credentials.providerId,
-      apiKey: credentials.apiKey,
-      baseUrl: credentials.baseUrl,
-      query,
-      maxResults: 6,
-      depth: 'basic',
-    })
+  const config = getResearchWebSearchConfig(db)
+  const timeoutMs = config?.provider_id === 'external_mcp'
+    ? WEB_SUGGEST_MCP_TIMEOUT_MS
+    : WEB_SUGGEST_TIMEOUT_MS
+  try {
+    return await runAppWebSearch(db, { query, maxResults: 6, timeoutMs })
+  } catch (error) {
+    if (error instanceof AppWebSearchError && error.code === 'WEB_SEARCH_NOT_CONFIGURED') {
+      // 未启用通道时降级内置弱检索（与确认框文案一致）
+      return searchWithBuiltinWebTool(query, 6)
+    }
+    throw error
   }
-  return searchWithBuiltinWebTool(query, 6)
 }
 
 /**
@@ -99,13 +106,18 @@ export async function webSuggestWatchlistCategory(
   const tree = listWatchlistCategoryTree(db, { enabledOnly: true })
   const query = [name, tsCode, 'A股', '行业', '概念', '产业链', '细分赛道'].filter(Boolean).join(' ')
   const search = options.search ?? ((q: string) => defaultSearch(db, q))
+  const config = getResearchWebSearchConfig(db)
+  const suggestTimeout = config?.enabled === 1 && config.provider_id === 'external_mcp'
+    ? WEB_SUGGEST_MCP_TIMEOUT_MS
+    : WEB_SUGGEST_TIMEOUT_MS
+  const channelLabel = config?.enabled === 1 ? config.provider_id : 'builtin_web(fallback)'
 
   let hits: ResearchSearchHit[] = []
   try {
     hits = await Promise.race([
       search(query),
       new Promise<ResearchSearchHit[]>((_, reject) => {
-        setTimeout(() => reject(new Error('WEB_SUGGEST_TIMEOUT')), WEB_SUGGEST_TIMEOUT_MS)
+        setTimeout(() => reject(new Error(`WEB_SUGGEST_TIMEOUT · 通道 ${channelLabel}`)), suggestTimeout)
       }),
     ])
   } catch (err) {

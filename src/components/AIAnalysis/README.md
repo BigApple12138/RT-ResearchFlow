@@ -6,13 +6,17 @@
 
 本地投研 Agent Phase 1 起，研判记录默认常驻「新对话」composer（不再空态弹窗门槛，也不盲选历史第一条会话）；首条消息 create-and-send；快捷芯片「分析我的持仓 / 我有哪些持仓 / 检查 AI 配置」经 `ai:runPortfolioBrief` 写入讨论，持仓事实默认不含成本价。主工作区对气泡与研判正文启用文本选中（`select-text`），便于复制；应用壳层导航仍保持 `select-none`。
 
-Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片；点「启动深度研究」后按 **自动化 skill / 多 agent** 直接 `startRun`（从会话抽取股票代码、短问题自动扩写），**不再弹预检表单**；失败仅 toast。会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。面板无运行时不占 UI；有运行时展示进度账本。
+Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片；点「启动深度研究」后按 **自动化 skill / 多 agent** 直接 `startRun`（从会话抽取股票代码、短问题自动扩写），**不再弹预检表单**；失败仅 toast。会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。
+
+**One-page（2026-08-12）：** 深度研究不是底部常驻账本窗，而是聊天时间线中的回合块（`DeepResearchTurnView`：可折叠过程 + 结论 + 来源提示；详情复用 `ResearchAgentRunDetail`）。`ResearchAgentPanel` 仅作启动/进度控制器（预检 modal / 确认框），经 `onTimelineContextChange` 把 runs 投影给父级。
 
 ### FR：Agent 工作台（Agent Hub）
 
 - **主发送路径**：若 preload 暴露 `window.api.ai.agentTurn`，composer 走 `ai:agentTurn`（目标驱动 Planner–Executor）；否则回退 `ai:followUp`（兼容旧构建）。
 - 统一消费 `ai:agentEvent`（plan / status / tool_call / tool_result / message / hitl / done|error|cancelled）；不展示隐藏推理。投影见 `agentTimelineModel.ts`。
-- **自主取数**：本地只读 Tool（持仓/行情快照/基本面）免确认；`research.deep_start` 与外部 MCP 投影 Tool（`mcp__<serverId>__<toolName>`）为 network Tool，须设置中开启「允许 Agent 联网」，开启后不逐次确认。
+- **自主取数**：本地只读 Tool（持仓/行情快照/基本面）免确认；`research.deep_start` 与外部 MCP 投影 Tool（`mcp__<serverId>__<toolName>`）为 network Tool，须在配置中心 → Agent 开启「允许 Agent 联网」。观察池「联网补充分类」走「本应用联网搜索」通道，**不依赖**该开关。
+- **官方披露 / 财务多方取数（2026-08-12）**：`official.disclosure_search` 先探测本应用联网搜索与 Tushare；网页侧用短 `site:`（巨潮+沪/深/北交所）并可降级过滤；已启用 Tushare 且有股票主体时并行拉预告/快报等结构化事实（**不是** URL 候选，不可作正文 `candidateId`）。任一侧成功则工具不整单失败。`company.fundamentals_refresh` 有 Tushare 优先，否则降级东财。MCP `isError` 透出 content 摘要。
+
 - **外部 MCP（第二期 B+C）**：每轮 `ai:agentTurn` 开始时，主进程将 **enabled** 服务器的 tools 投影进 ToolRegistry（可用 `last_tools_json` 缓存，过期刷新）；disabled 不注册；执行走主进程 `callTool`，结果截断，时间线审计带 `serverId`/`toolName`。深度研究经受控工具 `mcp.invoke`（仅 serverId/toolName/arguments/subjectRef/asOf）补证，结果落账为 secondary 外源样本，证据门禁不因 MCP 原文自动 complete。
 - **深挖**：Agent 自主调用 `research.deep_start` 为主路径；既有 suggest→「启动深度研究」降为**手动兜底**（Agent 路径开启时发送不再拦截深挖意图）。
 - **写闸门**：`sideEffect=write` 推 HITL 条，经 `ai:agentConfirm` 确认/拒绝后继续；未确认不执行。
@@ -33,8 +37,8 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - `normalizeAIResponseMarkdown`: 在ReactMarkdown解析前修复模型常见的 `**标签：**正文`/`__标签：__正文` 闭合歧义。只调整展示投影，跳过代码围栏、行内代码和转义内容；首轮、第二轮和assistant追问共用，数据库原文不变。
 - `followUpInput/sendingFollowUp`: 控制追问/新对话输入与发送状态；无选中会话时走 create-and-send。
 - 讨论消息由主进程分配稳定 `sequence`；Renderer 不计算或用数组下标定位消息。`ai:followUp` / `ai:agentTurn` 必须携带 UUID `requestId`，同一请求重放返回已有 turn，不重复追加 user/assistant。
-- FR（流式）：`ai:followUp` 期间主进程通过 `ai:followUpDelta`（`start` / `delta` / `reset` / `error`）推送累计正文；Renderer 展示 `ai-followup-streaming` 草稿气泡，**结束再**以 `getSession` 权威消息替换。流式过程不写 `messages` JSON。含网页搜索的 turn 可降级为整段返回并明示。深度研究保留 `researchAgent:progress`，写作步另推 `researchAgent:delta`；同时桥接进 `ai:agentEvent`。`ResearchAgentPanel` 展示阶段文案与写作草稿。
-- Agent 时间线：`agentEvents` + `agentTimelineModel`；HITL 条 `agent-hitl-bar`；联网提示 `agent-network-hint`。
+- FR（流式）：`ai:followUp` 期间主进程通过 `ai:followUpDelta`（`start` / `delta` / `reset` / `error`）推送累计正文；Renderer 展示 `ai-followup-streaming` 草稿气泡，**结束再**以 `getSession` 权威消息替换。流式过程不写 `messages` JSON。含网页搜索的 turn 可降级为整段返回并明示。深度研究保留 `researchAgent:progress`，写作步另推 `researchAgent:delta`；同时桥接进 `ai:agentEvent`。时间线 `deep-research-timeline` / `DeepResearchTurnView` 展示过程与结论投影。
+- Agent 时间线：默认 Cursor 式状态滚动（`AgentStatusScroll` / `deriveAgentStatusScroll`）；明细折叠；HITL 条 `agent-hitl-bar`；联网提示 `agent-network-hint`。
 - 研究讨论的消息热区只保留未归档原文；历史原文进入归档账本，累计摘要独立保存并在模型调用时与 `promptSent` 硬事实、热消息一起组装。摘要不是一条伪造的 chat message，也不进入 FR-239 变更游标。
 - 讨论达到未归档的 12 个完整问答后，下一次追问前默认自动调用上下文整理；AI 配置可关闭。讨论页的“整理聊天上下文”是显式手动入口，与“整理本次讨论”研究变更动作严格区分，最近 6 条原文作为热尾部保留。
 - 快捷芯片：`chip-analyze-portfolio` / `chip-list-portfolio` / `chip-check-ai-config`；`new-conversation` 回到新对话；`research-composer` 为底部输入区。

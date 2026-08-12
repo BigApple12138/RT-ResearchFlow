@@ -4189,10 +4189,12 @@ const api = {
       ipcRenderer.invoke('industryResearch:getFinancialSyncStatus', { companyId }),
     getWebSearchConfig: () => ipcRenderer.invoke('industryResearch:getWebSearchConfig'),
     saveWebSearchConfig: (payload: {
-      providerId: 'tavily' | 'bing' | 'custom_openai_compatible_search'
+      providerId: 'tavily' | 'bing' | 'custom_openai_compatible_search' | 'external_mcp' | 'builtin_web'
       enabled: boolean
       apiKey?: string | null
       baseUrl?: string | null
+      mcpServerId?: string | null
+      mcpToolName?: string | null
     }) => ipcRenderer.invoke('industryResearch:saveWebSearchConfig', payload),
     validateWebSearchConfig: () => ipcRenderer.invoke('industryResearch:validateWebSearchConfig'),
     listEvidenceCandidates: (projectId: string, runId?: string) =>

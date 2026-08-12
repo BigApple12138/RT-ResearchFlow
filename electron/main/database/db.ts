@@ -5088,6 +5088,42 @@ const MIGRATIONS: DatabaseMigration[] = [
       CREATE INDEX idx_market_resonance_snapshots_captured
         ON market_resonance_daily_snapshots(captured_at DESC);
     `
+  },
+  {
+    // 本应用联网搜索网关：扩展 provider + MCP 绑定列（重建表以放宽 CHECK）
+    // 152：避开已合入的市场共振快照 Migration 151
+    version: 152,
+    sql: `
+      CREATE TABLE research_web_search_config_v152 (
+        id                   INTEGER PRIMARY KEY CHECK (id = 1),
+        provider_id          TEXT NOT NULL CHECK (provider_id IN (
+                               'tavily', 'bing', 'custom_openai_compatible_search',
+                               'external_mcp', 'builtin_web'
+                             )),
+        enabled              INTEGER NOT NULL DEFAULT 0,
+        api_key_encrypted    BLOB DEFAULT NULL,
+        base_url             TEXT DEFAULT NULL,
+        mcp_server_id        TEXT DEFAULT NULL
+                             CHECK (mcp_server_id IS NULL OR (length(trim(mcp_server_id)) > 0 AND length(mcp_server_id) <= 64)),
+        mcp_tool_name        TEXT DEFAULT NULL
+                             CHECK (mcp_tool_name IS NULL OR (length(trim(mcp_tool_name)) > 0 AND length(mcp_tool_name) <= 128)),
+        last_validated_at    INTEGER DEFAULT NULL,
+        last_error_code      TEXT DEFAULT NULL,
+        updated_at           INTEGER NOT NULL
+      );
+
+      INSERT INTO research_web_search_config_v152 (
+        id, provider_id, enabled, api_key_encrypted, base_url,
+        mcp_server_id, mcp_tool_name, last_validated_at, last_error_code, updated_at
+      )
+      SELECT
+        id, provider_id, enabled, api_key_encrypted, base_url,
+        NULL, NULL, last_validated_at, last_error_code, updated_at
+      FROM research_web_search_config;
+
+      DROP TABLE research_web_search_config;
+      ALTER TABLE research_web_search_config_v152 RENAME TO research_web_search_config;
+    `
   }
 ]
 

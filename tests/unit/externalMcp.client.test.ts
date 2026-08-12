@@ -23,6 +23,7 @@ import {
 } from '../../electron/main/database/externalMcpRepository'
 import {
   callExternalMcpTool,
+  formatMcpToolIsErrorMessage,
   listExternalMcpTools,
   testExternalMcpServer,
   type ExternalMcpTransportFactory,
@@ -144,6 +145,41 @@ describe('external MCP client service (M0)', () => {
     const result = await callExternalMcpTool(db, server.id, 'ping', { x: 1 }, { transportFactory })
     expect(result.ok).toBe(true)
     expect(JSON.stringify(result.result)).toContain('pong:ping')
+  })
+
+  it('callExternalMcpTool 在 isError 时透出 content 摘要', async () => {
+    const server = saveExternalMcpServer(db, {
+      name: 'Error MCP',
+      command: 'fake-mcp',
+      args: ['--stdio'],
+      now: 1,
+    })
+
+    const transportFactory: ExternalMcpTransportFactory = () => {
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      const mcpServer = new Server(
+        { name: 'mock-error-mcp', version: '0.0.1' },
+        { capabilities: { tools: {} } },
+      )
+      mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
+        tools: [{ name: 'web_search', inputSchema: { type: 'object' as const, properties: {} } }],
+      }))
+      mcpServer.setRequestHandler(CallToolRequestSchema, async () => ({
+        isError: true,
+        content: [{ type: 'text' as const, text: 'query too long for provider' }],
+      }))
+      void mcpServer.connect(serverTransport)
+      return clientTransport
+    }
+
+    const result = await callExternalMcpTool(db, server.id, 'web_search', { Query: 'x' }, { transportFactory })
+    expect(result.ok).toBe(false)
+    expect(result.error?.code).toBe('TOOL_ERROR')
+    expect(result.error?.message).toContain('query too long for provider')
+  })
+
+  it('formatMcpToolIsErrorMessage 无正文时保留短句', () => {
+    expect(formatMcpToolIsErrorMessage({ isError: true, content: [] })).toBe('MCP tool 返回 isError')
   })
 
   it('returns NOT_FOUND for unknown server id', async () => {

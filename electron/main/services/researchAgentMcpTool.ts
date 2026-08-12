@@ -112,7 +112,7 @@ export function assessMcpInvokePolicy(
     return {
       ok: false,
       code: 'NETWORK_DISABLED',
-      message: '联网未授权：mcp.invoke 需要开启「允许 Agent 联网」后才能执行',
+      message: '联网未授权：mcp.invoke 需要在配置中心 → Agent 开启「允许 Agent 联网」后才能执行（与「本应用联网搜索」通道无关）',
     }
   }
 

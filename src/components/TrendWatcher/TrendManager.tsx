@@ -1231,7 +1231,7 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
       {webConfirmOpen && (
         <TrendConfirmDialog
           title="联网补充分类"
-          description="将发起一次受控联网检索（复用研究侧搜索配置；未配置时可能走内置检索）。结果仅作建议，不会把网页原文行业名直接写入观察池。"
+          description="将发起一次受控联网检索（通道见配置中心 → Agent → 联网搜索；未启用时可能降级内置弱检索）。结果仅作建议，不会把网页原文行业名直接写入观察池。"
           subject="本次点击视为授权这一次联网"
           busy={webSuggesting}
           onCancel={() => setWebConfirmOpen(false)}

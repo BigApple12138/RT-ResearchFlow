@@ -28,7 +28,8 @@ function readPersistedNetworkEnabled(): boolean {
 }
 
 /**
- * network 类 Tool 执行前闸门：关闭时抛稳定错误，调用方不得继续调用 Tool handler。
+ * network 类 Tool 执行前闸门（AI 分析 Agent Hub）：关闭时抛稳定错误。
+ * 不约束观察池「联网补充分类」、产业研究回退检索、经 runAppWebSearch 的深度研究 web.search。
  * read / write 不受本闸门约束。
  */
 export function assertNetworkAllowed(
@@ -45,7 +46,7 @@ export function assertNetworkAllowed(
   if (!enabled) {
     throw new AgentNetworkGateError(
       'NETWORK_DISABLED',
-      `联网未授权：工具「${def.name}」需要开启「允许 Agent 联网」后才能执行`,
+      `联网未授权：工具「${def.name}」需要在配置中心 → Agent 开启「允许 Agent 联网」后才能执行`,
     )
   }
 }

@@ -72,7 +72,11 @@ function summarizeToolCall(payload?: Record<string, unknown>): { title: string; 
   const name = asString(payload?.name, 'tool')
   let argsText = ''
   try {
-    if (payload?.args != null) argsText = JSON.stringify(payload.args).slice(0, 160)
+    if (payload?.args != null) {
+      const raw = JSON.stringify(payload.args)
+      // 空对象/空数组不展示，避免「[]」误导为卡死参数
+      if (raw !== '{}' && raw !== '[]') argsText = raw.slice(0, 160)
+    }
   } catch {
     argsText = ''
   }
@@ -88,7 +92,7 @@ function summarizeToolResult(payload?: Record<string, unknown>): { title: string
   const ok = payload?.ok !== false
   const networkHint =
     /联网未授权|允许 Agent 联网|NETWORK_DISABLED/i.test(summary)
-      ? '联网未开启：请到设置中打开「允许 Agent 联网」后再试。'
+      ? '联网未开启：请到配置中心 → Agent 打开「允许 Agent 联网」后再试。'
       : undefined
   return {
     title: ok ? `${name} 结果` : `${name} 失败`,
@@ -122,7 +126,7 @@ export function projectAgentEventToStep(event: AgentTimelineEvent, index: number
         kind: 'plan',
         title: s.title,
         detail: s.detail,
-        collapsedByDefault: false,
+        collapsedByDefault: true,
         tone: 'info',
         rawType: event.type,
         at: event.at,
@@ -174,7 +178,7 @@ export function projectAgentEventToStep(event: AgentTimelineEvent, index: number
         kind: 'message',
         title: '助手回复',
         detail: asString(payload?.text || payload?.accumulated),
-        collapsedByDefault: false,
+        collapsedByDefault: true,
         tone: 'neutral',
         rawType: event.type,
         at: event.at,
@@ -278,4 +282,41 @@ export function buildAgentTimelineModel(
     terminal,
     networkDisabledHint,
   }
+}
+
+export type AgentStatusScrollView = {
+  /** 当前活动（最醒目的一行） */
+  primary: string
+  /** 紧邻的上一两行（更淡），自上而下为更早 → 更近 */
+  secondary: string[]
+  itemCount: number
+  running: boolean
+}
+
+/**
+ * Cursor 式状态滚动：默认只露 1～3 行短状态，不铺开完整工作台。
+ */
+export function deriveAgentStatusScroll(model: AgentTimelineModel): AgentStatusScrollView {
+  const visible = model.steps.filter(
+    (step) => step.kind === 'plan' || step.kind === 'status' || step.kind === 'tool' || step.kind === 'hitl',
+  )
+  const itemCount = visible.length
+  if (model.terminal === 'done') {
+    return { primary: '本轮完成', secondary: [], itemCount, running: false }
+  }
+  if (model.terminal === 'error') {
+    const last = visible[visible.length - 1]
+    return { primary: last?.title || '本轮失败', secondary: [], itemCount, running: false }
+  }
+  if (model.terminal === 'cancelled') {
+    return { primary: '本轮已取消', secondary: [], itemCount, running: false }
+  }
+  if (itemCount === 0) {
+    return { primary: '规划下一步…', secondary: [], itemCount: 0, running: true }
+  }
+  const primary = visible[visible.length - 1]?.title || '进行中…'
+  const secondary = visible
+    .slice(Math.max(0, visible.length - 3), visible.length - 1)
+    .map((step) => step.title)
+  return { primary, secondary, itemCount, running: true }
 }
