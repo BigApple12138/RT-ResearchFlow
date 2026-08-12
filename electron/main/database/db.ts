@@ -4981,8 +4981,6 @@ const MIGRATIONS: DatabaseMigration[] = [
     `
   }
 ]
-  }
-]
 
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = MIGRATIONS
 
