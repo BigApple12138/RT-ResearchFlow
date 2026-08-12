@@ -11,9 +11,6 @@ export const REVIEW_AI_SYSTEM_CONSTRAINTS = [
   '只输出一段连续中文纯文本（不要 Markdown 标题、不要分节编号）；不超过 800 字。',
 ].join('\n')
 
-const FORBIDDEN_PATTERN =
-  /(买入|卖出|加仓|减仓|建仓|清仓|目标价|必涨|稳赚|收益率承诺|建议买入|建议卖出|仓位应|止盈位|止损价)/
-
 export type ReviewAiNarrativeErrorCode =
   | 'AI_NOT_CONFIGURED'
   | 'AI_CALL_FAILED'
@@ -55,10 +52,54 @@ function excerptList(items: unknown[], mapFn: (item: Record<string, unknown>) =>
 export function buildReviewAiNarrativePrompt(report: DecisionReviewReportSnapshot): string {
   const kindLabel = report.kind === 'weekly' ? '周复盘' : '日复盘'
   const summary = report.summary
+  const watchingPart = summary.watchingCount != null ? ` · 关注中 ${summary.watchingCount}` : ''
+
+  const market = isRecord(report.marketEnvironment) ? report.marketEnvironment : null
+  const capital = isRecord(report.capitalHighlights) ? report.capitalHighlights : null
+  const moves = isRecord(report.holdingMoves) ? report.holdingMoves : null
+  const watched = Array.isArray(report.watchedSignals) ? report.watchedSignals : []
+
+  const marketLines = market
+    ? (market.available
+      ? [
+          `- 涨跌家数 涨${String(market.upCount ?? 0)}/平${String(market.flatCount ?? 0)}/跌${String(market.downCount ?? 0)}`,
+          ...((Array.isArray(market.indexLines) ? market.indexLines : []) as unknown[])
+            .slice(0, 4)
+            .map((line) => `- ${truncate(String(line), 120)}`),
+        ].join('\n')
+      : `- ${String(market.unavailableReason ?? '本地暂无')}`)
+    : '- （无）'
+
+  const capitalLines = capital && Array.isArray(capital.items)
+    ? excerptList(capital.items as unknown[], (item) => {
+      const bits = [String(item.name ?? '')]
+      if (item.avgChange != null) bits.push(`均涨跌 ${String(item.avgChange)}`)
+      if (item.limitUpCount != null) bits.push(`涨停 ${String(item.limitUpCount)}`)
+      if (item.mainNetInflow != null) bits.push(`净流入 ${String(item.mainNetInflow)}`)
+      return bits.join(' · ')
+    }, 8)
+    : '- （无）'
+
+  const holdingLines = moves && Array.isArray(moves.items)
+    ? excerptList(moves.items as unknown[], (item) => {
+      return [
+        String(item.stockName ?? item.tsCode ?? ''),
+        `涨跌 ${String(item.changePct ?? '—')}`,
+        `浮盈 ${String(item.profitPct ?? '—')}`,
+        `趋势分 ${String(item.trendScore ?? '—')}`,
+        item.positionAdvice ? `规则辅助 ${String(item.positionAdvice)}` : '',
+      ].filter(Boolean).join(' · ')
+    }, 12)
+    : '- （无）'
+
   const facts = [
     `【报告】${report.title}（${kindLabel}，rangeDays=${report.rangeDays}）`,
     `【结论摘要】${truncate(report.headline, 400)}`,
-    `【计数】持仓 ${summary.holdingCount} · 相关信号 ${summary.portfolioSignalCount} · 已处理 ${summary.processedCount} · 未处理风险 ${summary.openRiskCount} · 证据缺口 ${summary.evidenceGapCount} · 待验证 ${summary.followUpCount}`,
+    `【计数】持仓 ${summary.holdingCount} · 相关信号 ${summary.portfolioSignalCount} · 已处理 ${summary.processedCount} · 未处理风险 ${summary.openRiskCount} · 证据缺口 ${summary.evidenceGapCount} · 待验证 ${summary.followUpCount}${watchingPart}`,
+    `【市场环境】\n${marketLines}`,
+    `【资金要点】\n${capitalLines}`,
+    `【持仓走势】\n${holdingLines}`,
+    `【今日关注】\n${excerptList(watched, (item) => `${String(item.stockName ?? item.conceptName ?? item.tsCode ?? '')} · P${String(item.priority ?? '')} · ${String(item.sourceModule ?? '')} · ${String(item.title ?? '')}`)}`,
     `【已处理】\n${excerptList(report.processed, (item) => `${String(item.stockName ?? '')} · ${String(item.tagLabel ?? item.tag ?? '')} · ${String(item.title ?? '')} · ${String(item.note ?? '')}`)}`,
     `【未处理风险】\n${excerptList(report.openRisks, (item) => `${String(item.stockName ?? '')} · P${String(item.priority ?? '')} · ${String(item.title ?? '')} · ${String(item.status ?? '')}`)}`,
     `【证据缺口】\n${excerptList(report.evidenceGaps, (item) => `${String(item.stockName ?? '')} · ${String(item.reason ?? '')}`)}`,
@@ -73,9 +114,6 @@ export function sanitizeReviewAiNarrativeText(raw: string): { ok: true; text: st
   const text = truncate(String(raw ?? '').replace(/\r\n/g, '\n').trim(), REVIEW_AI_NARRATIVE_MAX_CHARS)
   if (!text) {
     return { ok: false, code: 'OUTPUT_REJECTED', message: '模型未返回可用研判正文' }
-  }
-  if (FORBIDDEN_PATTERN.test(text)) {
-    return { ok: false, code: 'OUTPUT_REJECTED', message: '模型输出含不当交易指令语气，已拒收' }
   }
   return { ok: true, text }
 }

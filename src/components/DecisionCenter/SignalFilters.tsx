@@ -33,9 +33,9 @@ const TYPE_OPTIONS = [
 ]
 
 const STATUS_OPTIONS = [
-  ['active', '待处理'],
+  ['NEW', '待处理'],
+  ['active', '进行中'],
   ['all', '全部'],
-  ['NEW', '未读'],
   ['WATCHING', '关注中'],
   ['READ', '已读'],
 ]

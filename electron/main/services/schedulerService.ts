@@ -6,7 +6,7 @@ import { getDb } from '../database/db'
 import { runScan } from './scanEngine'
 import { syncIntradayForPredictedStocks, runAllPendingBacktests } from './backtestService'
 import {
-  fetchStockMinuteDaily,
+  fetchStockMinute,
   fetchLimitListDaily,
   fetchKplList,
   fetchKplConceptCons,
@@ -340,28 +340,28 @@ function toTsCodeForMinute(code: string): string {
 /**
  * 拉取一次当日分钟 K 线并写入 DB; 成功推 stockMinuteUpdated 事件。
  *
- * 数据源优先级：Tushare 374 rt_min（有权限时精度/实时性最佳）→ 失败/无权限回退东财 push2his
+ * 数据源优先级：Tushare 官方 `rt_min`（有权限时）→ 失败/无权限回退东财 push2his
  * klt=1 完整 OHLCV（免 token，60s 节奏经探针验证不触发反爬）。
  * 仅当两者都连续失败 3 次才推 fallback 并自动 unsubscribe。
  */
-async function pullStockMinute(stockCode: string): Promise<void> {
+async function pullStockMinute(stockCode: string): Promise<boolean> {
   const db = getDb()
   const dsCfg = getDataSourceConfig(db)
   let gotData = false
 
-  // 1. 优先 Tushare rt_min_daily（doc_id=369，一次拉全天分钟 K）
+  // 1. 优先 Tushare 官方 rt_min（doc_id=374）；无权限/失败则同轮东财兜底
   if (dsCfg.tushareEnabled && dsCfg.tushareTokenEncrypted) {
     const token = decryptApiKey(dsCfg.tushareTokenEncrypted)
     if (token) {
       try {
-        const rows = await fetchStockMinuteDaily(token, toTsCodeForMinute(stockCode))
+        const rows = await fetchStockMinute(token, toTsCodeForMinute(stockCode))
         if (rows.length > 0) {
           upsertStockMinute(db, rows)
           gotData = true
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        console.warn(`[MinuteCron] Tushare pull ${stockCode} failed, fallback to Eastmoney: ${msg}`)
+        console.warn(`[MinuteCron] Tushare rt_min ${stockCode} failed, fallback to Eastmoney: ${msg}`)
       }
     }
   }
@@ -408,15 +408,18 @@ async function pullStockMinute(stockCode: string): Promise<void> {
       unsubscribeStockMinute()
     }
   }
+  return gotData
 }
 
-/** 订阅个股分钟 K 线轮询. 同股重复调用幂等; 切换股票自动 unsubscribe 旧订阅. */
-export function subscribeStockMinute(stockCode: string): void {
-  if (_activeMinuteSubscription?.stockCode === stockCode) return
+/** 订阅个股分钟 K 线轮询. 同股重复调用幂等; 切换股票自动 unsubscribe 旧订阅. 返回首拉 Promise。 */
+export function subscribeStockMinute(stockCode: string): Promise<boolean> {
+  if (_activeMinuteSubscription?.stockCode === stockCode) {
+    return pullStockMinute(stockCode)
+  }
   if (_activeMinuteSubscription) unsubscribeStockMinute()
 
-  // 立即拉一次（无论是否盘中, 用于补全当日数据）
-  void pullStockMinute(stockCode)
+  // 立即拉一次（无论是否盘中, 用于补全当日数据）；调用方可 await 首拉
+  const firstPull = pullStockMinute(stockCode)
 
   const intervalId = setInterval(() => {
     if (!isInTradingHoursMain()) return
@@ -425,6 +428,12 @@ export function subscribeStockMinute(stockCode: string): void {
 
   _activeMinuteSubscription = { stockCode, intervalId }
   console.log(`[MinuteCron] subscribeStockMinute(${stockCode}) started`)
+  return firstPull
+}
+
+/** 单次刷新当日分钟 K（不启订阅），供预测证据包使用。 */
+export function refreshStockMinuteOnce(stockCode: string): Promise<boolean> {
+  return pullStockMinute(stockCode)
 }
 
 /** 取消当前活跃订阅. 幂等. */

@@ -164,7 +164,7 @@ export function buildPortfolioCommandSummary(
       {
         label: '组合未处理',
         value: pendingCount,
-        hint: pendingCount === 0 ? '组合待办已清空' : '未读或关注中',
+        hint: pendingCount === 0 ? '组合待办已清空' : '未读待处理',
         tone: 'green',
         tag: '待办',
       },
@@ -205,8 +205,8 @@ function actionScore(signal: DecisionSignalItem): number {
 }
 
 function isOpenActionSignal(signal: DecisionSignalItem): boolean {
-  if (signal.status === 'DISMISSED' || signal.status === 'EXPIRED') return false
-  return !signal.resolvedAt || signal.status === 'WATCHING'
+  // 与全市场待办一致：组合导航只收未读 NEW；关注后进「关注中」
+  return signal.status === 'NEW' && !signal.resolvedAt
 }
 
 function choosePrimaryAction(signal: DecisionSignalItem): DecisionActionKind {

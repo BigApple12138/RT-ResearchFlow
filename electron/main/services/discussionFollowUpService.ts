@@ -42,6 +42,8 @@ export interface DiscussionFollowUpInput {
 export interface DiscussionFollowUpAICallInput {
   sessionId: number
   messages: ConversationMessage[]
+  onDelta?: (accumulated: string) => void
+  onProviderAttempt?: (provider: AIProvider) => void
 }
 
 export type DiscussionFollowUpAICaller = (
@@ -49,11 +51,18 @@ export type DiscussionFollowUpAICaller = (
   input: DiscussionFollowUpAICallInput,
 ) => Promise<AIFallbackResult>
 
+export type DiscussionFollowUpDeltaEvent =
+  | { type: 'start'; requestId: string; sessionId: number; streaming: boolean; reason?: 'web_search' | 'buffered' }
+  | { type: 'delta'; requestId: string; sessionId: number; accumulated: string }
+  | { type: 'reset'; requestId: string; sessionId: number; provider?: string }
+  | { type: 'error'; requestId: string; sessionId: number; message: string }
+
 export interface DiscussionFollowUpOptions {
   callAI?: DiscussionFollowUpAICaller
   compactAI?: CompactionAICaller
   isBusy?: (db: Database.Database, sessionId: number) => boolean
   onSuccess?: (db: Database.Database, sessionId: number) => void | Promise<void>
+  onDelta?: (event: DiscussionFollowUpDeltaEvent) => void
 }
 
 export interface DiscussionFollowUpResult {
@@ -78,7 +87,12 @@ function defaultCallAI(
   db: Database.Database,
   input: DiscussionFollowUpAICallInput,
 ): Promise<AIFallbackResult> {
-  return callWithFallback(db, buildDiscussionAIRequest(db, input.sessionId, input.messages))
+  const request = buildDiscussionAIRequest(db, input.sessionId, input.messages)
+  return callWithFallback(db, {
+    ...request,
+    onDelta: input.onDelta,
+    onProviderAttempt: input.onProviderAttempt,
+  })
 }
 
 function normalizeError(error: unknown): string {
@@ -167,7 +181,43 @@ async function runDiscussionFollowUpWithinLock(
 
   try {
     const callAI = options.callAI ?? defaultCallAI
-    const result = await callAI(db, { sessionId: input.sessionId, messages: requestMessages })
+    const aiRequest = buildDiscussionAIRequest(db, input.sessionId, requestMessages)
+    const streaming = !(aiRequest.webSearch?.enabled === true)
+    options.onDelta?.({
+      type: 'start',
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      streaming,
+      ...(streaming ? {} : { reason: 'web_search' as const }),
+    })
+    let attempt = 0
+    const result = await callAI(db, {
+      sessionId: input.sessionId,
+      messages: requestMessages,
+      onDelta: streaming
+        ? (accumulated) => {
+            options.onDelta?.({
+              type: 'delta',
+              requestId: input.requestId,
+              sessionId: input.sessionId,
+              accumulated,
+            })
+          }
+        : undefined,
+      onProviderAttempt: streaming
+        ? (provider) => {
+            attempt += 1
+            if (attempt > 1) {
+              options.onDelta?.({
+                type: 'reset',
+                requestId: input.requestId,
+                sessionId: input.sessionId,
+                provider,
+              })
+            }
+          }
+        : undefined,
+    })
     const auditContext = discussion ? getDiscussionResearchAuditContext(db, input.sessionId) : null
     const researchAudit = auditContext
       ? auditResearchText({
@@ -207,6 +257,12 @@ async function runDiscussionFollowUpWithinLock(
     }
   } catch (error) {
     const message = normalizeError(error)
+    options.onDelta?.({
+      type: 'error',
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      message,
+    })
     failDiscussionTurnRequest(db, input.requestId, message)
     return errorResult('AI_CALL_FAILED', message, getSessionMessages(db, input.sessionId))
   }

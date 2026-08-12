@@ -16,13 +16,13 @@ FR-219 起, 今日看板运行在左侧一级导航的工作台壳层内; 全局
 FR-224 起, 今日看板按 demo 方向重构为重点优先的处置工作台。页面上方固定为“任务指挥区 / 关键指标 / 精筛条件”三块, 下方固定为“今日处置队列 / 处理工作区 / 复盘侧栏”三栏, 各栏独立滚动, 避免回到长页面卡片堆叠。三栏骨架在常见桌面窗口下必须保持横向工作台, 不应只在超宽屏才生效。
 页面高度链必须贯通: App 页壳使用 `flex min-h-0 flex-1`, 根节点使用 `grid-rows-[auto_minmax(0,1fr)]`, 下方三栏容器使用 `flex-1 min-h-0 overflow-hidden`, 各栏内部 `overflow-y-auto`。禁止只在外层 `overflow-hidden` 裁切底部内容。
 顶部 command 区需要完整露出任务指挥区胶囊、四个关键指标和三行精筛条件; 后续调整按钮文案或筛选项时, 应优先压缩控件间距或收纳低频项, 不得通过 `overflow:hidden` 裁切底部按钮。
-首屏下方的“处理工作区”不是普通列表堆叠区, 而是把待处理、重点、持仓、风险、市场、策略、资讯、最新和历史回看收敛成 Tab 的工作区。右侧固定为“今日处理进度”和“复盘与持仓风险”两块摘要侧栏, 不应把处理概况塞回左侧工作区头部。
+首屏下方的“处理工作区”不是普通列表堆叠区, 而是把提炼、信号明细、持仓、风险、市场、策略、资讯、最新和历史回看收敛成 Tab 的工作区。右侧固定为“今日处理进度”和“复盘与持仓风险”两块摘要侧栏, 不应把处理概况塞回左侧工作区头部。处理进度中的「待处理」只统计 **未读 NEW**（不含关注中）。点信号卡主按钮「处理完」（原已读）、「忽略」或「关注」都会移出待处理与左侧待办导航；「关注」另计入关注列表。「事件明细 / 讨论」仅打开详情，不改状态。
 处理工作区内部不再嵌套第二个“处理工作区”标题或卡片; Tab 内容直接展示当前类别的列表。已经收进 Tab 的板块, 例如“风险”, 不应再在右侧或下方重复渲染。复盘侧栏只放快速提示和风险摘要, 完整历史列表仍放在“历史回看”Tab 或对应抽屉中。
 
 ## 实现思路
 
 页面通过 `window.api.decision.getSignalSummary()` 获取今日摘要, 通过 `window.api.decision.getTodaySignals()` 获取信号列表。用户可以按状态、类型、来源、是否为持仓和最低优先级筛选信号, 并对单条信号执行已读、关注和忽略操作。
-FR-165/198/203 交易日连续性纠偏后，`getTodaySignals()` 同时返回 `context` 与 `carryover`。休市日或今日尚无全局有效信号时，页面按本地交易日历展示最近交易日并明确标注事实日期；更早但仍为 `WATCHING` 的事项继续进入行动队列。历史入口在当前信号为空时仍渲染，并通过复用 `ResearchDatePicker` 的日期控件精确查询某个信号日。
+FR-165/198/203 交易日连续性纠偏后，`getTodaySignals()` 同时返回 `context` 与 `carryover`。休市日或今日尚无全局有效信号时，页面按本地交易日历展示最近交易日并明确标注事实日期；更早但仍为 `WATCHING` 的事项进入「关注中」列表（不再进入待办导航）。历史入口在当前信号为空时仍渲染，并通过复用 `ResearchDatePicker` 的日期控件精确查询某个信号日。
 筛选状态由 `appStore.decisionCenterFilters` 持有，并通过 `settings:getDecisionCenterFilters/setDecisionCenterFilters` 写入 SQLite `app_settings.decision_center_filters_json`；SQLite 是跨 Tab、重启、开发端口、`file://` 和安装版的唯一权威来源。`localStorage.decisionCenterFilters` 仅保留为当前 renderer origin 的兼容影子，不能覆盖已有 SQLite 偏好。
 FR-241 会话目录修订后，主进程仍会在 Electron 打开 profile 前一次性迁移旧 `data/Local Storage`；Migration 111 后若 SQLite 尚无偏好，渲染层可再从当前旧 `localStorage` 一次性导入。保存 P4 后即使删除当前 origin 的影子并重启，也必须从 SQLite 恢复 P4。
 FR-231 起增加 `viewMode: 'portfolio' | 'market'`, 主切换文案为“组合 / 全部信号”。无本地偏好或旧数据缺少 `viewMode` 时默认 `portfolio`; 组合模式请求始终带 `portfolioOnly: true`, 不再依赖类型下拉里的“我的持仓”弱入口。市场模式接近原全市场处置行为。
@@ -30,27 +30,31 @@ FR-231 实现批 2 起, 组合模式指挥区四指标改为“持仓数 / 持�
 FR-231 实现批 3 起, 组合模式左侧队列改为按 `tsCode` 聚合的组合待办; 同票多来源合并为一条主任务并展示来源数。缺成本且无开放信号时生成仅可跳转走势图的合成待办 (负 id, 禁止 markRead/dismiss)。进度面板使用 `progress.title/description`, 组合模式文案区分“尚未添加持仓 / 组合待办已清空 / 组合还有 N 条待处理”。无持仓时展示 `PortfolioNoHoldingEmptyState`, 主 CTA 去添加持仓。
 FR-232 起, 组合待办主按钮「研判」打开 `StockJudgmentPanel` (为何出现 / 证据缺口 / 结论标签); 原信号生命周期抽屉降级为「事件明细」, 再次触发默认折叠为 ×N。FR-237 起, `applyStockJudgment` 只调用一次 `decision:saveJudgment`, 主进程在同一事务内追加不可变判断版本并投影来源信号状态与兼容备注; 保存后仍基于**刷新后的**信号列表选下一条组合待办。单股走势图「按股研判」复用同一接口和证据快照语义。
 FR-238 起, 组合模式左栏在普通信号待办上方展示已到期判断回访。回访任务由最新判断版本的 `reviewDueAt` 与只追加完成事实派生, 用户可维持判断、修正判断或结束观察; 完成动作由主进程事务同时追加下一版判断与回访事实, 并可安排 3/7/14 天后的下一次回访。判断记录同时展示计划回访和已到期状态。日/周复盘的已处理区消费事务生成的下一版判断, 待验证区只展示真实到期任务, 不再按观察标签推测待办。
-FR-250 起, 一键复盘 / 生成本周复盘在本地事实报告展示后**自动**调用一次模型, 在报告内写入「AI 研判」单段落并同轮补写到同一 `version` 快照 (`decision:generateReviewAiNarrative` + `decision:updateReviewReportSnapshot`)。AI 失败或未配置为软失败: 本地段落与保存保留, 抽屉内展示错误并可「仅重试 AI」; 关闭抽屉取消 in-flight 回调且不后台补写。输出约束禁止荐股/买卖点/收益承诺/仓位指令。「和 AI 讨论」(FR-239) 仍要求报告已保存后可用, 不被自动研判替代。
+FR-250 起, 一键复盘 / 生成本周复盘在本地事实报告展示后**自动**调用一次模型, 在报告内写入「AI 研判」单段落并同轮补写到同一 `version` 快照 (`decision:generateReviewAiNarrative` + `decision:updateReviewReportSnapshot`)。AI 失败或未配置为软失败: 本地段落与保存保留, 抽屉内展示错误并可「仅重试 AI」; 关闭抽屉取消 in-flight 回调且不后台补写。Prompt 软约束引导风险语气并禁止荐股/买卖点/收益承诺/仓位指令式话术；**不做**交易词输出硬拒收（空正文仍拒收）。「和 AI 讨论」(FR-239) 仍要求报告已保存后可用, 不被自动研判替代。
+FR-262 起, 中间工作区默认 Tab 为「提炼」(`TodayBriefPanel` / `buildTodayBriefModel`): 今日要点、持仓必看、市场观察（**板块线索含摘要/置信度/重复次数** + 短线线索 + 外围资讯压缩）、噪音折叠；原「重点」改名为「信号明细」。组合视图会额外拉取非持仓市场/策略/资讯上下文仅供提炼，不进入左侧处置队列。组合待办为空但仍有全市场信号时，**不再**用「暂无持仓相关信号」大空态盖住提炼，而是直接进入工作台提炼页。提炼页右上角 **「AI 提炼」** 调用 `decision:generateTodayBriefAi`，prompt 含 `sectorClues/strategyClues` 的 evidence 行；失败保留本地版。提炼不自动改信号状态。
+
 FR-233 起, 指挥区常显「一键复盘」(`data-testid: decision-generate-daily-review`, 组合与全部信号视图均可见), 行为等同原「生成今日复盘」: `reviewReportModel.ts` 从前端已有 signals/holdings/portfolioRisk 即时派生日报告 (摘要 / 已处理 / 未处理风险 / 证据缺口 / 待验证 / 弱声明), 由 `ReviewReportPanel` 抽屉展示并可复制纯文本; 无信号日也生成「持仓平稳」短报告。组合视图另保留「生成本周复盘」「历史复盘」「判断记录」; 市场视图不强制露出周报/判断记录。
-持仓风险迷你面板「建议入口」为「看复盘」时可点 (`data-testid: decision-suggest-open-review`) 打开历史复盘抽屉; 为「补成本价」时保持静态文案, 不误开历史。关键指标「复盘积压」可点 (`data-testid: decision-metric-review-backlog`) 打开同一历史复盘抽屉; 高优先级 / 持仓风险 / 短线机会本批仍只读。
+FR-263 起, **今日**复盘在生成时并行拉取 `market.getMarketOverview` 与 `portfolio.getDashboard`, 并写入日结四节：**市场环境**（涨跌家数/指数要点）、**资金要点**（概念热度 Top-N + 持仓关联板块资金）、**持仓走势**（现价/涨跌/浮盈/趋势分/规则辅助处置）、**今日关注**（全部 `WATCHING`，不限持仓）。`emptyDay` 仍表示无持仓相关信号处理, 但不再省略日结节。缺数标明「本地暂无」, 单路失败不阻断整单。周报本批不扩四节。AI 研判 prompt 纳入日结摘要。处置建议字段须标明规则辅助、非交易指令。
+持仓风险迷你面板「建议入口」为「看复盘」时可点 (`data-testid: decision-suggest-open-review`) 打开历史复盘抽屉; 为「补成本价」时保持静态文案, 不误开历史。指挥区四指标卡均可点: 「复盘积压」(`decision-metric-review-backlog`) 打开待复盘抽屉; 「高优先级 / 持仓风险 / 短线机会」分别筛到对应信号工作区。数字取近 30 日 `summary.unresolved`（积压）; 列表支持单条/批量「有效收口」「噪音忽略」。「历史复盘」按钮与看复盘仍打开报告历史。
 FR-233 P2 起, 组合模式同区增加「生成本周复盘」(`data-testid: decision-generate-weekly-review`)。周报固定近 7 个自然日, 通过既有 `decision:getHistorySignals({ rangeDays: 7, portfolioOnly: true, limit: 100 })` 拉历史, 已处理/待验证来自历史, 未处理风险与证据缺口优先用今日开放信号, 避免历史已结案项冒充当前风险。
 FR-236 起, 日报和周报生成后会按北京时间周期自动保存不可变本地快照。保存失败不影响当前报告展示, 抽屉会显示独立错误并用同一 `requestId` 重试, 避免重试产生重复版本。
 FR-239 起, 已成功保存的日/周复盘、信号行、信号详情、按股研判和判断详情可进入同一 AI 研究讨论。报告保存成功前“和 AI 讨论”保持禁用，避免把未持久化的临时报告冒充受信来源。返回后按 `stateKey/entityId/scrollTop` 恢复原报告、信号抽屉或判断详情，并继续保留决策中心筛选与局部滚动位置。
 组合指挥区的「历史复盘」与看复盘/复盘积压入口打开同一 `ReviewReportHistoryPanel`, 默认每个周期只显示最新版本, 支持日报/周报筛选、分页、进入同周期版本列表、打开任一历史快照和二次确认删除单个版本。打开旧报告只读取保存时快照, 不按当前持仓重新计算。
 FR-234 起, 右侧「复盘与持仓风险」增加「事后对照」页签 (`data-testid: decision-outcome-tab`)。主进程只读 `decision:getOutcomeMemory` 聚合带 `[judgment:tag]` 的结案样本与本地日线 T+5 窗口收益, 输出 aligned/mixed/misaligned/blocked 与按标签偏差画像; noise/insufficient 不参与方向评估; 不改历史结论、不触发全市场日线同步。
 FR-235 起, 组合空态的「去添加持仓」会启动当前渲染会话内的首次持仓任务并进入走势图。普通导航进入走势图不会启动该任务, 避免干扰已有用户的日常看盘路径。
-筛选器视觉上与今日看板首屏指标区同属工作台控制层, 使用 segmented control 和独立优先级滑块; 不应回退为重边框后台表单。状态筛选优先展示“待处理 / 全部 / 未读 / 关注中”, 来源筛选优先展示“全部来源 / 趋势 / 短线 / 资讯”, 其它低频来源可收纳到轻量下拉。
-FR-224 的指挥区指标完全由现有 `summary/signals/reviewStats/portfolioRiskData` 派生, 不硬编码 demo 数字, 不新增 IPC 或数据库字段。指标仅用于排序和处置提示, 不表达收益、胜率或交易建议。
+筛选器视觉上与今日看板首屏指标区同属工作台控制层, 使用 segmented control 和独立优先级滑块; 不应回退为重边框后台表单。状态筛选优先展示“待处理 / 进行中 / 全部 / 关注中”, 来源筛选优先展示“全部来源 / 趋势 / 短线 / 资讯”, 其它低频来源可收纳到轻量下拉。
+FR-224 的指挥区指标完全由现有 `summary/signals/reviewStats/portfolioRiskData` 派生, 不硬编码 demo 数字, 不新增 IPC 或数据库字段。指标仅用于排序和处置提示, 不表达收益、胜率或交易建议。指挥区四卡均可点击跳转: 高优先级→P4+未读信号明细; 持仓风险→组合风险 Tab; 短线机会→短线机会策略 Tab; 复盘积压→待复盘抽屉。组合视图对应卡同样可点。
 `ActionQueuePanel` 在非 embedded 模式下承担左侧“今日处置队列”, 采用单列任务流和独立滚动; 中间工作区不再重复渲染待处理队列, 默认进入“重点”Tab。
 左侧处置队列的任务卡动作区只直接展示主动作和一个次动作, 其余动作收进“更多”下拉菜单。若未来动作类型增加, 应在派生层调整主次优先级或进入生命周期抽屉承载, 不应让卡片底部按钮堆叠超过两行。
-`SignalCard` 在中间工作区使用三列研判行: 左侧来源与优先级, 中间标题、摘要、重要性原因和验证缺口, 右侧股票/题材与动作入口。该组件仍保留已读、关注、忽略、生命周期、走势图和产业链动作。
+`SignalCard` 在中间工作区使用三列研判行: 左侧来源与优先级, 中间标题、摘要、重要性原因和验证缺口, 右侧股票/题材与动作入口。未读信号主按钮为「处理完」（已读）；「忽略」「关注」同样移出待处理与待办导航；「事件明细 / 讨论」不改状态。
+处理进度「待处理」只统计 `status === NEW`；指挥区/进度卡「待处理」可点进「信号明细」并筛选未读。左侧待办导航只展示优先未读子集。
 处理工作区的 Tab 数量来自当前筛选后的本地模型, 切换 Tab 只改变当前工作区展示内容, 不重新请求数据; 历史回看 Tab 复用既有历史信号数据和刷新逻辑。
 首页分区不新增 IPC 或数据库字段, 由 `decisionSections.ts` 在前端根据当前筛选结果派生。重点信号按未读、高优先级、关注中、持仓、风险、置信度和时间综合排序。
 行动队列同样不新增 IPC 或数据库字段, 由 `decisionActionQueue.ts` 从当前信号列表派生待处理项、排序原因、可信度提示、上下文缺口和下一步动作; 处理进度由 `decisionProgressModel.ts` 统计待处理、已读、关注、忽略和处置数量。
 生命周期抽屉通过 `decision:getTimeline` 读取事件列表, 通过 `decision:resolve` 保存处置结果, 通过扩展后的 `decision:dismiss` 记录忽略原因和备注。旧的已读、关注、忽略入口仍复用原状态 API, 但后端会同步写入生命周期事件。
 `SignalLifecycleDrawer` 保持独立 props, 除今日看板卡片外也可被 `StockChart` 使用。保存处置或忽略后会把更新后的信号回传给调用方, 由调用方决定是否刷新本地摘要或清理短期上下文。
 复盘统计不新增数据库字段, 由 `decisionReviewStatsModel.ts` 和 `ReviewStatsPanel.tsx` 消费 `decision:getReviewStats` 的只读聚合结果。待复盘项和重复触发项继续复用股票跳转与生命周期抽屉, 不创建新的复盘状态语义。
-右侧首屏“复盘与持仓风险”面板合并全局复盘提示和持仓风险摘要, 内部使用“持仓风险 / 复盘提示”Tab。默认优先展示持仓风险, 完整降噪建议、重复触发和待复盘列表通过复盘提示里的“查看全部”右侧抽屉展示。
+右侧首屏“复盘与持仓风险”面板合并全局复盘提示和持仓风险摘要, 内部使用“持仓风险 / 复盘提示”Tab。默认优先展示持仓风险, 完整降噪建议、重复触发和待复盘列表通过复盘提示里的“查看全部”或指挥区「复盘积压」打开右侧抽屉展示。
 右侧栏高度分配必须优先保证“复盘与持仓风险”面板可用: 今日处理进度固定高度, 合并后的复盘面板占用剩余空间并独立滚动。不要再拆成“复盘提示”和“持仓风险复盘”两个互相抢空间的小卡片。
 历史信号回看由 `HistoryReviewPanel.tsx` 消费 `decision:getHistorySignals`, 默认在近30天范围内选择当前上下文日期，可切换7/30/90天、精确信号日和“只看持仓”；未传 `tradeDate` 的周报与单股调用继续保持范围查询。持仓风险复盘由 `PortfolioRiskReviewPanel.tsx` 消费 `decision:getPortfolioRiskReview`, 聚合持仓总数、成本价缺口、风险信号、未收口项和重复触发。
 今日看板空态不新增 IPC, 由 App 传入从 `diagnostics:getHealth` 派生的初始化状态。空态按钮可打开初始化引导、诊断页或对应配置页, 与冷启动引导保持同一套最低可用条件。一键初始化同样由 App 编排现有 diagnostics IPC, `DecisionCenter` 只负责展示入口和状态, 不直接持有任务队列。
@@ -74,7 +78,7 @@ FR-180 起, 今日看板支持“我的持仓”筛选。该筛选不依赖新�
 - `SignalFilters.tsx`: FR-231 起首行提供 `组合 / 全部信号` 主切换 (`data-testid`: `decision-view-mode-portfolio` / `decision-view-mode-market`); 类型下拉不再承载“我的持仓”主入口。
 - `portfolioCommandModel.ts`: 组合模式摘要、四指标、按股聚合待办与组合进度派生; 输入为当前信号、`portfolio:list` 持仓行和持仓风险复盘。
 - `stockJudgmentModel.ts` / `StockJudgmentPanel.tsx`: FR-232 按股研判主路径; FR-237 提交原始备注、相关信号和证据快照到独立判断账本, 生命周期仅作高级事件明细。
-- `reviewReportModel.ts` / `ReviewReportPanel.tsx`: FR-233 日复盘报告即时派生与抽屉展示; FR-236 增加本地快照保存状态和幂等重试反馈; FR-250 增加「AI 研判」独立区块、loading/error、「仅重试 AI」与复制文本中的 AI 节; 解析 `[judgment:tag]`, 失败降级纯文本。
+- `reviewReportModel.ts` / `ReviewReportPanel.tsx`: FR-233 日复盘报告即时派生与抽屉展示; FR-236 增加本地快照保存状态和幂等重试反馈; FR-250 增加「AI 研判」独立区块、loading/error、「仅重试 AI」与复制文本中的 AI 节; FR-263 日报日结四节（市场环境/资金要点/持仓走势/今日关注）与复制文本; 解析 `[judgment:tag]`, 失败降级纯文本。
 - `ReviewReportHistoryPanel.tsx`: FR-236 历史报告入口, 维护类型筛选、分页、周期版本下钻、详情读取和单版本删除确认。
 - `decision:generateReviewAiNarrative` / `decision:updateReviewReportSnapshot`: FR-250 主进程窄 IPC; 前者复用 `callWithFallback` 生成单段落, 后者同 version 补写快照。
 - `JudgmentHistoryPanel.tsx`: FR-237 判断账本入口, 支持标签筛选、分页、不可变版本详情和基于同一判断组追加修正版; 来源信号失效时仍保留并可修正判断链。
@@ -85,7 +89,7 @@ FR-180 起, 今日看板支持“我的持仓”筛选。该筛选不依赖新�
 - `SignalCard.tsx`: FR-224 后采用三列研判行, 注意保持长标题和按钮在 330px/主工作区组合下不撑破布局。
 - `SignalLifecycleDrawer.tsx`: 展示单条信号生命周期摘要、事件时间线、处置结果和忽略原因输入。
 - `ReviewStatsPanel.tsx`: 展示完整复盘统计、分布、待复盘、重复触发和降噪建议; 今日看板右侧首屏只使用摘要提示, 避免完整报表挤压主体工作区。
-- `ReviewHintsDrawer`: 从复盘提示“查看全部”打开, 以 Tab 展示降噪建议、重复触发和待复盘三类内容, 每次只展示一个分类。该抽屉只用于聚焦线索, 不承担生命周期处置。
+- `ReviewHintsDrawer`: 从复盘提示「查看全部」或指挥区「复盘积压」打开; Tab 含降噪建议 / 重复触发 / 待复盘。积压入口默认待复盘; 待复盘与重复触发支持勾选、**有效收口**（`resolve RESOLVED_VALID`）、**噪音忽略**（`dismiss`）、以及事件明细/研判与走势图; 可批量作用于勾选条目。
 - `ReviewAndPortfolioPanel`: 右侧栏合并面板, 把持仓风险复盘和复盘提示放在同一张卡片内切换。该组件必须占用右侧栏剩余高度, 避免两个小卡片在小高度窗口里互相裁切。
 - `HistoryReviewPanel.tsx`: 展示历史信号回看列表, 支持范围切换、只看持仓、生命周期和走势图入口。
 - `PortfolioRiskReviewPanel.tsx`: 展示持仓风险复盘摘要和单股风险列表。

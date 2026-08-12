@@ -31,7 +31,7 @@ import {
   getResearchDiscussionContext,
   getResearchDiscussionContextByRequestId,
 } from '../database/researchDiscussionRepository'
-import { getResearchWebSearchConfig } from '../database/industryResearchGenerationRepository'
+import { isAppWebSearchConfigured } from './appWebSearchGateway'
 import { getResearchProject } from '../database/industryResearchRepository'
 import { getStockBasicByTsCodes } from '../database/stockBasicCacheRepository'
 import { getStockInfo } from '../database/stockPriceCacheRepository'
@@ -66,6 +66,7 @@ import {
   resolveCurrentResearchAgentModelConfig,
   runResearchAgent,
   type ResearchAgentPersistInput,
+  type ResearchAgentRunnerDelta,
   type ResearchAgentRunnerProgress,
 } from './researchAgentRunner'
 import {
@@ -81,6 +82,7 @@ import {
 } from './researchAgentNetworkTools'
 import { withDiscussionSessionLock } from './discussionSessionLock'
 import { deleteSessionWithSessionLock } from './discussionSessionLifecycleService'
+import { notifyResearchAgentBridge } from '../agent/researchAgentBridge'
 import {
   MULTI_PERSPECTIVE_PROTOCOL_VERSION,
   MULTI_PERSPECTIVE_UNRESTRICTED_PROMPT_RULE_VERSION,
@@ -234,12 +236,15 @@ export interface ResearchAgentRunDetailView {
     coverage: Record<string, unknown>
     warnings: unknown[]
     scope: 'local' | 'network'
-    kind: 'local' | 'search' | 'document' | 'refresh'
+    kind: 'local' | 'search' | 'document' | 'refresh' | 'mcp'
     request: {
       query: string | null
       candidateId: string | null
       stockCode: string | null
       requestedLimit: number | null
+      serverId: string | null
+      toolName: string | null
+      subjectRef: string | null
     }
     searchProvider: string | null
     candidates: Array<{
@@ -265,6 +270,17 @@ export interface ResearchAgentRunDetailView {
       contentSha256: string
       rawBodySha256: string
       mimeKind: string
+    } | null
+    mcp: {
+      serverId: string
+      serverName: string | null
+      toolName: string
+      subjectRef: string | null
+      sourceClass: 'secondary'
+      sourceKind: 'external_mcp'
+      truncated: boolean
+      resultPreview: string | null
+      resultSha256: string | null
     } | null
     network: {
       method: string
@@ -443,6 +459,22 @@ export class ResearchAgentRunManager {
     parentRunId?: string | null
   }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean }> {
     return withDiscussionSessionLock(input.sessionId, () => this.startWithinSessionLock(input))
+  }
+
+  /**
+   * 调用方已持有同一 session 的 discussionSessionLock 时使用（如 Agent Hub agentTurn 内调 deep_start）。
+   * 不可再进 withDiscussionSessionLock，否则非可重入锁会死锁。
+   */
+  startAssumingSessionLockHeld(input: {
+    requestId: string
+    sessionId: number
+    question: string
+    subjects: unknown[]
+    includePortfolio: boolean
+    confirmedBudgetVersion: string
+    parentRunId?: string | null
+  }): { run: ResearchAgentRunSummaryView; replayed: boolean } {
+    return this.startWithinSessionLock(input)
   }
 
   private startWithinSessionLock(input: {
@@ -721,6 +753,7 @@ export class ResearchAgentRunManager {
       signal: controller.signal,
       persistReport: persistResearchAgentReport,
       onProgress: (event) => this.emit(event),
+      onDelta: (event) => this.emitDelta(event),
     }).catch((error) => {
       console.error('[ResearchAgent] run failed:', error instanceof Error ? error.message : String(error))
     }).finally(() => {
@@ -732,13 +765,35 @@ export class ResearchAgentRunManager {
         current,
         current.error_message ?? researchAgentStatusLabel(current.status),
       ))
+      this.emitDelta({ runId, phase: current.phase, type: 'done' })
     })
   }
 
   private emit(event: ResearchAgentRunnerProgress): void {
+    // Agent Hub：progress 桥接总线（ai:agentEvent）；不改变既有 researchAgent:progress
+    notifyResearchAgentBridge('progress', {
+      runId: event.runId,
+      phase: event.phase,
+      message: event.message,
+      status: event.status,
+    })
     const window = this.dependencies.getWindow?.()
     if (!window || window.isDestroyed()) return
     window.webContents.send('researchAgent:progress', event)
+  }
+
+  private emitDelta(event: ResearchAgentRunnerDelta): void {
+    notifyResearchAgentBridge('delta', {
+      runId: event.runId,
+      phase: event.phase,
+      type: event.type,
+      accumulated: event.accumulated,
+    })
+    const window = this.dependencies.getWindow?.()
+    if (!window || window.isDestroyed()) return
+    try {
+      window.webContents.send('researchAgent:delta', event)
+    } catch { /* UI only */ }
   }
 
   private buildPreflight(input: {
@@ -751,12 +806,7 @@ export class ResearchAgentRunManager {
     includeJudgmentHistory: boolean
   }): ResearchAgentPreflightView {
     const config = this.resolveModelConfig(this.db)
-    const searchConfig = getResearchWebSearchConfig(this.db)
-    const searchConfigured = Boolean(
-      searchConfig?.enabled === 1
-      && searchConfig.api_key_encrypted
-      && searchConfig.api_key_encrypted.length > 0,
-    )
+    const searchConfigured = isAppWebSearchConfigured(this.db)
     const toolIds = new Set<string>(['news.recent_briefings'])
     if (!input.projectId) {
       for (const id of ['stock.price_history', 'stock.trend_snapshot', 'stock.fundamentals', 'stock.announcements']) toolIds.add(id)
@@ -774,6 +824,7 @@ export class ResearchAgentRunManager {
     }
     toolIds.add('web.search')
     toolIds.add('web.fetch_page')
+    toolIds.add('mcp.invoke')
     if (input.includeJudgmentHistory) toolIds.add('decision.judgment_history')
     toolIds.add('portfolio.holdings')
     return {
@@ -804,8 +855,8 @@ export class ResearchAgentRunManager {
         mode: 'local_then_network',
         networkToolsAvailable: true,
         message: searchConfigured
-          ? '本地证据不足时可通过受控搜索、候选正文、正式披露及必要行情工具补证；补证后仍有缺口时继续生成降级报告，并明确披露未知项。'
-          : '行情与财务受控补证可用；网页搜索尚未配置密钥时仍继续综合，但新闻、披露或产业正文结论会明确降级。',
+          ? '本地证据不足时可通过受控搜索（配置中心 → Agent → 本应用联网搜索）、候选正文、正式披露及必要行情工具补证；任意外部 MCP（mcp.invoke）另需开启「允许 Agent 联网」；补证后仍有缺口时继续生成降级报告，并明确披露未知项。'
+          : '行情与财务受控补证可用；网页搜索请到配置中心 → Agent → 本应用联网搜索启用通道。任意外部 MCP（mcp.invoke）另需开启「允许 Agent 联网」。未配置搜索时新闻/披露正文结论会明确降级。',
       },
     }
   }
@@ -1371,6 +1422,7 @@ function projectResearchAgentToolCall(
     ? data.candidates.flatMap((candidate) => projectCandidate(candidate)).slice(0, 8)
     : []
   const document = projectDocument(data?.document)
+  const mcp = projectMcpSample(data?.mcp)
   const network = projectNetworkEnvelope(data?.networkEnvelope)
   const failure = projectToolFailure(call.status, call.error_code, call.error_message)
   return {
@@ -1392,10 +1444,14 @@ function projectResearchAgentToolCall(
       candidateId: boundedText(input?.candidateId, 40),
       stockCode: boundedText(input?.stockCode, 16),
       requestedLimit: boundedIntegerView(input?.maxResults ?? input?.limit),
+      serverId: boundedText(input?.serverId, 80),
+      toolName: boundedText(input?.toolName, 160),
+      subjectRef: boundedText(input?.subjectRef, 160),
     },
     searchProvider: boundedText(data?.providerId, 40),
     candidates,
     document,
+    mcp,
     network,
     failure,
     durationMs: call.duration_ms,
@@ -1453,6 +1509,26 @@ function projectDocument(value: unknown): ResearchAgentRunDetailView['toolCalls'
   }
 }
 
+function projectMcpSample(value: unknown): ResearchAgentRunDetailView['toolCalls'][number]['mcp'] {
+  const mcp = recordValue(value)
+  const serverId = boundedText(mcp?.serverId, 80)
+  const toolName = boundedText(mcp?.toolName, 160)
+  if (!serverId || !toolName || mcp?.sourceClass !== 'secondary' || mcp?.sourceKind !== 'external_mcp') {
+    return null
+  }
+  return {
+    serverId,
+    serverName: boundedText(mcp.serverName, 120),
+    toolName,
+    subjectRef: boundedText(mcp.subjectRef, 160),
+    sourceClass: 'secondary',
+    sourceKind: 'external_mcp',
+    truncated: mcp.truncated === true,
+    resultPreview: boundedText(mcp.resultPreview, 4_000),
+    resultSha256: hashValue(mcp.resultSha256),
+  }
+}
+
 function projectNetworkEnvelope(value: unknown): ResearchAgentRunDetailView['toolCalls'][number]['network'] {
   const envelope = recordValue(value)
   const request = recordValue(envelope?.request)
@@ -1493,7 +1569,7 @@ function projectToolFailure(
   else if (status === 'cancelled' || /CANCEL/i.test(code)) category = 'cancelled'
   else if (code === 'NETWORK_RATE_LIMITED') category = 'rate_limited'
   else if (/NOT_CONFIGURED|CONFIG_INVALID/.test(code)) category = 'configuration'
-  else if (/SUBJECT_DENIED|CANDIDATE_NOT_AUTHORIZED|URL_INVALID|PROTOCOL_NOT_ALLOWED|HOST_BLOCKED|REDIRECT_(?:INVALID|UNSAFE)|DNS_REBIND/.test(code)) category = 'security'
+  else if (/SUBJECT_DENIED|CANDIDATE_NOT_AUTHORIZED|URL_INVALID|PROTOCOL_NOT_ALLOWED|HOST_BLOCKED|REDIRECT_(?:INVALID|UNSAFE)|DNS_REBIND|MCP_SERVER_DISABLED|MCP_TOOL_NOT_AUTHORIZED|NETWORK_DISABLED/.test(code)) category = 'security'
   else if (code.startsWith('NETWORK_') || /_FETCH_FAILED|_REFRESH_FAILED|_PROVIDER_FAILED/.test(code)) category = 'network'
   return {
     category,
@@ -1511,6 +1587,7 @@ function isNetworkToolId(toolId: string): boolean {
 function toolCallKind(toolId: string): ResearchAgentRunDetailView['toolCalls'][number]['kind'] {
   if (toolId === 'web.search' || toolId === 'official.disclosure_search') return 'search'
   if (toolId === 'web.fetch_page' || toolId === 'official.disclosure_document') return 'document'
+  if (toolId === 'mcp.invoke') return 'mcp'
   return isNetworkToolId(toolId) ? 'refresh' : 'local'
 }
 

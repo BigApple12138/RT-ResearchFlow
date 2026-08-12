@@ -1104,7 +1104,7 @@ export default function App() {
             type="button"
             data-testid="industry-research-background-task"
             aria-live="polite"
-            aria-label={`${researchTaskLabel(industryResearchTask)}，点击打开 AI 分析聊天`}
+            aria-label={`${researchTaskLabel(industryResearchTask)}，点击打开产业研究工作台`}
             onClick={() => {
               openAIAnalysisWorkbench('industryResearch', industryResearchTask.projectId)
             }}

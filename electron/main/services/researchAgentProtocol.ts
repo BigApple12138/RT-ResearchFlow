@@ -48,10 +48,11 @@ export function parseResearchAgentPlanAction(text: string): ResearchAgentPlanAct
   assertExactKeys(value, ['protocolVersion', 'action', 'questions', 'candidateTools', 'stopConditions', 'rationale'])
   if (value.protocolVersion !== RESEARCH_AGENT_PROTOCOL_VERSION || value.action !== 'plan') invalid('计划动作协议或类型无效')
   const questions = stringArray(value.questions, 1, 6, 500, 'questions')
-  const candidateTools = stringArray(value.candidateTools, 0, 8, 120, 'candidateTools')
+  // 模型在工具清单变长后常一次列出过多 ID；硬失败会整轮作废。去重后截断到协议上限 8。
+  const candidateToolsRaw = stringArray(value.candidateTools, 0, 64, 120, 'candidateTools')
+  const candidateTools = [...new Set(candidateToolsRaw)].slice(0, 8)
   const stopConditions = stringArray(value.stopConditions, 1, 6, 500, 'stopConditions')
   const rationale = boundedString(value.rationale, 1, 2_000, 'rationale')
-  if (new Set(candidateTools).size !== candidateTools.length) invalid('candidateTools不得重复')
   return {
     protocolVersion: RESEARCH_AGENT_PROTOCOL_VERSION,
     action: 'plan',
@@ -126,7 +127,7 @@ export function buildResearchAgentPlanningMessages(input: {
       '本轮只制定计划，不得输出研究结论。必须只返回一个JSON对象，不要使用Markdown代码块。',
       `协议版本：${RESEARCH_AGENT_PROTOCOL_VERSION}。`,
       '返回结构：{"protocolVersion":"single-agent.v1","action":"plan","questions":["..."],"candidateTools":["内部工具ID"],"stopConditions":["..."],"rationale":"..."}',
-      'questions最多6项；candidateTools只能来自下方清单；不得增加字段。',
+      'questions最多6项；candidateTools只能来自下方清单，且最多选8个（优先本地事实工具，再按缺口选联网补证；不要把清单整表抄进候选）；不得增加字段。',
       '',
       JSON.stringify({
         question: input.question,

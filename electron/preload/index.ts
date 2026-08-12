@@ -45,6 +45,14 @@ import type {
   ResearchAccessWorkbench,
 } from '../main/ipc/researchAccessHandlers'
 import type {
+  ExternalMcpApiResult,
+  ExternalMcpIdRequest,
+  ExternalMcpSaveRequest,
+  ExternalMcpServerView,
+  ExternalMcpSetEnabledRequest,
+  ExternalMcpTestResponse,
+} from '../main/ipc/externalMcpHandlers'
+import type {
   ResearchAgentDetailResponse,
   ResearchAgentDeleteResponse,
   ResearchAgentListResponse,
@@ -1567,6 +1575,16 @@ const api = {
       ipcRenderer.on('researchAgent:progress', wrapped)
       return () => { ipcRenderer.removeListener('researchAgent:progress', wrapped) }
     },
+    onDelta: (listener: (event: {
+      runId: string
+      phase: string
+      type: 'start' | 'delta' | 'reset' | 'done'
+      accumulated?: string
+    }) => void) => {
+      const wrapped = (_event: IpcRendererEvent, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('researchAgent:delta', wrapped)
+      return () => { ipcRenderer.removeListener('researchAgent:delta', wrapped) }
+    },
   },
   researchAccess: {
     getWorkbench: () => ipcRenderer.invoke('researchAccess:getWorkbench') as Promise<ResearchAccessApiResult<ResearchAccessWorkbench>>,
@@ -1580,6 +1598,18 @@ const api = {
       ipcRenderer.invoke('researchAccess:revokeProfile', payload) as Promise<ResearchAccessApiResult<ResearchAccessWorkbench['profiles'][number]>>,
     listAudit: (payload: ResearchAccessAuditRequest = {}) =>
       ipcRenderer.invoke('researchAccess:listAudit', payload) as Promise<ResearchAccessApiResult<{ items: ResearchAccessAuditView[]; nextCursor: number | null }>>,
+  },
+  externalMcp: {
+    listServers: () =>
+      ipcRenderer.invoke('externalMcp:listServers') as Promise<ExternalMcpApiResult<ExternalMcpServerView[]>>,
+    saveServer: (payload: ExternalMcpSaveRequest) =>
+      ipcRenderer.invoke('externalMcp:saveServer', payload) as Promise<ExternalMcpApiResult<ExternalMcpServerView>>,
+    deleteServer: (payload: ExternalMcpIdRequest) =>
+      ipcRenderer.invoke('externalMcp:deleteServer', payload) as Promise<ExternalMcpApiResult<{ id: string }>>,
+    setEnabled: (payload: ExternalMcpSetEnabledRequest) =>
+      ipcRenderer.invoke('externalMcp:setEnabled', payload) as Promise<ExternalMcpApiResult<ExternalMcpServerView>>,
+    testServer: (payload: ExternalMcpIdRequest) =>
+      ipcRenderer.invoke('externalMcp:testServer', payload) as Promise<ExternalMcpApiResult<ExternalMcpTestResponse>>,
   },
   app: {
     relaunch: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),
@@ -1786,6 +1816,37 @@ const api = {
         code?: string
         warning?: string
       }>,
+    agentTurn: (payload: { requestId: string; sessionId: number; message: string }) =>
+      ipcRenderer.invoke('ai:agentTurn', payload) as Promise<{
+        text?: string
+        messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
+        terminal?: 'done' | 'error' | 'cancelled'
+        waitingSubagent?: { runId: string }
+        error?: string
+        code?: string
+      }>,
+    agentConfirm: (payload: { requestId: string; hitlId: string; approved: boolean }) =>
+      ipcRenderer.invoke('ai:agentConfirm', payload) as Promise<{
+        ok: boolean
+        requestId?: string
+        hitlId?: string
+        approved?: boolean
+        error?: string
+        code?: string
+      }>,
+    onAgentEvent: (
+      listener: (data: {
+        type: string
+        requestId: string
+        sessionId: number
+        at: number
+        payload?: Record<string, unknown>
+      }) => void,
+    ) => {
+      const wrapped = (_event: unknown, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('ai:agentEvent', wrapped)
+      return () => { ipcRenderer.removeListener('ai:agentEvent', wrapped) }
+    },
     compactDiscussionContext: (payload: {
       requestId: string
       sessionId: number
@@ -1859,6 +1920,22 @@ const api = {
     ) => {
       ipcRenderer.on('ai:analyzeProgress', (_event, data) => listener(data))
       return () => { ipcRenderer.removeAllListeners('ai:analyzeProgress') }
+    },
+    onFollowUpDelta: (
+      listener: (data: {
+        type: 'start' | 'delta' | 'reset' | 'error'
+        requestId: string
+        sessionId: number
+        streaming?: boolean
+        reason?: 'web_search' | 'buffered'
+        accumulated?: string
+        provider?: string
+        message?: string
+      }) => void,
+    ) => {
+      const wrapped = (_event: unknown, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('ai:followUpDelta', wrapped)
+      return () => { ipcRenderer.removeListener('ai:followUpDelta', wrapped) }
     },
     onTushareNotConfigured: (listener: (data: { stockCodes: string[] }) => void) => {
       ipcRenderer.on('ai:tushareNotConfigured', (_event, data) => listener(data))
@@ -1976,6 +2053,11 @@ const api = {
             message: string
           }
         | { ok: false; reason: 'invalid_code' | 'no_token' | 'not_found' | 'fetch_error' }
+      >,
+    refreshTodayBar: (stockCode: string) =>
+      ipcRenderer.invoke('datasource:refreshTodayBar', { stockCode }) as Promise<
+        | { ok: true; updated: boolean }
+        | { ok: false; reason: 'invalid_code' | 'fetch_error'; message?: string }
       >,
     fetchStock: (stockCode: string) =>
       ipcRenderer.invoke('datasource:fetchStock', { stockCode }) as Promise<
@@ -3757,6 +3839,81 @@ const api = {
         error?: { code: string; message: string } | string
         message?: string
       }>,
+    generateTodayBriefAi: (payload: {
+      brief: {
+        headline: string
+        bullets: string[]
+        marketThemeLine: string | null
+        portfolioClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        sectorClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        strategyClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        peripheralClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        noiseCount: number
+        disclaimer: string
+      }
+    }) =>
+      ipcRenderer.invoke('decision:generateTodayBriefAi', payload) as Promise<{
+        ok: boolean
+        data?: {
+          status: 'pending' | 'ready' | 'error' | 'skipped'
+          text: string | null
+          generatedAt?: number
+          provider?: string
+          model?: string
+          errorCode?: string
+          errorMessage?: string
+        }
+        error?: { code: string; message: string } | string
+        message?: string
+      }>,
     listReviewReports: (filters?: ReviewReportListFilters) =>
       ipcRenderer.invoke('decision:listReviewReports', filters ?? {}) as Promise<{
         ok: boolean
@@ -3837,8 +3994,8 @@ const api = {
       ipcRenderer.invoke('portfolio:updateCostPrice', { tsCode, costPrice }) as Promise<{ ok: boolean; code?: string; message?: string }>,
     getDashboard: (options?: { limit?: number; offset?: number }) =>
       ipcRenderer.invoke('portfolio:getDashboard', options ?? {}) as Promise<{ ok: boolean; data?: PortfolioDashboardItem[]; total?: number; code?: string; message?: string }>,
-    forecastNow: () =>
-      ipcRenderer.invoke('portfolio:forecastNow') as Promise<{ ok: boolean; code?: string }>,
+    forecastNow: (payload?: { force?: boolean }) =>
+      ipcRenderer.invoke('portfolio:forecastNow', payload ?? {}) as Promise<{ ok: boolean; code?: string }>,
     onForecastProgress: (
       cb: (data: { current: number; total: number; stockCode: string; ok: boolean; error?: string }) => void
     ) => {
@@ -4032,10 +4189,12 @@ const api = {
       ipcRenderer.invoke('industryResearch:getFinancialSyncStatus', { companyId }),
     getWebSearchConfig: () => ipcRenderer.invoke('industryResearch:getWebSearchConfig'),
     saveWebSearchConfig: (payload: {
-      providerId: 'tavily' | 'bing' | 'custom_openai_compatible_search'
+      providerId: 'tavily' | 'bing' | 'custom_openai_compatible_search' | 'external_mcp' | 'builtin_web'
       enabled: boolean
       apiKey?: string | null
       baseUrl?: string | null
+      mcpServerId?: string | null
+      mcpToolName?: string | null
     }) => ipcRenderer.invoke('industryResearch:saveWebSearchConfig', payload),
     validateWebSearchConfig: () => ipcRenderer.invoke('industryResearch:validateWebSearchConfig'),
     listEvidenceCandidates: (projectId: string, runId?: string) =>

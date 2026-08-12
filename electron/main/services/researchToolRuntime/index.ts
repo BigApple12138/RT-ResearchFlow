@@ -18,9 +18,16 @@ import type {
   ResearchRetrievalMode,
   ResearchWebSearchProviderId,
 } from '../../database/types'
-import { decryptApiKey, encryptApiKey } from '../../utils/apiKeyEncryption'
+import {
+  AppWebSearchError,
+  getAppWebSearchConfigView,
+  isAppWebSearchConfigured,
+  runAppWebSearch,
+  saveAppWebSearchConfig,
+  validateAppWebSearch,
+} from '../appWebSearchGateway'
 import { fetchResearchPage, isLikelySearchResultPage } from './pageFetch'
-import { runWebSearch, searchWithBuiltinWebTool, validateWebSearchProvider } from './searchProviders'
+import { searchWithBuiltinWebTool } from './searchProviders'
 import type {
   ResearchQueryIntent,
   ResearchRetrievalPlan,
@@ -201,25 +208,7 @@ function rewriteQuery(query: ResearchRetrievalQuery, topic: string): ResearchRet
 }
 
 export function getWebSearchConfigView(db: Database.Database) {
-  const row = getResearchWebSearchConfig(db)
-  if (!row) {
-    return {
-      providerId: 'tavily' as ResearchWebSearchProviderId,
-      enabled: false,
-      hasApiKey: false,
-      baseUrl: null,
-      lastValidatedAt: null,
-      lastErrorCode: null,
-    }
-  }
-  return {
-    providerId: row.provider_id,
-    enabled: row.enabled === 1,
-    hasApiKey: Boolean(row.api_key_encrypted && row.api_key_encrypted.length > 0),
-    baseUrl: row.base_url,
-    lastValidatedAt: row.last_validated_at,
-    lastErrorCode: row.last_error_code,
-  }
+  return getAppWebSearchConfigView(db)
 }
 
 export function saveWebSearchConfigAndView(
@@ -229,56 +218,28 @@ export function saveWebSearchConfigAndView(
     enabled: boolean
     apiKey?: string | null
     baseUrl?: string | null
+    mcpServerId?: string | null
+    mcpToolName?: string | null
   },
 ) {
-  let apiKeyEncrypted: Buffer | null | undefined
-  let clearApiKey = false
-  if (input.apiKey === null) {
-    clearApiKey = true
-  } else if (typeof input.apiKey === 'string' && input.apiKey.trim()) {
-    apiKeyEncrypted = encryptApiKey(input.apiKey.trim())
-    if (!apiKeyEncrypted) throw new ResearchToolRuntimeError('WEB_SEARCH_PROVIDER_FAILED', '当前环境无法安全保存搜索密钥')
+  try {
+    return saveAppWebSearchConfig(db, input)
+  } catch (error) {
+    if (error instanceof AppWebSearchError) {
+      throw new ResearchToolRuntimeError(error.code, error.message)
+    }
+    throw error
   }
-  saveResearchWebSearchConfig(db, {
-    providerId: input.providerId,
-    enabled: input.enabled,
-    apiKeyEncrypted,
-    clearApiKey,
-    baseUrl: input.baseUrl ?? null,
-  })
-  return getWebSearchConfigView(db)
 }
 
 export async function validateConfiguredWebSearch(db: Database.Database): Promise<{ ok: true; validatedAt: number }> {
-  const config = getResearchWebSearchConfig(db)
-  if (!config || config.enabled !== 1 || !config.api_key_encrypted) {
-    throw new ResearchToolRuntimeError('WEB_SEARCH_NOT_CONFIGURED', '尚未配置可用的联网搜索服务')
-  }
-  const apiKey = decryptApiKey(config.api_key_encrypted)
-  if (!apiKey) throw new ResearchToolRuntimeError('WEB_SEARCH_NOT_CONFIGURED', '搜索密钥不可用')
   try {
-    await validateWebSearchProvider({
-      providerId: config.provider_id,
-      apiKey,
-      baseUrl: config.base_url,
-    })
-    const validatedAt = Date.now()
-    saveResearchWebSearchConfig(db, {
-      providerId: config.provider_id,
-      enabled: true,
-      baseUrl: config.base_url,
-      lastValidatedAt: validatedAt,
-      lastErrorCode: null,
-    })
-    return { ok: true, validatedAt }
-  } catch {
-    saveResearchWebSearchConfig(db, {
-      providerId: config.provider_id,
-      enabled: config.enabled === 1,
-      baseUrl: config.base_url,
-      lastErrorCode: 'WEB_SEARCH_PROVIDER_FAILED',
-    })
-    throw new ResearchToolRuntimeError('WEB_SEARCH_PROVIDER_FAILED', '搜索服务校验失败')
+    return await validateAppWebSearch(db)
+  } catch (error) {
+    if (error instanceof AppWebSearchError) {
+      throw new ResearchToolRuntimeError(error.code, error.message)
+    }
+    throw error
   }
 }
 
@@ -507,9 +468,7 @@ export async function retrieveResearchEvidenceCandidates(
     .map((candidate) => urlKey(candidate.source_url)))
   const isAllowedSource = (url: string): boolean => !excludedUrls.has(urlKey(url))
   const config = getResearchWebSearchConfig(db)
-  const enhancedSearchConfigured = Boolean(
-    config && config.enabled === 1 && config.api_key_encrypted && config.api_key_encrypted.length > 0,
-  )
+  const enhancedSearchConfigured = isAppWebSearchConfigured(db)
   const topicTokens = uniqueStrings([
     input.industryName || '',
     input.productScope || '',
@@ -571,10 +530,6 @@ export async function retrieveResearchEvidenceCandidates(
     }
   }
 
-  const enhancedApiKey = config && config.enabled === 1 && config.api_key_encrypted
-    ? decryptApiKey(config.api_key_encrypted)
-    : null
-
   const hits: ResearchSearchHit[] = []
   let searchFailed = false
   let enhancedSearchFailed = false
@@ -587,22 +542,19 @@ export async function retrieveResearchEvidenceCandidates(
   hits.push(...local)
   localHits = local.length
 
-  // 2) 外网检索
+  // 2) 外网检索：优先本应用联网搜索网关；未启用时降级内置弱检索
   const queries = [...basePlan.queries]
   for (let i = 0; i < queries.length; i += 1) {
     if (input.shouldCancel?.()) break
     const query = queries[i]
     let batch: ResearchSearchHit[] = []
-    const useEnhancedSearch = Boolean(enhancedApiKey && config)
+    const useEnhancedSearch = enhancedSearchConfigured
     try {
-      if (enhancedApiKey && config) {
-        batch = await runWebSearch({
-          providerId: config.provider_id,
-          apiKey: enhancedApiKey,
-          baseUrl: config.base_url,
+      if (useEnhancedSearch) {
+        batch = await runAppWebSearch(db, {
           query: query.text,
           maxResults: 5,
-          depth: 'advanced',
+          timeoutMs: config?.provider_id === 'external_mcp' ? 15_000 : 8_000,
         })
       } else {
         batch = await searchWithBuiltinWebTool(query.text, 4)
@@ -617,6 +569,20 @@ export async function retrieveResearchEvidenceCandidates(
       searchFailed = true
       if (useEnhancedSearch) enhancedSearchFailed = true
       query.status = 'failed'
+      if (useEnhancedSearch) {
+        try {
+          batch = await searchWithBuiltinWebTool(query.text, 4)
+          batch = batch.filter((hit) => isAllowedSource(hit.url))
+          builtinHits += batch.length
+          query.hitCount = batch.length
+          if (batch.length) {
+            query.status = 'executed'
+            hits.push(...batch)
+          }
+        } catch {
+          // keep failed
+        }
+      }
     }
 
     // 空召回改写一次
@@ -713,38 +679,33 @@ export async function retrieveResearchEvidenceCandidates(
         status: 'not_configured',
         errorCode: null,
       }
-    : !enhancedApiKey
+    : enhancedHits > 0
       ? {
           providerId: config!.provider_id,
           configured: true,
-          status: 'key_unavailable',
-          errorCode: 'WEB_SEARCH_KEY_UNAVAILABLE',
+          status: 'succeeded',
+          errorCode: null,
         }
-      : enhancedHits > 0
+      : enhancedSearchFailed
         ? {
             providerId: config!.provider_id,
             configured: true,
-            status: 'succeeded',
-            errorCode: null,
+            status: 'failed',
+            errorCode: 'WEB_SEARCH_PROVIDER_FAILED',
           }
-        : enhancedSearchFailed
-          ? {
-              providerId: config!.provider_id,
-              configured: true,
-              status: 'failed',
-              errorCode: 'WEB_SEARCH_PROVIDER_FAILED',
-            }
-          : {
-              providerId: config!.provider_id,
-              configured: true,
-              status: 'empty',
-              errorCode: 'WEB_SEARCH_EMPTY_RESULT',
-            }
+        : {
+            providerId: config!.provider_id,
+            configured: true,
+            status: 'empty',
+            errorCode: 'WEB_SEARCH_EMPTY_RESULT',
+          }
   if (config && enhancedSearchConfigured) {
     saveResearchWebSearchConfig(db, {
       providerId: config.provider_id,
       enabled: true,
       baseUrl: config.base_url,
+      mcpServerId: config.mcp_server_id,
+      mcpToolName: config.mcp_tool_name,
       lastErrorCode: enhancedSearch.status === 'succeeded' || enhancedSearch.status === 'empty'
         ? null
         : enhancedSearch.errorCode,
@@ -755,7 +716,6 @@ export async function retrieveResearchEvidenceCandidates(
   if (enhancedHits > 0) parts.push('增强搜索')
   if (builtinHits > 0) parts.push('内置弱检索')
   if (detailPageCount > 0) parts.push(`详情页 ${detailPageCount}`)
-  if (enhancedSearch.status === 'key_unavailable') parts.push('增强搜索密钥暂不可用，已自动回退')
   if (enhancedSearch.status === 'failed') parts.push('增强搜索调用失败，已自动回退')
   if (enhancedSearch.status === 'empty') parts.push('增强搜索本轮无结果，已自动回退')
   const degradedCode = enhancedSearch.errorCode || modeInfo.degradedCode

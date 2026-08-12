@@ -4,7 +4,7 @@ import { runMigrations } from '../../electron/main/database/db'
 import { upsertDailyClose } from '../../electron/main/database/dailyCloseCacheRepository'
 import { upsertTrendStructureReview } from '../../electron/main/database/trendStructureReviewRepository'
 import { batchAddTrendWatchStocks } from '../../electron/main/database/trendWatchlistRepository'
-import { computeTrendScoresOnDemand } from '../../electron/main/services/trendWatchlistService'
+import { computeTrendScoresOnDemand, recomputeTrendScoresRealtime } from '../../electron/main/services/trendWatchlistService'
 import { getTrendWorkbench } from '../../electron/main/services/trendWorkbenchService'
 import { buildTrendReviewFacts, hashTrendReviewFacts } from '../../electron/main/services/trendStructureReviewService'
 
@@ -36,7 +36,7 @@ describe('Trend Workbench AI 复核附加字段', () => {
     const facts = buildTrendReviewFacts(db, item.tsCode, () => first)
     upsertTrendStructureReview(db, {
       tsCode: item.tsCode,
-      scoreDate: item.scoreDate,
+      scoreDate: facts.scoreDate,
       factsHash: hashTrendReviewFacts(facts),
       requestId: '00000000-0000-4000-8000-000000000201',
       localTrendState: item.trendState,
@@ -53,7 +53,7 @@ describe('Trend Workbench AI 复核附加字段', () => {
     const next = getTrendWorkbench(db).items[0]
     expect(next.structureReview).toMatchObject({
       verdict: 'agree',
-      scoreDate: item.scoreDate,
+      scoreDate: facts.scoreDate,
       factsHash: hashTrendReviewFacts(facts),
       stale: false,
       source: 'model',
@@ -69,7 +69,7 @@ describe('Trend Workbench AI 复核附加字段', () => {
 
     upsertTrendStructureReview(db, {
       tsCode: item.tsCode,
-      scoreDate: item.scoreDate,
+      scoreDate: facts.scoreDate,
       factsHash,
       requestId: '00000000-0000-4000-8000-000000000203',
       localTrendState: item.trendState,
@@ -87,7 +87,7 @@ describe('Trend Workbench AI 复核附加字段', () => {
     // 同 factsHash 会重放既有 revision；换 hash 才能写入带 provider/model 的新 revision
     upsertTrendStructureReview(db, {
       tsCode: item.tsCode,
-      scoreDate: item.scoreDate,
+      scoreDate: facts.scoreDate,
       factsHash: 'c'.repeat(64),
       requestId: '00000000-0000-4000-8000-000000000204',
       localTrendState: item.trendState,
@@ -108,9 +108,10 @@ describe('Trend Workbench AI 复核附加字段', () => {
   it('当前事实 hash 不同则只标记 stale，不改变本地趋势状态', () => {
     const first = getTrendWorkbench(db)
     const item = first.items[0]
+    const facts = buildTrendReviewFacts(db, item.tsCode, () => first)
     upsertTrendStructureReview(db, {
       tsCode: item.tsCode,
-      scoreDate: item.scoreDate,
+      scoreDate: facts.scoreDate,
       factsHash: 'b'.repeat(64),
       requestId: '00000000-0000-4000-8000-000000000202',
       localTrendState: item.trendState,
@@ -127,6 +128,68 @@ describe('Trend Workbench AI 复核附加字段', () => {
     const next = getTrendWorkbench(db).items[0]
     expect(next.structureReview?.stale).toBe(true)
     expect(next.trendState).toBe(item.trendState)
+  })
+
+  it('盘中实时价变化不使已保存的 EOD 结构复核变 stale', () => {
+    const first = getTrendWorkbench(db)
+    const item = first.items[0]
+    const facts = buildTrendReviewFacts(db, item.tsCode, () => first)
+    upsertTrendStructureReview(db, {
+      tsCode: item.tsCode,
+      scoreDate: facts.scoreDate,
+      factsHash: hashTrendReviewFacts(facts),
+      requestId: '00000000-0000-4000-8000-000000000205',
+      localTrendState: item.trendState,
+      localTotalScore: item.totalScore,
+      verdict: 'agree',
+      rationale: '结构仍完整。',
+      focusPoints: [],
+      provider: 'qwen',
+      model: 'test-model',
+      audit: { status: 'passed' },
+      now: 1_000,
+    })
+
+    sharedQuote.cache.set(item.tsCode, { price: (item.price ?? 20) * 1.08, change: 8 })
+    sharedQuote.cache.set('000300.SH', { price: 110, change: 1 })
+    sharedQuote.cachedAt = Date.now()
+
+    recomputeTrendScoresRealtime(db)
+    const after = getTrendWorkbench(db).items[0]
+    expect(after.structureReview?.stale).toBe(false)
+    expect(after.structureReview?.factsHash).toBe(hashTrendReviewFacts(facts))
+  })
+
+  it('本地日线结算事实变化后标记 stale', () => {
+    const first = getTrendWorkbench(db)
+    const item = first.items[0]
+    const facts = buildTrendReviewFacts(db, item.tsCode, () => first)
+    upsertTrendStructureReview(db, {
+      tsCode: item.tsCode,
+      scoreDate: facts.scoreDate,
+      factsHash: hashTrendReviewFacts(facts),
+      requestId: '00000000-0000-4000-8000-000000000206',
+      localTrendState: item.trendState,
+      localTotalScore: item.totalScore,
+      verdict: 'agree',
+      rationale: '结构仍完整。',
+      focusPoints: [],
+      provider: 'qwen',
+      model: 'test-model',
+      audit: { status: 'passed' },
+      now: 1_000,
+    })
+
+    const lastDate = item.dataCoverage.latestTradeDate!
+    upsertDailyClose(db, [{
+      tsCode: item.tsCode,
+      tradeDate: lastDate,
+      open: 50, high: 55, low: 49, close: 54,
+      pctChg: 20, vol: 9_000_000, turnoverRate: 8,
+    }])
+
+    const after = getTrendWorkbench(db).items[0]
+    expect(after.structureReview?.stale).toBe(true)
   })
 })
 

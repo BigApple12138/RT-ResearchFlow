@@ -9,9 +9,12 @@ import {
 } from '../database/trendStructureReviewRepository'
 import { auditResearchText, type ResearchTextAudit } from './researchEvidenceAuditService'
 import { callWithFallback, type AIFallbackResult } from './aiFallbackService'
-import { getTrendWorkbench, type TrendWorkbenchSnapshot } from './trendWorkbenchService'
 import {
-  buildTrendReviewFactsFromItem,
+  buildEodTrendReviewFactsForItem,
+  getTrendWorkbench,
+  type TrendWorkbenchSnapshot,
+} from './trendWorkbenchService'
+import {
   hashTrendReviewFacts,
   normalizeTrendTsCode,
   parseAiTrendReviewPayload,
@@ -54,7 +57,7 @@ export function buildTrendReviewFacts(
   const normalizedCode = normalizeTrendTsCode(tsCode)
   const item = loadWorkbench(db).items.find((candidate) => normalizeTrendTsCode(candidate.tsCode) === normalizedCode)
   if (!item) throw new Error('TREND_CODE_NOT_IN_WORKBENCH')
-  return buildTrendReviewFactsFromItem(item, now)
+  return buildEodTrendReviewFactsForItem(db, item, now)
 }
 
 export function isTrendStructureReviewStale(

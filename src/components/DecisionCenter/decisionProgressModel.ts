@@ -17,7 +17,8 @@ export function buildDecisionProgressModel(signals: DecisionSignalItem[]): Decis
   const watching = signals.filter(signal => signal.status === 'WATCHING').length
   const dismissed = signals.filter(signal => signal.status === 'DISMISSED').length
   const resolved = signals.filter(signal => !!signal.resolvedAt || !!signal.resolution).length
-  const pending = signals.filter(signal => signal.status === 'NEW' || signal.status === 'WATCHING').filter(signal => !signal.resolvedAt).length
+  // 待处理 = 未读 NEW；关注中单独统计，不再计入待处理
+  const pending = signals.filter(signal => signal.status === 'NEW' && !signal.resolvedAt).length
 
   if (total === 0) {
     return {
@@ -28,7 +29,7 @@ export function buildDecisionProgressModel(signals: DecisionSignalItem[]): Decis
       dismissed,
       resolved,
       title: '今日暂无信号',
-      description: '当前筛选条件下没有需要展示的信号。'
+      description: '当前筛选条件下没有需要展示的信号。',
     }
   }
 
@@ -41,7 +42,7 @@ export function buildDecisionProgressModel(signals: DecisionSignalItem[]): Decis
       dismissed,
       resolved,
       title: '待处理已清空',
-      description: '今日信号都已阅读、忽略或完成处置, 可以继续复盘关注项。'
+      description: '未读已清空。关注项在「关注中」查看。',
     }
   }
 
@@ -53,6 +54,6 @@ export function buildDecisionProgressModel(signals: DecisionSignalItem[]): Decis
     dismissed,
     resolved,
     title: `还有 ${pending} 条待处理`,
-    description: '优先处理持仓、风险、高优先级和重复触发信号。'
+    description: '「处理完 / 忽略 / 关注」都会移出待处理。',
   }
 }

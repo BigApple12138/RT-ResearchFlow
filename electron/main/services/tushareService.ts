@@ -24,6 +24,13 @@ import {
   DEFAULT_TUSHARE_API_URL,
   resolveTushareApiUrl
 } from './tushareApiUrl'
+import {
+  buildDailyRowFromIntradayItems,
+  buildDailyRowFromMinuteRows,
+  isBjDailyBarSession,
+  shouldRefreshTodayDailyBar,
+} from './todayDailyBarRefresh'
+import { getStockMinuteByDate } from '../database/stockMinuteCacheRepository'
 
 export { DEFAULT_TUSHARE_API_URL, resolveTushareApiUrl, validateTushareApiUrlInput } from './tushareApiUrl'
 
@@ -433,28 +440,7 @@ function buildDailyRowFromIntraday(
   tradeDate: string,
   items: IntradayItem[]
 ): StockPriceCacheRow | null {
-  const valid = items
-    .filter((i) => Number.isFinite(i.price))
-    .sort((a, b) => a.time.localeCompare(b.time))
-  if (valid.length === 0) return null
-
-  const open = valid[0].price
-  const close = valid[valid.length - 1].price
-  const high = Math.max(...valid.map((i) => i.price))
-  const low = Math.min(...valid.map((i) => i.price))
-  const volume = valid.reduce((sum, i) => sum + (Number.isFinite(i.volume) ? i.volume : 0), 0)
-
-  return {
-    stockCode,
-    tradeDate,
-    open,
-    high,
-    low,
-    close,
-    volume,
-    amount: null,
-    fetchedAt: Date.now()
-  }
+  return buildDailyRowFromIntradayItems(stockCode, tradeDate, items)
 }
 
 interface IndexPriceFetchResult {
@@ -769,13 +755,13 @@ export async function forceFetchSingleStock(
       })()
     }
 
-    // FR-093: during provider lag (intraday available, daily missing), backfill today's daily row.
-    await backfillTodayDailyFromIntradayIfMissing(db, stockCode)
+    // FR-093: 盘中/合成今日 bar 可覆盖刷新；正式日线（有 amount）收盘后不覆盖
+    await backfillTodayDailyFromIntradayIfMissing(db, stockCode, { force: true })
     return newRows.length
   }
 
   // Even when daily endpoint returns empty/non-zero, try intraday fallback for today.
-  await backfillTodayDailyFromIntradayIfMissing(db, stockCode)
+  await backfillTodayDailyFromIntradayIfMissing(db, stockCode, { force: true })
 
   return 0
 }
@@ -1027,12 +1013,14 @@ export async function fetchEastmoneyMinuteOHLCV(
       const ymd = dt.slice(0, sp).replace(/-/g, '')
       const hm = dt.slice(sp + 1, sp + 6) // HH:mm
       const open = parseFloat(parts[1])
-      const close = parseFloat(parts[2])
+      let close = parseFloat(parts[2])
       const high = parseFloat(parts[3])
       const low = parseFloat(parts[4])
       const vol = parseFloat(parts[5])
       const amountYuan = parseFloat(parts[6])
       if (!hm || isNaN(close)) continue
+      // 开盘初期东财偶发 close=0 的未完成分钟：用 open 回填，避免整段被下游当成无效
+      if (close === 0 && Number.isFinite(open) && open !== 0) close = open
       bars.push({
         tradeDate: ymd,
         tsMinute: hm,
@@ -1051,21 +1039,72 @@ export async function fetchEastmoneyMinuteOHLCV(
 }
 
 /**
- * FR-093: Backfill today's missing daily row from intraday 5-min data.
- * Applies to both regular stocks and preset indices.
+ * FR-093: 用分时/分钟合成或刷新「今日」日 K。
+ * 盘中可覆盖已有合成 bar；收盘后不覆盖带 amount 的正式日线。
  */
 export async function backfillTodayDailyFromIntradayIfMissing(
   db: Database.Database,
-  stockCode: string
+  stockCode: string,
+  options?: { force?: boolean },
 ): Promise<boolean> {
+  const raw = stockCode.trim().toUpperCase()
+  // 个股缓存键为 6 位；预置指数为带后缀（000001.SH）
+  const cacheCode = INDEX_SECID[raw]
+    ? raw
+    : raw.replace(/\.(SH|SZ|BJ)$/i, '')
+  const minuteCode = cacheCode.includes('.') ? cacheCode.split('.')[0] : cacheCode
   const { endDate } = bjDateRange()
-  if (getCachedDates(db, stockCode).has(endDate)) return false
+  const existing = getCachedPrices(db, cacheCode).find((r) => r.tradeDate === endDate) ?? null
+  const inSession = isBjDailyBarSession()
+  if (
+    !shouldRefreshTodayDailyBar({
+      hasExisting: existing != null,
+      existingAmount: existing?.amount ?? null,
+      inSession,
+      force: options?.force === true,
+    })
+  ) {
+    return false
+  }
 
-  const intradayItems = await fetchIntradayDataByDate(stockCode, endDate)
-  const row = buildDailyRowFromIntraday(stockCode, endDate, intradayItems)
+  const minuteRows = getStockMinuteByDate(db, minuteCode, endDate)
+  let row = buildDailyRowFromMinuteRows(cacheCode, endDate, minuteRows)
+  if (!row) {
+    const intradayKey = INDEX_SECID[cacheCode] ? cacheCode : minuteCode
+    const intradayItems = await fetchIntradayDataByDate(intradayKey, endDate)
+    row = buildDailyRowFromIntraday(cacheCode, endDate, intradayItems)
+  }
   if (!row) return false
 
+  const hist = getCachedPrices(db, cacheCode).filter((r) => r.tradeDate < endDate)
+  const prevClose = hist.length > 0 ? hist[hist.length - 1].close : null
+  const pctChg =
+    prevClose != null && prevClose > 0 && row.close != null
+      ? ((row.close - prevClose) / prevClose) * 100
+      : 0
+
   insertPrices(db, [row])
+  try {
+    upsertDailyClose(db, [
+      {
+        tsCode: cacheCode.includes('.') ? cacheCode : toTsCode(cacheCode),
+        tradeDate: endDate,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close ?? 0,
+        pctChg,
+        vol: row.volume,
+        turnoverRate: null,
+        amount: row.amount,
+      },
+    ])
+  } catch (err) {
+    console.warn(
+      '[TodayDailyBar] upsertDailyClose failed:',
+      err instanceof Error ? err.message : String(err),
+    )
+  }
   return true
 }
 

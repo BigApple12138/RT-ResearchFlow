@@ -36,6 +36,7 @@ import { registerChipStructureHandlers } from './ipc/chipStructureHandlers'
 import { registerStockFundamentalHandlers } from './ipc/stockFundamentalHandlers'
 import { registerResearchEvidenceHandlers } from './ipc/researchEvidenceHandlers'
 import { registerResearchAccessHandlers } from './ipc/researchAccessHandlers'
+import { registerExternalMcpHandlers } from './ipc/externalMcpHandlers'
 import { registerResearchAgentHandlers } from './ipc/researchAgentHandlers'
 import { registerPremarketHandlers } from './ipc/premarketHandlers'
 import {
@@ -297,6 +298,7 @@ async function bootstrap(): Promise<void> {
   registerStockFundamentalHandlers()
   registerResearchEvidenceHandlers()
   registerResearchAccessHandlers()
+  registerExternalMcpHandlers()
   registerResearchAgentHandlers(() => mainWindow)
   registerPremarketHandlers()
 

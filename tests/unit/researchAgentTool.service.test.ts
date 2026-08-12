@@ -178,6 +178,7 @@ describe('FR-256 research agent controlled fact tool service', () => {
       'company.fundamentals_refresh',
       'market.price_refresh',
       'market.quote_snapshot',
+      'mcp.invoke',
     ])
     expect(ids).not.toContain('industry.project_snapshot')
   })

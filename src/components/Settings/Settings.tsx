@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 import type { AppSettingsRow } from '../../../electron/main/database/types'
 import { SupplyChainSettingsPanel } from '../SupplyChain/SupplyChainSettingsPanel'
-import { ResearchAccessSettings } from './ResearchAccessSettings'
 import { PremarketCaptureSettings } from './PremarketCaptureSettings'
 
 const INTERVALS: { value: AppSettingsRow['scanIntervalMinutes']; label: string }[] = [
@@ -327,8 +326,6 @@ export function Settings() {
           <p className="text-xs text-green-600 mt-2">{clearResult}</p>
         )}
       </section>
-
-      <ResearchAccessSettings />
 
       {/* ── 产业链传导分析 ──────────────────────────────────── */}
       <section className="border-t border-gray-200 dark:border-gray-700 pt-5">

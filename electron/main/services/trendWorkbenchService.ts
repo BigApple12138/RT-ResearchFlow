@@ -25,6 +25,7 @@ import {
   deriveTrendReviewSource,
   hashTrendReviewFacts,
   normalizeTrendTsCode,
+  type TrendReviewFacts,
   type TrendStructureReviewSummary,
 } from './trendStructureReviewTypes'
 
@@ -131,7 +132,7 @@ function attachStructureReviews(
   return items.map((item) => {
     const review = reviewByCode.get(normalizeTrendTsCode(item.tsCode))
     if (!review) return { ...item, structureReview: null }
-    const currentFacts = buildTrendReviewFactsFromItem(item, now)
+    const currentFacts = buildEodTrendReviewFactsForItem(db, item, now)
     const stale = review.scoreDate !== currentFacts.scoreDate
       || review.factsHash !== hashTrendReviewFacts(currentFacts)
     return {
@@ -148,6 +149,60 @@ function attachStructureReviews(
       },
     }
   })
+}
+
+/**
+ * 结构复核白名单事实：仅用本地日线结算（不叠加盘中实时价）。
+ * 日线不足时回退到 item 投影，供无行情夹具单测使用。
+ */
+export function buildEodTrendReviewFactsForItem(
+  db: Database.Database,
+  item: TrendWorkbenchItem,
+  now = Date.now(),
+): TrendReviewFacts {
+  const startDate = offsetYmd(-760)
+  const stockBars = loadBars(db, item.tsCode, startDate)
+  const benchmarkBars = loadBars(db, '000300.SH', startDate)
+  if (stockBars.length < 20) {
+    return buildTrendReviewFactsFromItem(item, now)
+  }
+
+  const computation = computeLatest(stockBars, benchmarkBars, null)
+  const latestTradeDate = stockBars.at(-1)?.tradeDate ?? null
+  const scoreDate = latestTradeDate ?? formatUtcYmd(now)
+  const totalScore = computation?.score.totalScore ?? null
+  const history = buildRollingHistory(stockBars, benchmarkBars)
+  const scoreHistory = mergeCurrentScore(history, scoreDate, totalScore)
+  const scoreDelta5d = scoreDelta(scoreHistory, 5)
+  const scoreDelta20d = scoreDelta(scoreHistory, 20)
+  const maAbove60 = computation?.score.maAbove60 == null
+    ? null
+    : computation.score.maAbove60 > 0
+  const bars = stockBars.length
+
+  return {
+    tsCode: normalizeTrendTsCode(item.tsCode),
+    stockName: item.stockName,
+    trendState: classifyTrendState(totalScore, maAbove60, scoreDelta5d),
+    totalScore,
+    scoreDelta5d,
+    scoreDelta20d,
+    maAbove60,
+    validWeight: computation?.validWeight ?? null,
+    dataCoverage: {
+      bars,
+      requiredBars: 60,
+      latestTradeDate,
+      state: bars >= 60 ? 'ready' : bars >= 20 ? 'partial' : 'missing',
+    },
+    facts: computation?.facts ?? null,
+    scoreDate,
+  }
+}
+
+function formatUtcYmd(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, '0')}${String(date.getUTCDate()).padStart(2, '0')}`
 }
 
 interface DetailGroup {

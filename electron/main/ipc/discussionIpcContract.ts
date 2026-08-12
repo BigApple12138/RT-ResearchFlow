@@ -14,6 +14,18 @@ export interface DiscussionFollowUpRequest {
   message: string
 }
 
+export interface AgentTurnRequest {
+  requestId: string
+  sessionId: number
+  message: string
+}
+
+export interface AgentConfirmRequest {
+  requestId: string
+  hitlId: string
+  approved: boolean
+}
+
 export interface DiscussionCompactionRequest {
   requestId: string
   sessionId: number
@@ -57,6 +69,58 @@ export function validateDiscussionFollowUpInput(
       requestId: record.requestId,
       sessionId: record.sessionId,
       message: record.message.trim(),
+    },
+  }
+}
+
+export function validateAgentTurnInput(
+  value: unknown,
+): DiscussionIpcValidationResult<AgentTurnRequest> {
+  const record = asRecord(value)
+  if (!record || !hasOnlyKeys(record, ['requestId', 'sessionId', 'message'])) {
+    return { ok: false, code: 'INVALID_PARAM', message: 'agentTurn 请求格式无效' }
+  }
+  if (!isUuid(record.requestId)) {
+    return { ok: false, code: 'INVALID_PARAM', message: 'requestId 格式无效' }
+  }
+  if (!validSessionId(record.sessionId)) {
+    return { ok: false, code: 'INVALID_PARAM', message: 'sessionId 无效' }
+  }
+  if (typeof record.message !== 'string' || !record.message.trim()) {
+    return { ok: false, code: 'INVALID_PARAM', message: '消息不能为空' }
+  }
+  return {
+    ok: true,
+    data: {
+      requestId: record.requestId,
+      sessionId: record.sessionId,
+      message: record.message.trim(),
+    },
+  }
+}
+
+export function validateAgentConfirmInput(
+  value: unknown,
+): DiscussionIpcValidationResult<AgentConfirmRequest> {
+  const record = asRecord(value)
+  if (!record || !hasOnlyKeys(record, ['requestId', 'hitlId', 'approved'])) {
+    return { ok: false, code: 'INVALID_PARAM', message: 'agentConfirm 请求格式无效' }
+  }
+  if (!isUuid(record.requestId)) {
+    return { ok: false, code: 'INVALID_PARAM', message: 'requestId 格式无效' }
+  }
+  if (typeof record.hitlId !== 'string' || !record.hitlId.trim()) {
+    return { ok: false, code: 'INVALID_PARAM', message: 'hitlId 无效' }
+  }
+  if (typeof record.approved !== 'boolean') {
+    return { ok: false, code: 'INVALID_PARAM', message: 'approved 必须是布尔值' }
+  }
+  return {
+    ok: true,
+    data: {
+      requestId: record.requestId,
+      hitlId: record.hitlId.trim(),
+      approved: record.approved,
     },
   }
 }

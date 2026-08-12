@@ -27,6 +27,10 @@ import {
   type ResearchAgentToolDefinition,
 } from './researchAgentNetworkTools'
 import {
+  assessMcpInvokePolicy,
+  RESEARCH_AGENT_MCP_TOOL_ID,
+} from './researchAgentMcpTool'
+import {
   getResearchEvidenceReferenceId,
   type ResearchEvidenceSubjectKind,
 } from './researchEvidenceAuditService'
@@ -184,7 +188,7 @@ export function listAvailableResearchAgentTools(
     if (definition.id === 'official.disclosure_search' || definition.id === 'official.disclosure_document') {
       return hasStocks || hasProject
     }
-    return definition.id === 'web.search' || definition.id === 'web.fetch_page'
+    return definition.id === 'web.search' || definition.id === 'web.fetch_page' || definition.id === RESEARCH_AGENT_MCP_TOOL_ID
   }).map((definition): ResearchAgentToolDefinition => {
     if (definition.id !== 'official.disclosure_search' || hasStocks || !hasProject) return definition
     return {
@@ -527,6 +531,11 @@ function validateToolPolicy(
   }
   if (definition.id === 'portfolio.holdings' && run.include_portfolio !== 1) {
     return blocked('SCOPE_DENIED', '本次运行未确认包含持仓事实')
+  }
+  if (definition.id === RESEARCH_AGENT_MCP_TOOL_ID) {
+    if (!isRecord(toolInput)) return blocked('INVALID_INPUT', '工具输入必须是对象')
+    const mcpPolicy = assessMcpInvokePolicy(db, toolInput, subjects)
+    if (!mcpPolicy.ok) return blocked(mcpPolicy.code, mcpPolicy.message)
   }
   return { ok: true, definition, subjects }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { SourceManager } from '../SourceManager/SourceManager'
 import { Settings } from '../Settings/Settings'
+import { AgentSettings } from '../Settings/AgentSettings'
 import { AIConfig } from '../AIConfig/AIConfig'
 import { DataSource } from '../DataSource/DataSource'
 import { DiagnosticsPanel } from '../Diagnostics/DiagnosticsPanel'
@@ -9,7 +10,7 @@ import { PriorityNewsPreviewDevPanel } from './PriorityNewsPreviewDevPanel'
 import type { InitializationFlowState } from '../Onboarding/initializationTaskModel'
 import type { PriorityNewsPreviewState } from '../DecisionSignalToast/useDecisionSignalToastPreview'
 
-export type ConfigDrawerTab = 'sources' | 'settings' | 'appearance' | 'ai-config' | 'datasource' | 'diagnostics' | 'user-tier-dev' | 'notification-preview-dev'
+export type ConfigDrawerTab = 'sources' | 'settings' | 'appearance' | 'agent' | 'ai-config' | 'datasource' | 'diagnostics' | 'user-tier-dev' | 'notification-preview-dev'
 
 interface ConfigDrawerProps {
   open: boolean
@@ -31,6 +32,7 @@ const CONFIG_TABS: Array<{ key: ConfigDrawerTab; label: string }> = [
   { key: 'sources', label: '监控源' },
   { key: 'settings', label: '设置' },
   { key: 'appearance', label: '外观' },
+  { key: 'agent', label: 'Agent' },
   { key: 'ai-config', label: 'AI配置' },
   { key: 'datasource', label: '数据源' },
   { key: 'diagnostics', label: '诊断' },
@@ -55,9 +57,9 @@ export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuid
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [open, onClose])
 
-  // AI 配置字段多，默认用更宽抽屉，避免操作列被裁切。
+  // AI / Agent 配置字段多，默认用更宽抽屉，避免操作列被裁切。
   useEffect(() => {
-    if (open && activeTab === 'ai-config') setExpanded(true)
+    if (open && (activeTab === 'ai-config' || activeTab === 'agent')) setExpanded(true)
   }, [open, activeTab])
 
   if (!open) return null
@@ -136,8 +138,13 @@ export function ConfigDrawer({ open, activeTab, onTabChange, onClose, onOpenGuid
             </div>
           )}
           {activeTab === 'settings' && (
-            <div className="h-full overflow-y-auto">
+            <div data-testid="config-panel-settings" className="h-full overflow-y-auto">
               <Settings />
+            </div>
+          )}
+          {activeTab === 'agent' && (
+            <div data-testid="config-panel-agent" className="h-full overflow-hidden">
+              <AgentSettings />
             </div>
           )}
           {activeTab === 'appearance' && (

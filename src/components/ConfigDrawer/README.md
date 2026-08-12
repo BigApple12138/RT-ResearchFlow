@@ -2,18 +2,19 @@
 
 ## 模块功能
 
-`ConfigDrawer` 负责承载低频配置入口, 将监控源、设置、AI 配置、数据源和诊断中心从顶部主导航收纳到右侧抽屉中。开发环境下还会显示“用户层级”和“通知验收”页签, 分别用于模拟分钟数据路由与复验 FR-260 主动提醒。
+`ConfigDrawer` 负责承载低频配置入口, 将监控源、设置、**Agent**、AI 配置、数据源和诊断中心从顶部主导航收纳到右侧抽屉中。开发环境下还会显示“用户层级”和“通知验收”页签, 分别用于模拟分钟数据路由与复验 FR-260 主动提醒。
 FR-197 起, 配置抽屉继续作为 RT-ResearchFlow 的低频辅助入口, 支撑今日看板主工作台恢复数据源、AI 配置、诊断和初始化状态, 不重新回到主导航。
 FR-220 起, 主题切换和首次启动引导也收纳到配置中心: 主题进入“外观”页签, 新用户引导固定在抽屉右上角作为醒目的恢复入口。
+2026-08-12 起新增 **Agent** 页签：本应用 Agent 联网授权、本机研究访问（MCP 服务端）、外部 MCP 客户端（默认折叠为高级/实验）；与「AI 配置」（厂商/Key）分离。
 
 ## 实现思路
 
-组件由遮罩层和右侧 `aside` 抽屉组成。抽屉顶部提供配置页签和“新用户引导”动作, 内容区复用现有 `SourceManager`、`Settings`、`AIConfig`、`DataSource` 组件, 并接入 `DiagnosticsPanel` 展示数据健康状态, 不改变配置模块自身业务逻辑。“外观”页签只消费 App 传入的 `theme` 与 `onToggleTheme`, 复用既有主题持久化能力。`UserTierDevPanel` 只在 `import.meta.env.DEV` 为真时挂载, 通过 localStorage 保存本地模拟层级；`PriorityNewsPreviewDevPanel` 同样只在开发环境挂载，由 App 合并今日上下文与最近 180 天历史账本中的既有 P4/P5 资讯，按原文去重后立即展示首条、随后每 60 秒轮播，不写库、不发送系统通知。
+组件由遮罩层和右侧 `aside` 抽屉组成。抽屉顶部提供配置页签和“新用户引导”动作, 内容区复用现有 `SourceManager`、`Settings`、`AgentSettings`、`AIConfig`、`DataSource` 组件, 并接入 `DiagnosticsPanel` 展示数据健康状态, 不改变配置模块自身业务逻辑。“外观”页签只消费 App 传入的 `theme` 与 `onToggleTheme`, 复用既有主题持久化能力。`UserTierDevPanel` 只在 `import.meta.env.DEV` 为真时挂载, 通过 localStorage 保存本地模拟层级；`PriorityNewsPreviewDevPanel` 同样只在开发环境挂载，由 App 合并今日上下文与最近 180 天历史账本中的既有 P4/P5 资讯，按原文去重后立即展示首条、随后每 60 秒轮播，不写库、不发送系统通知。
 
 ## 主要 props/state/事件流
 
 - `open`: 控制抽屉是否显示。
-- `activeTab`: 当前配置页签, 可为 `sources`、`settings`、`appearance`、`ai-config`、`datasource`、`diagnostics`; 开发环境额外支持 `user-tier-dev` 与 `notification-preview-dev`。
+- `activeTab`: 当前配置页签, 可为 `sources`、`settings`、`appearance`、`agent`、`ai-config`、`datasource`、`diagnostics`; 开发环境额外支持 `user-tier-dev` 与 `notification-preview-dev`。
 - `onTabChange`: 切换配置页签。
 - `onClose`: 点击遮罩、关闭按钮或按 Esc 时触发关闭。
 - `onOpenGuide`: 从配置中心右上角或诊断页重新打开首次启动引导。
@@ -24,7 +25,7 @@ FR-220 起, 主题切换和首次启动引导也收纳到配置中心: 主题进
 
 - 配置中心按全视口抽屉处理, 外层使用 `fixed inset-0`, 遮罩和右侧面板需要覆盖标题栏与主工作区, 展示逻辑对齐历史回测等全屏抽屉。
 - 因应用使用自定义 Electron 标题栏, 抽屉外层、遮罩、面板和顶部页签区都必须显式标记 `electron-no-drag`, 避免标题栏拖拽区域影响 Tab 和按钮点击命中。
-- 抽屉默认宽度 `min(920px,92vw)`；右上角提供「加宽 / 收窄」，加宽后为 `min(1280px,98vw)`。进入 AI 配置页签时自动加宽，减少配置字段被裁切。
+- 抽屉默认宽度 `min(920px,92vw)`；右上角提供「加宽 / 收窄」，加宽后为 `min(1280px,98vw)`。进入 AI 配置或 Agent 页签时自动加宽，减少配置字段被裁切。
 - 抽屉关闭不会修改主业务 `activeTab`, 用户回到原工作流上下文。
 - 诊断页中的跳转动作会复用 `onTabChange`, 在抽屉内部切到数据源或 AI 配置页, 不额外改变主导航。
 - 诊断页和抽屉右上角的引导入口通过 `onOpenGuide` 交给 App 控制, 抽屉本身不保存引导状态。
