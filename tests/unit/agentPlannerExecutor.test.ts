@@ -124,6 +124,28 @@ describe('agentPlannerExecutor', () => {
     expect(plan.steps[0].status).toBe('done')
   })
 
+  it('空 completionCriteria 时工具成功不得自动 complete', () => {
+    const goal = createGoalState({
+      goal: '看看中油',
+      completionCriteria: [],
+    })
+    const plan = createPlanState({ steps: [] })
+    const toolObs: Observation = {
+      summary: '已读取 3 只本地持仓事实（不含成本价）。',
+      evidenceRefs: [],
+      remainingGaps: [],
+    }
+    expect(evaluateCompletion({
+      goal,
+      plan,
+      lastObservation: toolObs,
+      stepCount: 1,
+      maxSteps: 8,
+      revisionCount: 0,
+      maxRevisions: 3,
+    }).decision).toBe('continue')
+  })
+
   it('失败可改道 → replan；revision 递增；blocked / wait_subagent', () => {
     const goal = createGoalState({
       goal: '深挖某标的',

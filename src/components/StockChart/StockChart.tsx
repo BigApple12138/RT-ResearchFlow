@@ -22,6 +22,7 @@ import { PortfolioJourneyBanner } from "./PortfolioJourneyBanner";
 import { StockFundamentalDrawer } from "./StockFundamentalDrawer";
 import { prefetchStockFundamentalsIfMissing } from "./prefetchStockFundamentals";
 import { buildStockDecisionContextModel } from "./stockDecisionContextModel";
+import { normalizeAshareTsCode } from "../../utils/normalizeAshareTsCode";
 import { SignalLifecycleDrawer } from "../DecisionCenter/SignalLifecycleDrawer";
 import { StockJudgmentPanel } from "../DecisionCenter/StockJudgmentPanel";
 import { applyStockJudgment } from "../DecisionCenter/stockJudgmentModel";
@@ -459,18 +460,24 @@ interface SortableStockItemProps {
   stock: { stockCode: string; stockName: string };
   isSelected: boolean;
   isPortfolio: boolean;
+  isInWatchlist: boolean;
+  watchlistBusy: boolean;
   displayName: string;
   onSelect: () => void;
   onDelete: () => void;
+  onAddToWatchlist: () => void;
 }
 
 function SortableStockItem({
   stock,
   isSelected,
   isPortfolio,
+  isInWatchlist,
+  watchlistBusy,
   displayName,
   onSelect,
   onDelete,
+  onAddToWatchlist,
 }: SortableStockItemProps) {
   const {
     attributes,
@@ -527,6 +534,29 @@ function SortableStockItem({
           {stock.stockCode}
         </div>
       </button>
+      {isInWatchlist ? (
+        <span
+          data-testid={`stockchart-watchlist-in-${stock.stockCode}`}
+          className="px-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 shrink-0"
+          title="已在观察池或持仓"
+        >
+          ✓池
+        </span>
+      ) : (
+        <button
+          type="button"
+          data-testid={`stockchart-add-to-watchlist-${stock.stockCode}`}
+          disabled={watchlistBusy}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAddToWatchlist();
+          }}
+          title="加入观察池"
+          className="px-1.5 py-1 text-[10px] font-semibold text-violet-600 hover:bg-violet-50 opacity-0 group-hover:opacity-100 disabled:opacity-40 dark:text-violet-300 dark:hover:bg-violet-950/40 shrink-0"
+        >
+          +观察池
+        </button>
+      )}
       {/* 删除按钮 */}
       <button
         onClick={(e) => {
@@ -560,6 +590,8 @@ export function StockChart() {
   const finishFirstPortfolioJourney = useAppStore((s) => s.finishFirstPortfolioJourney);
   const clearFirstPortfolioJourney = useAppStore((s) => s.clearFirstPortfolioJourney);
   const [regularStocks, setRegularStocks] = useState<StockItem[]>([]);
+  const [trackedTsCodes, setTrackedTsCodes] = useState<Set<string>>(() => new Set());
+  const [watchlistAddingCode, setWatchlistAddingCode] = useState<string | null>(null);
   // 拖拽传感器：长按 250ms + 5px 容差才激活，防止误触普通点击
   const dndSensors = useSensors(
     useSensor(PointerSensor, {
@@ -1005,8 +1037,44 @@ export function StockChart() {
     setRegularStocks(applySortOrder(regular));
   }
 
+  async function reloadTrackedTsCodes() {
+    try {
+      const response = await window.api.trend.listTrackedTsCodes();
+      if (!response.ok || !response.codes) {
+        setTrackedTsCodes(new Set());
+        return;
+      }
+      setTrackedTsCodes(new Set(response.codes.map((code) => normalizeAshareTsCode(code))));
+    } catch {
+      setTrackedTsCodes(new Set());
+    }
+  }
+
+  async function handleAddCachedToWatchlist(stock: StockItem) {
+    const tsCode = normalizeAshareTsCode(stock.stockCode);
+    if (trackedTsCodes.has(tsCode) || watchlistAddingCode) return;
+    setWatchlistAddingCode(stock.stockCode);
+    try {
+      const result = await window.api.trend.addStocks([{
+        tsCode,
+        stockName: stock.stockName || tsCode,
+      }]);
+      if (!result.ok) {
+        setPortfolioMessage(result.message || result.error || "加入观察池失败");
+        return;
+      }
+      setTrackedTsCodes((prev) => new Set([...prev, tsCode]));
+      setPortfolioMessage(`已加入观察池：${stock.stockName || tsCode}`);
+    } catch (error) {
+      setPortfolioMessage(error instanceof Error ? error.message : "加入观察池失败");
+    } finally {
+      setWatchlistAddingCode(null);
+    }
+  }
+
   useEffect(() => {
     reloadStocks();
+    void reloadTrackedTsCodes();
     const unsub = window.api.on("datasource:stocksUpdated", () =>
       reloadStocks(),
     );
@@ -3173,6 +3241,8 @@ export function StockChart() {
                     stock={s}
                     isSelected={selected === s.stockCode}
                     isPortfolio={portfolioSet.has(s.stockCode)}
+                    isInWatchlist={trackedTsCodes.has(normalizeAshareTsCode(s.stockCode))}
+                    watchlistBusy={watchlistAddingCode === s.stockCode}
                     displayName={
                       pendingDisplay && pendingDisplay.code === s.stockCode
                         ? pendingDisplay.name
@@ -3180,6 +3250,7 @@ export function StockChart() {
                     }
                     onSelect={() => setSelected(s.stockCode)}
                     onDelete={() => handleDeleteStock(s.stockCode)}
+                    onAddToWatchlist={() => { void handleAddCachedToWatchlist(s) }}
                   />
                 ))}
               </SortableContext>

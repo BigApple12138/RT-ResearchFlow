@@ -3453,6 +3453,26 @@ const api = {
       ipcRenderer.invoke('trend:addStocks', stocks) as Promise<{
         ok: boolean; count?: number; error?: string; message?: string
       }>,
+    listTrackedTsCodes: () =>
+      ipcRenderer.invoke('trend:listTrackedTsCodes') as Promise<{
+        ok: boolean
+        codes?: string[]
+        error?: string
+        message?: string
+      }>,
+    listWatchlistCandidates: (payload?: { limit?: number; lookbackDays?: number }) =>
+      ipcRenderer.invoke('trend:listWatchlistCandidates', payload) as Promise<{
+        ok: boolean
+        candidates?: Array<{
+          tsCode: string
+          stockName: string
+          hitCount: number
+          lastSeenAt: string
+          hasEnoughKline: boolean
+        }>
+        error?: string
+        message?: string
+      }>,
     searchStocks: (keyword: string) =>
       ipcRenderer.invoke('trend:searchStocks', keyword) as Promise<{
         ok: boolean

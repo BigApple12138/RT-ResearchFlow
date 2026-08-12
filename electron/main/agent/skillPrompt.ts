@@ -19,6 +19,7 @@ export const FALLBACK_RESEARCH_ASSISTANT_SKILL_BODY = `# 投研助手（Research
 
 - 用户提到「持仓 / 仓位 / 我的股票 / 组合」或需要对照个人持仓时，先调用 \`local.portfolio_facts\`。
 - 不要臆造持仓；无数据时如实说明本地无记录。
+- 用户点名具体公司/股票（如「看看中石油」）时，优先 \`local.market_snapshot\` / \`local.fundamentals_read\`（或深挖）回答该标的；**禁止**用持仓列表摘要冒充标的研判。
 
 ## 何时读行情
 

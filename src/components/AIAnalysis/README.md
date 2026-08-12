@@ -17,6 +17,7 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - **Context Engine（2026-08-12）**：发模前统一 `prepareDiscussionTurnContext`：soft（未归档 ≥12 对）+ hard（装配字符 > `CONTEXT_WINDOW_CHARS − CONTEXT_RESERVE_CHARS`，对照 OpenClaw `shouldCompact`）。硬事实仍为 `promptSent`；不引入 `openclaw` 运行时。参考本地源码 `E:\代码库\git\openclaw` @ `46bdbe585f9`。
 - **子编排 isolated（P1）**：`research.deep_start` 默认 `contextMode=isolated`，优先硬事实/累计摘要 + 短热尾快照（不共享父热 `messages` 可变引用）；显式 `fork` 才带更长热尾。无 discussion 时仍注入 `promptSent`。回合落账后 `afterDiscussionTurnCompact` 再评估压缩；compaction 记录含 `tokens_before`/`tokens_after`。关闭「自动整理讨论」时 soft 可关，**hard 仍生效**；hard 无法归档时截断更早热消息。
 - **Context Engine P2**：压缩前写入 `ai_discussion_research_flushes` 研究笔记（对照 OpenClaw memory flush，无额外 AI）；`ai:listDiscussionCompactionCheckpoints` / `ai:restoreDiscussionCompaction` 支持列出与恢复**最新**检查点。讨论区「上下文检查点」列表可见账本，并提供「恢复最近整理」（仅 peel 最新一层；更早条目只读提示）。
+- 结构化候选股行提供「+观察池」（`ai-candidate-add-to-watchlist-*`），写入 `trend_watchlist`；已在池灰态。不自动入池。
 - 统一消费 `ai:agentEvent`（plan / status / tool_call / tool_result / message / hitl / done|error|cancelled）；不展示隐藏推理。投影见 `agentTimelineModel.ts`。
 - **自主取数**：本地只读 Tool（持仓/行情快照/基本面）免确认；`research.deep_start` 与外部 MCP 投影 Tool（`mcp__<serverId>__<toolName>`）为 network Tool，须在配置中心 → Agent 开启「允许 Agent 联网」。观察池「联网补充分类」走「本应用联网搜索」通道，**不依赖**该开关。
 - **官方披露 / 财务多方取数（2026-08-12）**：`official.disclosure_search` 先探测本应用联网搜索与 Tushare；网页侧用短 `site:`（巨潮+沪/深/北交所）并可降级过滤；已启用 Tushare 且有股票主体时并行拉预告/快报等结构化事实（**不是** URL 候选，不可作正文 `candidateId`）。任一侧成功则工具不整单失败。`company.fundamentals_refresh` 有 Tushare 优先，否则降级东财。MCP `isError` 透出 content 摘要。

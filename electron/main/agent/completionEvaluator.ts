@@ -34,8 +34,10 @@ function criteriaSatisfied(goal: GoalState, plan: PlanState, last?: Observation)
     if (allDone) return true
   }
 
+  // 空完成条件：不得仅因「工具成功且无剩余缺口」自动 complete。
+  // 轻量回合须由模型显式 final（或 maxSteps/熔断）收尾，避免「读完持仓就本轮完成」。
   if (goal.completionCriteria.length === 0) {
-    return Boolean(last && last.remainingGaps.length === 0 && !last.failureCategory)
+    return false
   }
 
   // 有完成条件时：无剩余缺口且（计划完成或已有成功观察）

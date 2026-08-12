@@ -310,6 +310,8 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
       : '当前为轻量回合（可为 0-step）。',
     '须结合上方会话上下文（含硬事实/摘要/热尾）；勿假设空持仓或空标的。',
     '用户说「深度分析 / 深挖」时，优先继承已出现的股票代码与持仓事实；缺主体时先调用 local.portfolio_facts，再视需要 research.deep_start。',
+    '用户点名具体股票时优先行情/基本面工具；禁止用持仓列表摘要冒充标的回答。',
+    '空完成条件时须显式 final 收尾；工具成功不等于目标完成。',
   ])
 
   const conversation = trimConversationMessagesForContext(

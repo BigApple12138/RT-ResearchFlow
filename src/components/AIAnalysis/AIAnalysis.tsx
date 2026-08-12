@@ -36,6 +36,7 @@ import {
   buildCompactionCheckpointListModel,
   type CompactionCheckpointItem,
 } from './compactionCheckpointListModel'
+import { normalizeAshareTsCode } from '../../utils/normalizeAshareTsCode'
 
 /** 探测 preload 是否暴露 agentTurn；有则走 Agent 主路径。 */
 function isAgentTurnAvailable(): boolean {
@@ -477,6 +478,8 @@ export function AIAnalysis() {
   const [compactingContext, setCompactingContext] = useState(false)
   const [restoringCompaction, setRestoringCompaction] = useState(false)
   const [compactionCheckpoints, setCompactionCheckpoints] = useState<CompactionCheckpointItem[]>([])
+  const [trackedTsCodes, setTrackedTsCodes] = useState<Set<string>>(() => new Set())
+  const [watchlistAddingCode, setWatchlistAddingCode] = useState<string | null>(null)
   const [agentSuggest, setAgentSuggest] = useState<null | { intent: 'deep_research' | 'industry_research'; question: string }>(null)
   const [agentOpenSignal, setAgentOpenSignal] = useState(0)
   const [preferredAgentQuestion, setPreferredAgentQuestion] = useState<string | null>(null)
@@ -533,6 +536,10 @@ export function AIAnalysis() {
       if (!result.ok || !result.data) return
       setPortfolioByCode(new Map(result.data.map((item) => [stockKey(item.tsCode), item.stockName])))
     })
+    void window.api.trend.listTrackedTsCodes().then((response) => {
+      if (!response.ok || !response.codes) return
+      setTrackedTsCodes(new Set(response.codes.map((code) => normalizeAshareTsCode(code))))
+    }).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -836,6 +843,28 @@ export function AIAnalysis() {
       setFollowUpDraft(null)
       setSendingFollowUp(false)
       setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 100)
+    }
+  }
+
+  async function handleAddCandidateToWatchlist(stock: { code: string; name?: string | null }) {
+    const tsCode = normalizeAshareTsCode(stock.code)
+    if (trackedTsCodes.has(tsCode) || watchlistAddingCode) return
+    setWatchlistAddingCode(stock.code)
+    try {
+      const result = await window.api.trend.addStocks([{
+        tsCode,
+        stockName: stock.name || portfolioByCode.get(stockKey(stock.code)) || tsCode,
+      }])
+      if (!result.ok) {
+        showToast(result.message || result.error || '加入观察池失败')
+        return
+      }
+      setTrackedTsCodes((prev) => new Set([...prev, tsCode]))
+      showToast(`已加入观察池：${stock.name || tsCode}`)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '加入观察池失败')
+    } finally {
+      setWatchlistAddingCode(null)
     }
   }
 
@@ -1910,28 +1939,47 @@ export function AIAnalysis() {
               {insight.candidateStocks.length > 0 ? insight.candidateStocks.map((stock) => {
                 const direction = candidateDirectionMeta[stock.direction]
                 const isPortfolio = portfolioByCode.has(stockKey(stock.code))
+                const tsCode = normalizeAshareTsCode(stock.code)
+                const inWatchlist = trackedTsCodes.has(tsCode)
                 return (
-                  <button
+                  <div
                     key={stock.code}
-                    type="button"
                     data-testid={`ai-candidate-${stock.code}`}
-                    onClick={() => navigateToStock(stock.code, stock.name ?? portfolioByCode.get(stockKey(stock.code)))}
-                    className="block w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-left text-slate-700 transition-colors hover:border-blue-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:bg-slate-800"
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-left text-slate-700 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-200"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="min-w-0 font-medium">
-                        <span className="block truncate">{stock.name ?? portfolioByCode.get(stockKey(stock.code)) ?? '名称待补全'}</span>
-                        <span className="mt-0.5 block text-[10px] font-normal text-slate-400">{stock.code}</span>
-                      </span>
-                      {stock.confidence > 0 && <span className="text-[10px] text-slate-400">{formatConfidence(stock.confidence)}</span>}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => navigateToStock(stock.code, stock.name ?? portfolioByCode.get(stockKey(stock.code)))}
+                      className="block w-full text-left transition-colors hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:hover:text-blue-300"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="min-w-0 font-medium">
+                          <span className="block truncate">{stock.name ?? portfolioByCode.get(stockKey(stock.code)) ?? '名称待补全'}</span>
+                          <span className="mt-0.5 block text-[10px] font-normal text-slate-400">{stock.code}</span>
+                        </span>
+                        {stock.confidence > 0 && <span className="text-[10px] text-slate-400">{formatConfidence(stock.confidence)}</span>}
+                      </div>
+                    </button>
+                    <div className="mt-2 flex flex-wrap items-center gap-1">
                       <span className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${direction.className}`}>{direction.label}</span>
                       <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">{candidateEvidenceLabel[stock.evidenceLevel]}</span>
                       {isPortfolio && <span className="rounded border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 dark:border-cyan-800 dark:bg-cyan-950/30 dark:text-cyan-300">我的持仓</span>}
+                      {inWatchlist ? (
+                        <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">已在池</span>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid={`ai-candidate-add-to-watchlist-${stock.code}`}
+                          disabled={watchlistAddingCode === stock.code}
+                          onClick={() => { void handleAddCandidateToWatchlist(stock) }}
+                          className="rounded border border-violet-300 bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+                        >
+                          {watchlistAddingCode === stock.code ? '加入中…' : '+观察池'}
+                        </button>
+                      )}
                     </div>
                     {stock.reason && <div className="mt-2 line-clamp-3 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{stock.reason}</div>}
-                  </button>
+                  </div>
                 )
               }) : (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">

@@ -78,6 +78,17 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
   const [actionMessage, setActionMessage] = useState<{ tone: 'info' | 'error' | 'success'; text: string } | null>(null)
   const [syncMessage, setSyncMessage] = useState<{ tone: 'error' | 'info'; text: string } | null>(null)
   const [stockBasicEmpty, setStockBasicEmpty] = useState(false)
+  const [candidatesOpen, setCandidatesOpen] = useState(false)
+  const [bridgeCandidates, setBridgeCandidates] = useState<Array<{
+    tsCode: string
+    stockName: string
+    hitCount: number
+    lastSeenAt: string
+    hasEnoughKline: boolean
+  }>>([])
+  const [candidateSelected, setCandidateSelected] = useState<Set<string>>(() => new Set())
+  const [candidatesLoading, setCandidatesLoading] = useState(false)
+  const [candidatesAdding, setCandidatesAdding] = useState(false)
   const [resolvingCode, setResolvingCode] = useState(false)
   const [editingGroupCode, setEditingGroupCode] = useState<string | null>(null)
   const [editingGroupValue, setEditingGroupValue] = useState('')
@@ -139,6 +150,23 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
     }
   }, [])
 
+  const loadBridgeCandidates = useCallback(async () => {
+    setCandidatesLoading(true)
+    try {
+      const response = await window.api.trend.listWatchlistCandidates({ limit: 20, lookbackDays: 7 })
+      if (response.ok && response.candidates) {
+        setBridgeCandidates(response.candidates)
+        setCandidateSelected(new Set())
+      } else {
+        setBridgeCandidates([])
+      }
+    } catch {
+      setBridgeCandidates([])
+    } finally {
+      setCandidatesLoading(false)
+    }
+  }, [])
+
   const loadMapRules = useCallback(async () => {
     setMapRulesLoading(true)
     try {
@@ -158,6 +186,7 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
   }, [])
 
   useEffect(() => { void loadWatchRows() }, [loadWatchRows])
+  useEffect(() => { void loadBridgeCandidates() }, [loadBridgeCandidates])
   useEffect(() => { void loadCategoryTree() }, [loadCategoryTree])
   useEffect(() => {
     if (maintainOpen && maintainTab === 'rules') void loadMapRules()
@@ -656,6 +685,105 @@ export function TrendManager({ snapshot, loading, errorMessage, onRefresh }: Tre
           </>
         )}
       />
+
+      <div data-testid="watchlist-candidates" className="border-b border-slate-200 bg-white px-4 py-2 dark:border-slate-800 dark:bg-slate-950 sm:px-5">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-2 text-left text-xs font-semibold text-slate-700 dark:text-slate-200"
+          onClick={() => {
+            const next = !candidatesOpen
+            setCandidatesOpen(next)
+            if (next) void loadBridgeCandidates()
+          }}
+        >
+          <span>建议入池（近7日缓存未跟踪）</span>
+          <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] text-violet-800 dark:bg-violet-950/50 dark:text-violet-200">
+            {candidatesLoading ? '…' : bridgeCandidates.length}
+          </span>
+        </button>
+        {candidatesOpen && (
+          <div className="mt-2 space-y-2">
+            {bridgeCandidates.length === 0 ? (
+              <p className="text-[11px] text-slate-500">暂无建议。资讯解析/AI 分析写入缓存后会出现在这里。</p>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 px-2 py-1 text-[11px] dark:border-slate-600"
+                    onClick={() => setCandidateSelected(new Set(bridgeCandidates.map((c) => c.tsCode)))}
+                  >
+                    全选
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 px-2 py-1 text-[11px] dark:border-slate-600"
+                    onClick={() => setCandidateSelected(new Set())}
+                  >
+                    清空
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="watchlist-candidates-add"
+                    disabled={candidateSelected.size === 0 || candidatesAdding}
+                    className="rounded bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+                    onClick={() => {
+                      void (async () => {
+                        const picked = bridgeCandidates.filter((c) => candidateSelected.has(c.tsCode))
+                        if (picked.length === 0) return
+                        setCandidatesAdding(true)
+                        try {
+                          const response = await window.api.trend.addStocks(
+                            picked.map((c) => ({ tsCode: c.tsCode, stockName: c.stockName })),
+                          )
+                          if (!response.ok) {
+                            setActionMessage({ tone: 'error', text: response.message || '批量加入失败' })
+                            return
+                          }
+                          setActionMessage({ tone: 'success', text: `已加入观察池 ${response.count ?? picked.length} 只` })
+                          await loadWatchRows()
+                          await loadBridgeCandidates()
+                          onRefresh()
+                        } finally {
+                          setCandidatesAdding(false)
+                        }
+                      })()
+                    }}
+                  >
+                    {candidatesAdding ? '加入中…' : `加入观察池（${candidateSelected.size}）`}
+                  </button>
+                </div>
+                <ul className="max-h-40 space-y-1 overflow-y-auto text-[11px]">
+                  {bridgeCandidates.map((candidate) => (
+                    <li key={candidate.tsCode} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={candidateSelected.has(candidate.tsCode)}
+                        onChange={(event) => {
+                          setCandidateSelected((prev) => {
+                            const next = new Set(prev)
+                            if (event.target.checked) next.add(candidate.tsCode)
+                            else next.delete(candidate.tsCode)
+                            return next
+                          })
+                        }}
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {candidate.stockName}
+                        <span className="ml-1 text-slate-400">{candidate.tsCode}</span>
+                      </span>
+                      <span className="shrink-0 text-slate-400">
+                        ×{candidate.hitCount}
+                        {candidate.hasEnoughKline ? '' : ' · 日线不足'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {errorMessage && <WorkbenchError message={errorMessage} onRetry={onRefresh} />}
 

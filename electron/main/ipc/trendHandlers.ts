@@ -37,6 +37,10 @@ import {
 } from '../database/watchlistCategoryTreeRepository'
 import { suggestWatchlistCategoryFromDb } from '../services/watchlistCategorySuggestService'
 import {
+  listTrackedTsCodes,
+  listWatchlistCandidates,
+} from '../services/watchlistCandidateBridgeService'
+import {
   adoptWebCategorySuggestion,
   webSuggestWatchlistCategory,
 } from '../services/watchlistCategoryWebSuggestService'
@@ -355,6 +359,28 @@ export function registerTrendHandlers(): void {
       }
     }
   )
+
+  ipcMain.handle('trend:listTrackedTsCodes', () => {
+    try {
+      return { ok: true, codes: listTrackedTsCodes(getDb()) }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:listWatchlistCandidates', (_event, payload?: { limit?: number; lookbackDays?: number }) => {
+    try {
+      const candidates = listWatchlistCandidates(getDb(), {
+        limit: payload?.limit,
+        lookbackDays: payload?.lookbackDays,
+      })
+      return { ok: true, candidates }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
 
   // ──────────────────────────────────────────────────────────────────────
   // trend:removeStock — 移除股票（若指定 subCategory 则只删该赛道条目）

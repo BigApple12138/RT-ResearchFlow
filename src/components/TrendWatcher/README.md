@@ -27,7 +27,7 @@
 
 ## 恢复与交互
 
-观察池加入股票只做登记与名称解析，不自动拉日线。用户点击页头「补齐缺口」或行内「补齐」时才调用 `trend:backfillStocks`；任务在主进程执行，切换页面不取消；未配置Tushare时走公开行情，失败可重试。全市场同步只保留为紧凑的数据维护入口，单个进度条占满整行。观察池列表另提供独立的分类/细分赛道筛选，不与新增股票表单中的分类字段混用；两个选项菜单限制为18rem并在内部滚动，长列表不得带动页面滚动。
+观察池加入股票只做登记与名称解析，不自动拉日线。用户点击页头「补齐缺口」或行内「补齐」时才调用 `trend:backfillStocks`；任务在主进程执行，切换页面不取消；未配置Tushare时走公开行情，失败可重试。全市场同步只保留为紧凑的数据维护入口，单个进度条占满整行。观察池页顶提供「建议入池」折叠区（`data-testid="watchlist-candidates"`）：近 7 日出现在 `stock_price_cache` 但不在观察池/持仓的代码，按出现频次排序，支持勾选批量 `trend:addStocks`；**不自动入池**。观察池列表另提供独立的分类/细分赛道筛选，不与新增股票表单中的分类字段混用；两个选项菜单限制为18rem并在内部滚动，长列表不得带动页面滚动。
 
 观察池支持「清空观察池」：`data-testid="trend-watchlist-clear-all"`，空池禁用；确认后调用 `trend:clearWatchlist`，只删除 `trend_watchlist` 行，不删本地日线/评分/alerts/`stock_basic_cache`，也不自动重播种子目录。批量加入时按「同代码池内已有分类 → 东财公开行业/概念 + 可维护映射规则 → 空」智能填写分类/细分赛道（`trend:suggestWatchlistCategory`）；旁注标明来源（池内 / 东财映射）；未命中规则时若拿到东财行业则展示「东财行业：xxx → 未命中规则」。用户手改后不再覆盖，可用「重新识别分类」强制重算（无 AI、不烧 Token；东财拉取约 4s 超时降级，不阻塞加股）。分类维护区（`data-testid="trend-watchlist-map-rules"`）含「映射规则」与「主题树」页签：规则 CRUD `watchlist_category_map_rules`；主题树读写 `watchlist_category_nodes`（`trend:listCategoryTree` / upsert / rename / delete），下拉与校验以库内树为准，`WATCHLIST_CATEGORY_TREE` 仅作 Migration 种子/测试夹具。删除节点采用方案 C：引用中禁删，确认「清空引用后删除」后清空观察池分类、删除相关规则再删节点；重命名级联 watchlist 与 rules。加股表单提供显式「联网补充分类」（`trend-watchlist-web-suggest-category`）：单次确认授权，走本应用联网搜索网关（配置中心 → Agent → 联网搜索；可显式选外部 MCP 如豆包 `web_search`；未启用时降级内置弱检索）；可返回树内 pair 与会话内待采用建议（不落库）；采用经 `trend:adoptWebCategorySuggestion` 先写树再填表；重新识别不自动联网。种子 catalog 不再参与智能填写。
 

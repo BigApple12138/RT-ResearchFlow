@@ -1,7 +1,8 @@
 # 候选股加入观察池桥接层设计
 
-**状态：** 起草（待用户审阅批准）  
+**状态：** 已完成（2026-08-12；资讯详情行按钮可后续补）  
 **日期：** 2026-08-12  
+**Plan：** [`../plans/2026-08-12-watchlist-candidate-bridge.md`](../plans/2026-08-12-watchlist-candidate-bridge.md)  
 **方案：** 候选桥接（三入口一键/批量加入 + 建议入池抽屉）  
 **关联：**  
 - [`2026-08-09-watchlist-add-parity-design.md`](./2026-08-09-watchlist-add-parity-design.md)（加股链路对齐走势图；本文在此基础上补「从哪加」）  
