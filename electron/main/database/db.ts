@@ -4961,12 +4961,120 @@ const MIGRATIONS: DatabaseMigration[] = [
         ON trend_structure_review_revisions(ts_code, score_trade_date, facts_hash);
     `
   },
+    // Agent Hub 执行账本：turn / step / observation（独立于 ai_analysis_sessions.messages）
+    version: 148,
+    sql: `
+      CREATE TABLE IF NOT EXISTS agent_turns (
+        id                         TEXT PRIMARY KEY CHECK (length(trim(id)) BETWEEN 1 AND 64),
+        request_id                 TEXT NOT NULL UNIQUE CHECK (length(trim(request_id)) BETWEEN 1 AND 80),
+        request_fingerprint        TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+        session_id                 INTEGER NOT NULL CHECK (session_id > 0),
+        goal                       TEXT NOT NULL CHECK (length(trim(goal)) BETWEEN 1 AND 8000),
+        completion_criteria_json   TEXT NOT NULL CHECK (json_valid(completion_criteria_json) AND length(completion_criteria_json) <= 16384),
+        plan_revision              INTEGER NOT NULL DEFAULT 1 CHECK (plan_revision >= 1),
+        status                     TEXT NOT NULL CHECK (status IN (
+                                     'running', 'waiting_subagent', 'interrupted', 'done', 'error', 'cancelled'
+                                   )),
+        terminal                   TEXT DEFAULT NULL CHECK (terminal IS NULL OR terminal IN ('done', 'error', 'cancelled')),
+        error_code                 TEXT DEFAULT NULL CHECK (error_code IS NULL OR length(trim(error_code)) BETWEEN 1 AND 80),
+        error_message              TEXT DEFAULT NULL CHECK (error_message IS NULL OR length(error_message) <= 4000),
+        revision                   INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+        completed_at               INTEGER DEFAULT NULL,
+        CHECK (
+          (status IN ('done', 'error', 'cancelled') AND terminal = status AND completed_at IS NOT NULL)
+          OR (status NOT IN ('done', 'error', 'cancelled') AND terminal IS NULL AND completed_at IS NULL)
+        )
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_turns_session_status
+        ON agent_turns(session_id, status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_turns_status_updated
+        ON agent_turns(status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS agent_steps (
+        id                         TEXT PRIMARY KEY CHECK (length(trim(id)) BETWEEN 1 AND 80),
+        turn_id                    TEXT NOT NULL,
+        agent_id                   TEXT NOT NULL DEFAULT 'main'
+                                   CHECK (length(trim(agent_id)) BETWEEN 1 AND 80),
+        role                       TEXT NOT NULL DEFAULT 'planner_executor'
+                                   CHECK (length(trim(role)) BETWEEN 1 AND 80),
+        task_id                    TEXT DEFAULT NULL CHECK (task_id IS NULL OR length(trim(task_id)) BETWEEN 1 AND 80),
+        parent_task_id             TEXT DEFAULT NULL CHECK (parent_task_id IS NULL OR length(trim(parent_task_id)) BETWEEN 1 AND 80),
+        title                      TEXT NOT NULL DEFAULT '' CHECK (length(title) <= 500),
+        depends_on_json            TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(depends_on_json) AND length(depends_on_json) <= 8192),
+        capability_need_json       TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(capability_need_json) AND length(capability_need_json) <= 8192),
+        plan_revision              INTEGER NOT NULL DEFAULT 1 CHECK (plan_revision >= 1),
+        attempt                    INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+        status                     TEXT NOT NULL CHECK (status IN (
+                                     'pending', 'running', 'waiting_subagent', 'done', 'failed', 'skipped', 'cancelled'
+                                   )),
+        subagent_run_id            TEXT DEFAULT NULL CHECK (subagent_run_id IS NULL OR length(trim(subagent_run_id)) BETWEEN 1 AND 64),
+        intent_json                TEXT DEFAULT NULL
+                                   CHECK (intent_json IS NULL OR (json_valid(intent_json) AND length(intent_json) <= 65536)),
+        intent_sha256              TEXT DEFAULT NULL CHECK (intent_sha256 IS NULL OR length(intent_sha256) = 64),
+        outcome_json               TEXT DEFAULT NULL
+                                   CHECK (outcome_json IS NULL OR (json_valid(outcome_json) AND length(outcome_json) <= 65536)),
+        outcome_sha256             TEXT DEFAULT NULL CHECK (outcome_sha256 IS NULL OR length(outcome_sha256) = 64),
+        revision                   INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        error_code                 TEXT DEFAULT NULL,
+        error_message              TEXT DEFAULT NULL CHECK (error_message IS NULL OR length(error_message) <= 4000),
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+        started_at                 INTEGER DEFAULT NULL,
+        completed_at               INTEGER DEFAULT NULL,
+        CHECK ((intent_json IS NULL) = (intent_sha256 IS NULL)),
+        CHECK ((outcome_json IS NULL) = (outcome_sha256 IS NULL)),
+        CHECK (
+          (status = 'waiting_subagent' AND subagent_run_id IS NOT NULL)
+          OR (status <> 'waiting_subagent')
+        ),
+        UNIQUE (id, turn_id),
+        FOREIGN KEY (turn_id) REFERENCES agent_turns(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_steps_turn_status
+        ON agent_steps(turn_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_steps_subagent_run
+        ON agent_steps(subagent_run_id)
+        WHERE subagent_run_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS agent_observations (
+        id                         TEXT PRIMARY KEY CHECK (length(trim(id)) BETWEEN 1 AND 64),
+        turn_id                    TEXT NOT NULL,
+        step_id                    TEXT DEFAULT NULL,
+        summary                    TEXT NOT NULL CHECK (length(trim(summary)) BETWEEN 1 AND 4000),
+        evidence_refs_json         TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(evidence_refs_json) AND length(evidence_refs_json) <= 16384),
+        failure_category           TEXT DEFAULT NULL
+                                   CHECK (failure_category IS NULL OR failure_category IN ('retryable', 'replanable', 'blocked')),
+        remaining_gaps_json        TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(remaining_gaps_json) AND length(remaining_gaps_json) <= 16384),
+        content_hash               TEXT NOT NULL CHECK (length(content_hash) = 64),
+        created_at                 INTEGER NOT NULL,
+        FOREIGN KEY (turn_id) REFERENCES agent_turns(id) ON DELETE CASCADE,
+        FOREIGN KEY (step_id, turn_id) REFERENCES agent_steps(id, turn_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_observations_turn_created
+        ON agent_observations(turn_id, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_observations_turn_hash
+        ON agent_observations(turn_id, content_hash);
+    `
+  },
+  {
+    // Agent Hub：允许 Agent 联网（默认关闭；仅授权 sideEffect=network 的 Tool）
+    version: 149,
+    sql: `
+      ALTER TABLE app_settings ADD COLUMN ai_agent_network_enabled INTEGER NOT NULL DEFAULT 0
+        CHECK (ai_agent_network_enabled IN (0, 1));
+    `
+  },
   {
     // FR-261: local-first daily archives for historical market resonance playback.
     // Port from cao/dev (originally Migration 136); use 151 so local Agent Hub 148–150 can land first.
     version: 151,
-    sql: `
-      CREATE TABLE market_resonance_daily_snapshots (
+    sql:       CREATE TABLE market_resonance_daily_snapshots (
         trade_date          TEXT PRIMARY KEY CHECK (length(trade_date) = 8),
         data_mode           TEXT NOT NULL CHECK (data_mode IN ('archive', 'partial')),
         source_label        TEXT NOT NULL,
@@ -4978,9 +5086,9 @@ const MIGRATIONS: DatabaseMigration[] = [
       );
       CREATE INDEX idx_market_resonance_snapshots_captured
         ON market_resonance_daily_snapshots(captured_at DESC);
-    `
-  }
+      }
 ]
+
 
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = MIGRATIONS
 

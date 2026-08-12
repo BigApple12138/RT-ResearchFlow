@@ -25,6 +25,19 @@ import { publishAppToast } from '../shared/appToastBus'
 import { ResearchAuditTrace, type ResearchAuditTraceView } from '../shared/ResearchAuditTrace'
 import { ResearchAgentPanel } from './ResearchAgentPanel'
 import { detectResearchAgentIntent } from './researchAgentIntent'
+import {
+  buildAgentTimelineModel,
+  type AgentTimelineEvent,
+} from './agentTimelineModel'
+
+/** 探测 preload 是否暴露 agentTurn；有则走 Agent 主路径。 */
+function isAgentTurnAvailable(): boolean {
+  try {
+    return typeof (window.api?.ai as { agentTurn?: unknown } | undefined)?.agentTurn === 'function'
+  } catch {
+    return false
+  }
+}
 
 function extractStockCodes(text: string): string[] {
   const codes: string[] = []
@@ -459,8 +472,16 @@ export function AIAnalysis() {
   const [agentOpenSignal, setAgentOpenSignal] = useState(0)
   const [preferredAgentQuestion, setPreferredAgentQuestion] = useState<string | null>(null)
   const [sessionAgentBusy, setSessionAgentBusy] = useState(false)
+  const [agentEvents, setAgentEvents] = useState<AgentTimelineEvent[]>([])
+  const [agentRequestId, setAgentRequestId] = useState<string | null>(null)
+  const [confirmingHitl, setConfirmingHitl] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const agentPathEnabled = isAgentTurnAvailable()
+  const agentTimeline = useMemo(
+    () => buildAgentTimelineModel(agentEvents, agentRequestId ? { requestId: agentRequestId } : {}),
+    [agentEvents, agentRequestId],
+  )
 
   const insight = useMemo(() => deriveInsight(detail), [detail])
   const round2Segments = useMemo(() => {
@@ -540,6 +561,21 @@ export function AIAnalysis() {
     })
     return () => { unsubscribe() }
   }, [])
+
+  useEffect(() => {
+    const api = window.api.ai as {
+      onAgentEvent?: (listener: (data: AgentTimelineEvent) => void) => () => void
+    }
+    if (!api.onAgentEvent) return
+    const unsubscribe = api.onAgentEvent((event) => {
+      if (agentRequestId && event.requestId !== agentRequestId && !String(event.requestId).startsWith('bridge:')) {
+        return
+      }
+      if (detail && event.sessionId > 0 && event.sessionId !== detail.id) return
+      setAgentEvents((prev) => [...prev, event].slice(-200))
+    })
+    return () => { unsubscribe() }
+  }, [agentRequestId, detail?.id])
 
   useEffect(() => {
     if (pendingDiscussionSessionId == null || !sessionsReady) return
@@ -736,12 +772,12 @@ export function AIAnalysis() {
     setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 50)
 
     try {
-      const result = await window.api.ai.followUp({ requestId, sessionId: detail.id, message })
+      const result = await sendSessionMessage(detail.id, message, requestId)
       if (result?.messages) {
         const latest = await window.api.ai.getSession(detail.id)
         setDetail(latest ?? ((prev) => prev ? { ...prev, messages: result.messages } : prev))
         await loadAISessions()
-        if (result.warning) showToast(result.warning)
+        if (result?.warning) showToast(result.warning)
         if (detail.discussion) clearResearchDiscussionDraft(detail.id)
       } else if (result?.error) {
         showToast(`追问失败：${result.error}`)
@@ -904,6 +940,8 @@ export function AIAnalysis() {
   }
 
   async function captureResearchIntent(message: string): Promise<boolean> {
+    // Agent 主路径：深挖由 research.deep_start 自主编排；suggest 卡仅作手动兜底，发送时不拦截
+    if (agentPathEnabled) return false
     const intent = detectResearchAgentIntent(message)
     if (!intent) return false
     const sessionId = await ensureDiscussionSession(message)
@@ -915,6 +953,51 @@ export function AIAnalysis() {
       showToast('产业研究将作为聊天 subagent 接入（下一期）；深度研究可先用「启动深度研究」。')
     }
     return true
+  }
+
+  async function sendSessionMessage(sessionId: number, message: string, requestId: string): Promise<{
+    text?: string
+    messages?: SessionDetail['messages']
+    error?: string
+    code?: string
+    warning?: string
+  }> {
+    if (agentPathEnabled) {
+      setAgentRequestId(requestId)
+      setAgentEvents([])
+      const agentApi = window.api.ai as {
+        agentTurn: (payload: { requestId: string; sessionId: number; message: string }) => Promise<{
+          text?: string
+          messages?: SessionDetail['messages']
+          error?: string
+          code?: string
+        }>
+      }
+      return agentApi.agentTurn({ requestId, sessionId, message })
+    }
+    return window.api.ai.followUp({ requestId, sessionId, message })
+  }
+
+  async function resolveHitl(approved: boolean) {
+    const hitl = agentTimeline.pendingHitl?.hitl
+    if (!hitl || !agentRequestId || confirmingHitl) return
+    setConfirmingHitl(true)
+    try {
+      const api = window.api.ai as {
+        agentConfirm: (payload: { requestId: string; hitlId: string; approved: boolean }) => Promise<{
+          ok: boolean
+          error?: string
+        }>
+      }
+      const result = await api.agentConfirm({
+        requestId: agentRequestId,
+        hitlId: hitl.hitlRequestId,
+        approved,
+      })
+      if (!result.ok) showToast(result.error || '确认失败')
+    } finally {
+      setConfirmingHitl(false)
+    }
   }
 
   async function handleComposerSend() {
@@ -951,14 +1034,12 @@ export function AIAnalysis() {
       await handleSelectSession(sessionId)
       clearResearchDiscussionDraft(sessionId)
       setActiveTab('chat')
-      const result = await window.api.ai.followUp({
-        requestId, sessionId, message,
-      })
+      const result = await sendSessionMessage(sessionId, message, requestId)
       if (result?.messages) {
         const latest = await window.api.ai.getSession(sessionId)
         setDetail(latest)
         await loadAISessions()
-        if (result.warning) showToast(result.warning)
+        if (result?.warning) showToast(result.warning)
       } else if (result?.error) {
         showToast(`发送失败：${result.error}`)
         setFollowUpInput(message)
@@ -992,7 +1073,7 @@ export function AIAnalysis() {
     return (
       <div data-testid="research-agent-suggest" className="mb-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2.5 text-xs text-cyan-950 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-100">
         <div className="font-semibold">
-          {agentSuggest.intent === 'deep_research' ? '建议启动深度研究 subagent' : '产业研究 subagent（下一期）'}
+          {agentSuggest.intent === 'deep_research' ? '手动启动深度研究（兜底）' : '产业研究 subagent（下一期）'}
         </div>
         <div className="mt-1 line-clamp-3 text-[11px] opacity-90">{agentSuggest.question}</div>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -1025,14 +1106,12 @@ export function AIAnalysis() {
                   if (!detail) return
                   setSendingFollowUp(true)
                   try {
-                    const result = await window.api.ai.followUp({
-                      requestId: crypto.randomUUID(), sessionId: detail.id, message: question,
-                    })
+                    const result = await sendSessionMessage(detail.id, question, crypto.randomUUID())
                     if (result?.messages) {
                       const latest = await window.api.ai.getSession(detail.id)
                       setDetail(latest)
                       await loadAISessions()
-                      if (result.warning) showToast(result.warning)
+                      if ('warning' in result && result.warning) showToast(String(result.warning))
                       setFollowUpInput('')
                     } else if (result?.error) {
                       showToast(`追问失败：${result.error}`)
@@ -1501,6 +1580,34 @@ export function AIAnalysis() {
                           </div>
                         )}
                         {sendingFollowUp && !followUpDraft && <div className="text-xs text-slate-400">思考中...</div>}
+                        {agentPathEnabled && agentTimeline.steps.length > 0 && (
+                          <div data-testid="agent-timeline" className="mt-3 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50/80 p-2 dark:border-slate-700 dark:bg-slate-950/50">
+                            <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">Agent 工作台</div>
+                            {agentTimeline.networkDisabledHint && (
+                              <div data-testid="agent-network-hint" className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+                                {agentTimeline.networkDisabledHint}
+                              </div>
+                            )}
+                            {agentTimeline.steps.filter((s) => s.kind === 'plan' || s.kind === 'status' || s.kind === 'tool' || s.kind === 'hitl').slice(-12).map((step) => (
+                              <details key={step.id} className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-900" open={!step.collapsedByDefault}>
+                                <summary className={`cursor-pointer font-medium ${
+                                  step.tone === 'danger' ? 'text-red-700 dark:text-red-300'
+                                    : step.tone === 'warning' ? 'text-amber-700 dark:text-amber-300'
+                                      : step.tone === 'success' ? 'text-emerald-700 dark:text-emerald-300'
+                                        : 'text-slate-700 dark:text-slate-200'
+                                }`}>{step.title}</summary>
+                                {step.detail && <div className="mt-1 whitespace-pre-wrap text-slate-600 dark:text-slate-300">{step.detail}</div>}
+                              </details>
+                            ))}
+                            {agentTimeline.pendingHitl?.hitl && (
+                              <div data-testid="agent-hitl-bar" className="flex flex-wrap items-center gap-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-800 dark:bg-amber-950/40">
+                                <span className="text-[11px] text-amber-950 dark:text-amber-100">{agentTimeline.pendingHitl.detail || '需要确认写操作'}</span>
+                                <button type="button" disabled={confirmingHitl} className="rounded bg-cyan-700 px-2 py-0.5 text-[11px] font-semibold text-white disabled:opacity-40" onClick={() => { void resolveHitl(true) }}>确认</button>
+                                <button type="button" disabled={confirmingHitl} className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900" onClick={() => { void resolveHitl(false) }}>拒绝</button>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="mt-4 space-y-3">

@@ -14,6 +14,7 @@ import {
 } from '../database/researchAgentRunRepository'
 import { ResearchAgentRunnerError } from '../services/researchAgentRunner'
 import { ResearchAgentToolServiceError } from '../services/researchAgentToolService'
+import { getAgentToolRegistry, setResearchDeepStartRunner } from '../agent/agentRuntime'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -66,11 +67,34 @@ export interface ResearchAgentStartReviewRequest {
 
 let manager: ResearchAgentRunManager | null = null
 
+export function getResearchAgentRunManager(): ResearchAgentRunManager | null {
+  return manager
+}
+
 export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | null): void {
   manager = new ResearchAgentRunManager(getDb(), { getWindow })
   const recovery = manager.initialize()
   if (recovery.count > 0) {
     console.info(`[ResearchAgent] paused ${recovery.count} expired run(s) at startup`)
+  }
+
+  // 绑定 Agent Hub research.deep_start → 既有 startRun（不改租约语义）
+  try {
+    getAgentToolRegistry()
+    setResearchDeepStartRunner(async (input) => {
+      const started = await requireManager().start({
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        question: input.question,
+        subjects: input.subjects,
+        includePortfolio: input.includePortfolio,
+        confirmedBudgetVersion: input.confirmedBudgetVersion,
+        parentRunId: input.parentRunId ?? null,
+      })
+      return { runId: started.run.id, replayed: started.replayed }
+    })
+  } catch (error) {
+    console.warn('[ResearchAgent] Agent Hub deep_start 绑定失败:', error instanceof Error ? error.message : error)
   }
 
   ipcMain.handle('researchAgent:preflight', (event, payload: unknown) => safe(event, getWindow, () => {

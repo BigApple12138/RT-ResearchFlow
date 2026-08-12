@@ -28,6 +28,7 @@ const UPDATABLE_APP_SETTING_KEYS = new Set<string>([
   'decision_notify_in_app_enabled',
   'supply_chain_llm_fallback',
   'decision_center_filters_json',
+  'ai_agent_network_enabled',
 ])
 
 function preferenceText(value: unknown, fallback: string): string {
@@ -66,6 +67,13 @@ export function updateSettings(data: Partial<Omit<AppSettingsRow, 'id'>>): AppSe
     data.decision_notify_in_app_enabled !== undefined
     && data.decision_notify_in_app_enabled !== 0
     && data.decision_notify_in_app_enabled !== 1
+  ) {
+    throw new Error('SETTINGS_VALUE_INVALID')
+  }
+  if (
+    data.ai_agent_network_enabled !== undefined
+    && data.ai_agent_network_enabled !== 0
+    && data.ai_agent_network_enabled !== 1
   ) {
     throw new Error('SETTINGS_VALUE_INVALID')
   }
@@ -133,6 +141,25 @@ export function setPremarketNetworkEnabled(
 ): boolean {
   if (typeof enabled !== 'boolean') throw new Error('PREMARKET_ENABLED_INVALID')
   db.prepare('UPDATE app_settings SET premarket_network_enabled = ? WHERE id = 1')
+    .run(enabled ? 1 : 0)
+  return enabled
+}
+
+/** Agent 联网开关：默认关闭；仅影响 Registry 中 sideEffect=network 的 Tool。 */
+export function getAiAgentNetworkEnabled(
+  db: Database.Database = getDb(),
+): boolean {
+  const row = db.prepare('SELECT ai_agent_network_enabled FROM app_settings WHERE id = 1')
+    .get() as { ai_agent_network_enabled: number } | undefined
+  return row?.ai_agent_network_enabled === 1
+}
+
+export function setAiAgentNetworkEnabled(
+  enabled: unknown,
+  db: Database.Database = getDb(),
+): boolean {
+  if (typeof enabled !== 'boolean') throw new Error('AI_AGENT_NETWORK_ENABLED_INVALID')
+  db.prepare('UPDATE app_settings SET ai_agent_network_enabled = ? WHERE id = 1')
     .run(enabled ? 1 : 0)
   return enabled
 }

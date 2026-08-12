@@ -2,7 +2,7 @@
 
 > **For agentic workers:** 按任务勾选推进；推荐 `executing-plans` / `subagent-driven-development`。完成后填写文末「设计初衷检核」。**未批准 spec / 用户未说执行前，禁止改 `src/`、`electron/` 业务代码。**
 
-**状态：** 起草（待用户批准 spec 后执行）  
+**状态：** 第一期 Tasks 1–9 已落地（2026-08-12；69 项相关单测通过；待手工验收后填检核表）  
 **Spec：** [`../specs/2026-08-11-ai-analysis-agent-hub-design.md`](../specs/2026-08-11-ai-analysis-agent-hub-design.md)  
 **参考架构：** SharkMind 2.0（ToolRegistry / SessionContext / SubAgentTool / HITL 写闸门）
 
@@ -10,51 +10,58 @@
 
 ## 产品目标（必须始终对齐；实现偏离时先修订 spec）
 
-### 北星：把 OpenClaw 融入本平台
+### 北星：本地投研 Agent × 多源数据
 
-日常 **AI 分析就是一个交互页**；背后是够灵活的自主 Agent。  
-**本平台已积累的持仓、行情/基本面缓存、研究会话、证据账本、深度研究 runner、投研 skills**，是它取数与补证据的地基——不是另起一个外挂聊天机器人。
+日常 **AI 分析就是一个交互页**；背后是够灵活的自主投研 Agent。  
+**数据来源多方面**：本地持仓/行情/基本面/研究会话/证据账本是底座；公开接口、受控搜索、用户配置的**外部 MCP** 等经主进程 Tool 进入——不是另起外挂聊天机器人，也不把「本机研究访问」（MCP 服务端）当成联网配置口。
 
-> OpenClaw 的交互与编排形态 × RT-ResearchFlow 的本地事实与投研能力。
+> 本地投研 Agent × 多源数据（本地事实 + 受控联网/MCP）× 可追溯证据。
+
+OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 
 1. **一个交互面** — 用户不学菜单迷宫；深浅由 Agent 判断。  
 2. **目标驱动 Planner–Executor** — 固化目标与完成条件，复杂任务生成可修订计划；逐步取数、补证据、检查缺口、失败改道，满足完成条件后才结束。  
-3. **框子先于能力** — Orchestrator + ToolRegistry + SessionContext + 事件时间线 + 联网/写闸门；缺 Tool/Skill 后插，入口不变。  
+3. **框子先于能力** — Orchestrator + ToolRegistry + SessionContext + 事件时间线 + 联网/写闸门；缺 Tool/Skill/**外部 MCP** 后插，入口不变。  
 4. **本地优先、可审计、非投顾** — 窄 IPC、证据可追溯；不荐股、不自动交易、不削弱风险提示。
 
 ### 已锁定决策
 
 | 项 | 选择 |
 |---|---|
-| 形态 | OpenClaw 融入平台（单交互面 + 自主判断） |
+| 形态 | 本地投研 Agent（单交互面 + 自主判断） |
+| 数据 | 多源：本地优先；外源经受控 Tool；外部 MCP 第二期起（A 配置 → B 聊天 → C 深度研究） |
 | 自主程度 | 目标驱动 Planner–Executor（Goal → Plan → Act → Observe → Evaluate/Replan → Finalize） |
 | HITL | 本地只读免确认；联网开关开启后取网/深挖免逐次确认；写持仓、改配置、删数据必须确认 |
-| 联网授权 | `允许 Agent 联网` 默认关闭；开启后 Agent 可自主调用 network Tool；关闭时主进程阻断新联网调用 |
+| 联网授权 | `允许 Agent 联网` 默认关闭；开启后 Agent 可自主调用 network Tool（含 MCP 投影）；关闭时主进程阻断新联网调用 |
 | 架构 | 方案 1：现有会话上叠主进程编排层 |
+| 本机研究访问 | 旁路 MCP **服务端**（非本应用 Agent 多源主路径）；与外部 MCP **客户端**并行、不混用 |
 
 ### 成功时用户应感到
 
-- 「平时就是跟助手对话；它自己决定要不要看持仓、行情、要不要深挖。」  
+- 「平时就是跟投研助手对话；它自己决定要不要看持仓、行情、要不要深挖或外源核对。」  
 - 「不是让我填表、点面板、等另一个窗口。」  
-- 「平台里那些数据，它会自己用；以后加能力是加 Tool/Skill。」
+- 「本地数据它会用；外面 MCP / 搜索是我配的多源之一。」
 
-### 非目标（本 plan 不做）
+### 非目标（第一期 Tasks 1–9 不做）
 
 - 不 vendoring OpenClaw Gateway / Agent runtime / 多消息通道栈；只借鉴边界与生命周期，默认由本仓自主实现  
 - 不建设模型选择、Provider 路由或模型评测；推理调用作为可注入依赖，第一阶段只验收框子智能闭环  
 - 不实现通用动态多 Agent/swarm；保留 agent/task/capability/context/event/audit 契约，后续按评测门槛演进  
+- **不实现外部 MCP 客户端**（见下文「第二期 Tasks」）；第一期只保证 Registry/闸门可挂载  
+- 不改造「本机研究访问」为外网搜索入口  
 - 产业研究自动生成、持仓批量预测整迁为 Tool（仅预留注册位）  
 - 完整多 Skill 热更新后台；预算上限 UI（仅 maxSteps / size cap）  
 - 推倒 `ai_analysis_sessions` 或废除 researchAgent runner  
 - 默认以 npm 依赖整包 `openclaw` 作运行时（过重）；若后续只引 plugin-sdk 子集另开修订  
+- 不强制第一期做内置增强搜索配置入口（可与 MCP A 同期或其后小修订）  
 
 ---
 
-**Goal（一句话）：** 在 AI 分析交互页内落地 OpenClaw 式自主体验，并用本仓现有 Electron、SQLite、会话锁、证据账本和 researchAgent runner 实现轻量 Agent 框子。  
+**Goal（一句话）：** 在 AI 分析交互页内落地本地投研 Agent 框子；多源数据经 Tool 接入，外部 MCP 按第二期挂上。  
 
-**Architecture：** Renderer 仍为一个交互面；主进程 Planner–Executor 管理 Goal/Plan/Step/Observation/Completion；CapabilityRouter 从 Tool/Skill/SubAgent 中选择能力；深挖终态触发幂等 continuation；`ai:agentEvent` 统一 plan/status/tool/message 与唯一终态；写 HITL + 联网持久开关。  
+**Architecture：** Renderer 仍为一个交互面；主进程 Planner–Executor 管理 Goal/Plan/Step/Observation/Completion；CapabilityRouter 从 Tool/Skill/SubAgent（及后续 MCP 投影）中选择能力；深挖终态触发幂等 continuation；`ai:agentEvent` 统一 plan/status/tool/message 与唯一终态；写 HITL + 联网持久开关。  
 
-**Tech Stack：** Electron 主进程、既有 AI Provider/Fallback、researchAgent runner、React 时间线 UI、Vitest；OpenClaw 仅作设计参考，不作运行时依赖  
+**Tech Stack：** Electron 主进程、既有 AI Provider/Fallback、researchAgent runner、React 时间线 UI、Vitest；OpenClaw 仅作设计参考，不作运行时依赖；第二期 MCP 客户端用主进程 SDK/stdio，不进 Renderer
 
 ## Global Constraints
 
@@ -150,9 +157,9 @@
 - `createToolRegistry()` / `register` / `get` / `listForPrompt()`
 - `AGENT_TOOL_REGISTRY_VERSION` 字符串常量
 
-- [ ] **Step 1:** 写失败单测：注册两个 Tool、按名获取、未知名抛错、list 含 description  
-- [ ] **Step 2:** 实现 registry 使单测通过  
-- [ ] **Step 3:** `pnpm exec vitest run tests/unit/agentToolRegistry.test.ts`
+- [x] **Step 1:** 写失败单测：注册两个 Tool、按名获取、未知名抛错、list 含 description  
+- [x] **Step 2:** 实现 registry 使单测通过  
+- [x] **Step 3:** `pnpm exec vitest run tests/unit/agentToolRegistry.test.ts`
 
 ---
 
@@ -171,10 +178,10 @@
 - `assertToolAllowed(def)`：`write` 必须 pending confirm；`read` 直接允许  
 - `requestHitl` / `resolveHitl(requestId, approved)` Promise 或队列 API
 
-- [ ] **Step 1:** 单测：network 默认关闭且 handler 零调用；开启后放行；运行中再次关闭后下一次调用被阻断  
-- [ ] **Step 2:** 单测：read 直接过；write 未确认拒绝；确认后允许一次  
-- [ ] **Step 3:** 实现联网与写闸门  
-- [ ] **Step 4:** 跑单测通过  
+- [x] **Step 1:** 单测：network 默认关闭且 handler 零调用；开启后放行；运行中再次关闭后下一次调用被阻断  
+- [x] **Step 2:** 单测：read 直接过；write 未确认拒绝；确认后允许一次  
+- [x] **Step 3:** 实现联网与写闸门  
+- [x] **Step 4:** 跑单测通过  
 
 ---
 
@@ -207,11 +214,11 @@
 - tool_result 注入模型前做 size cap，防爆上下文  
 - 对外只发 plan/status 摘要，不发隐藏推理；每轮必须唯一 `done|error|cancelled` 终态  
 
-- [ ] **Step 1:** mock：目标 → 两步计划 → 本地事实 → 证据缺口 → Tool → 完成条件满足；断言状态与事件顺序  
-- [ ] **Step 2:** 单测：0-step 轻答、失败改道、plan revision、熔断、maxSteps/maxRevisions、blocked 说明  
-- [ ] **Step 3:** 单测：不同 mock reasoningCall 给出等价动作时，框子状态机与安全边界一致  
-- [ ] **Step 4:** 实现 protocol + Planner–Executor  
-- [ ] **Step 5:** 单测全绿   
+- [x] **Step 1:** mock：目标 → 两步计划 → 本地事实 → 证据缺口 → Tool → 完成条件满足；断言状态与事件顺序  
+- [x] **Step 2:** 单测：0-step 轻答、失败改道、plan revision、熔断、maxSteps/maxRevisions、blocked 说明  
+- [x] **Step 3:** 单测：不同 mock reasoningCall 给出等价动作时，框子状态机与安全边界一致  
+- [x] **Step 4:** 实现 protocol + Planner–Executor  
+- [x] **Step 5:** 单测全绿   
 
 ---
 
@@ -250,9 +257,9 @@
 - 行情/基本面只读已有服务/缓存，不在本任务做大刷新策略  
 - `registerBuiltinTools(registry)` 在主进程初始化调用  
 
-- [ ] **Step 1:** 单测 portfolio facts 无成本价  
-- [ ] **Step 2:** 实现三 Tool + register  
-- [ ] **Step 3:** 单测通过  
+- [x] **Step 1:** 单测 portfolio facts 无成本价  
+- [x] **Step 2:** 实现三 Tool + register  
+- [x] **Step 3:** 单测通过  
 
 ---
 
@@ -270,9 +277,9 @@
 - 设置文案「允许 Agent 联网」；辅助说明：开启后 Agent 可按任务自主联网并可能产生模型/数据成本，不再逐次询问
 - 此开关只控制 Agent Registry 中 `sideEffect='network'` 的 Tool；不合并或覆盖盘前采集等已有独立联网开关
 
-- [ ] **Step 1:** 写 Migration/设置单测：旧库升级默认关闭、重复初始化幂等、非法值拒绝  
-- [ ] **Step 2:** 实现 Migration、类型与设置 UI  
-- [ ] **Step 3:** 验证关闭 → 开启 → 再关闭均即时影响后续 Tool 调用  
+- [x] **Step 1:** 写 Migration/设置单测：旧库升级默认关闭、重复初始化幂等、非法值拒绝  
+- [x] **Step 2:** 实现 Migration、类型与设置 UI  
+- [x] **Step 3:** 验证关闭 → 开启 → 再关闭均即时影响后续 Tool 调用  
 
 ---
 
@@ -290,10 +297,10 @@
 - 将 `researchAgent:progress` / `delta` **桥接**为 `ai:agentEvent`（tool_result 增量或子时间线条）  
 - PlanStep 持久化为 `waiting_subagent`；run 终态后按 `sessionId + runId + stepId` 幂等触发 continuation，读取权威报告并重新进入 CompletionEvaluator  
 
-- [ ] **Step 1:** 单测上下文包含对话要点与标的提取  
-- [ ] **Step 2:** 单测成功/失败/取消终态、重复完成通知、重启恢复均不会重复启动或重复 continuation  
-- [ ] **Step 3:** 实现 Tool + 桥接 + continuation  
-- [ ] **Step 4:** 单测通过  
+- [x] **Step 1:** 单测上下文包含对话要点与标的提取  
+- [x] **Step 2:** 单测成功/失败/取消终态、重复完成通知、重启恢复均不会重复启动或重复 continuation  
+- [x] **Step 3:** 实现 Tool + 桥接 + continuation  
+- [x] **Step 4:** 单测通过  
 
 ---
 
@@ -314,9 +321,9 @@
   - **放行**由本会话 Agent 已启动之 run 的 progress/delta → `ai:agentEvent` 桥接（避免 Agent 自锁）  
   - 全局单 `running` 租约语义不变  
 
-- [ ] **Step 1:** 契约单测：事件名、requestId 幂等、busy 拒绝 vs 桥接放行  
-- [ ] **Step 2:** 实现 IPC + preload + 串行锁接入  
-- [ ] **Step 3:** 验证 preload 类型与 window.api 暴露  
+- [x] **Step 1:** 契约单测：事件名、requestId 幂等、busy 拒绝 vs 桥接放行  
+- [x] **Step 2:** 实现 IPC + preload + 串行锁接入  
+- [x] **Step 3:** 验证 preload 类型与 window.api 暴露  
 
 ---
 
@@ -335,10 +342,10 @@
 - 结束后 `getSession` 权威刷新  
 - **深挖入口收敛：** Agent 自主 `research.deep_start` 为主；既有 suggest→启动路径降为手动兜底或移除（本任务二选一并在 README 写死，禁止双主路径长期并存）  
 
-- [ ] **Step 1:** timeline model 单测  
-- [ ] **Step 2:** UI 接入 + 深挖入口收敛  
-- [ ] **Step 3:** 更新 README FR（目标驱动 Planner–Executor、平台地基能力、自主取数、深挖 continuation、写闸门、联网开关）  
-- [ ] **Step 4:** 相关 vitest 通过  
+- [x] **Step 1:** timeline model 单测  
+- [x] **Step 2:** UI 接入 + 深挖入口收敛  
+- [x] **Step 3:** 更新 README FR（目标驱动 Planner–Executor、平台地基能力、自主取数、深挖 continuation、写闸门、联网开关）  
+- [x] **Step 4:** 相关 vitest 通过  
 
 ---
 
@@ -348,20 +355,72 @@
 - Create: `electron/main/agent/skills/research-assistant/SKILL.md`（短：何时读持仓、何时深挖、禁止荐股）  
 - Modify: `orchestrator.ts` 组装 system prompt = Skill + `registry.listForPrompt()`  
 
-- [ ] **Step 1:** 写入 SKILL.md（中文，明确非投顾）  
-- [ ] **Step 2:** 单测 prompt 含 tool 名与禁止项  
-- [ ] **Step 3:** 接入 orchestrator  
+- [x] **Step 1:** 写入 SKILL.md（中文，明确非投顾）  
+- [x] **Step 2:** 单测 prompt 含 tool 名与禁止项  
+- [x] **Step 3:** 接入 orchestrator  
 
 ---
 
 ### Task 9：验证、spec/plan 状态、设计初衷检核
 
-- [ ] **Step 1:** `pnpm exec vitest run tests/unit/agent*.test.ts tests/unit/researchDeepStartContext.test.ts tests/unit/agentTimelineModel.test.ts`  
-- [ ] **Step 2:** 必要 typecheck / lint 触及文件  
+- [x] **Step 1:** `npm run test:unit --` 相关 agent* / researchDeepStartContext / agentTimelineModel（13 files / 69 tests 通过）  
+- [ ] **Step 2:** 必要 typecheck / lint 触及文件（残留既有 UI 类型问题与本任务无关，未宣称全仓 verify 绿）  
 - [ ] **Step 3:** 手工验收对照 spec §8（目标/计划可见；自主取数；失败改道；深挖 continuation；完成条件检核；写操作确认）  
 - [ ] **Step 3a:** 联网门禁验收：默认关闭无网络请求；开启后 Agent 自主深挖且不逐次确认；再次关闭后新调用被阻断  
-- [ ] **Step 4:** 将 spec/plan `状态` 更新为已完成；填写下方检核表  
+- [x] **Step 4:** 将 spec/plan `状态` 更新为第一期已落地；检核表保留待手工填  
 - [ ] **Step 5:** 仅在用户要求时中文 commit  
+
+**已知未完全闭环（诚实记录，不改正文掩盖）：**
+- 深挖终态后「读权威报告再跑一轮 Planner continuation」仍偏薄（有幂等闸门与 status 事件，完整总结续跑待加深）
+- Agent 执行账本与 orchestrator 运行时挂接未完全串联
+- Task 6 未单独建 IPC 契约单测文件
+- 第二期外部 MCP（M0–M2）未开始
+
+---
+
+## 第二期 Tasks（外部 MCP 客户端；spec §4.4）
+
+> **执行门槛：** 第一期 Tasks 1–9 完成或用户书面指定「先做 MCP」后再勾选。未批准前仍禁止改业务代码。  
+> **对齐：** 聊天 + 深度研究两边都要用；分期 A → B → C。
+
+### Task M0：外部 MCP 配置模型 + Migration + 设置 UI（子期 A）
+
+**Files（预期）：**
+- `electron/main/database/db.ts`（向前 Migration：外部 MCP 服务器配置表；密钥加密存储）
+- `electron/main/services/externalMcp*`（连接、list_tools、健康检查；主进程 only）
+- `electron/main/ipc/*` + `electron/preload/index.ts`（窄 IPC：list/save/test/delete）
+- `src/components/Settings/`（或 AI 配置区）外部 MCP 面板
+- `tests/unit/externalMcp*.test.ts`
+
+**Produces：** 增删改/启停/连通测试/`list_tools`；Renderer 无明文常驻密钥回显；失败可诊断。
+
+- [ ] **Step 1:** Migration + repository 单测  
+- [ ] **Step 2:** 主进程连接与 list_tools（mock 传输）单测  
+- [ ] **Step 3:** 设置 UI + README（区分「本机研究访问」服务端 vs 本面板客户端）  
+- [ ] **Step 4:** 手工：配置假/真服务器，能列出 tools  
+
+### Task M1：MCP Tool 投影进 ToolRegistry + 挂聊天（子期 B）
+
+**Files（预期）：**
+- `electron/main/agent/tools/mcp*` 或 `registerMcpProjectedTools`
+- 扩展 `networkGate` / HITL：MCP 工具按映射 sideEffect 过闸
+- `AIAnalysis` 时间线已能展示通用 tool 事件（复用第一期）
+- 单测：开关关闭拒绝；白名单外拒绝；结果截断
+
+- [ ] **Step 1:** 投影命名、schema、sideEffect 映射单测  
+- [ ] **Step 2:** Orchestrator 可调用；审计含 serverId/toolName  
+- [ ] **Step 3:** 对照 spec §8 第 11–12 条手工验收  
+
+### Task M2：深度研究挂 MCP（子期 C）
+
+**Files（预期）：**
+- researchAgent 工具面或桥接：仅授权 MCP 工具可被 runner/主 Agent 补证路径调用
+- 账本投影与证据视图可追溯
+- 单测：主体/asOf 约束；门禁不因 MCP 原文绕过
+
+- [ ] **Step 1:** 契约单测（投影进证据、失败降级）  
+- [ ] **Step 2:** 实现桥接  
+- [ ] **Step 3:** 对照 spec §8 第 13 条验收  
 
 ---
 
@@ -370,7 +429,8 @@
 1. `feat(agent):` ToolRegistry + Orchestrator 框子  
 2. `feat(agent):` 种子 Tool + deep_start  
 3. `feat(agent):` IPC 与 AI 分析时间线  
-4. `docs:` README / spec 状态与检核  
+4. `feat(agent):` 外部 MCP 客户端（第二期，可再拆 commit）  
+5. `docs:` README / spec 状态与检核  
 
 ---
 
@@ -378,21 +438,22 @@
 
 | Spec 项 | 结果 | 说明 |
 |---|---|---|
-| 北星：OpenClaw 融入平台 / 单交互面自主判断 | 待检 | |
-| 目标驱动 Planner–Executor；复杂任务有计划/完成条件/缺口/修订 | 待检 | |
-| 模型/Provider 与框子解耦；确定性 mock 可验收状态机 | 待检 | |
-| HITL 仅写操作；联网走持久开关 | 待检 | |
-| 联网默认关闭；开启后自主联网；关闭阻断 | 待检 | |
-| 深挖作异步 SubAgent；waiting → terminal → 幂等 continuation | 待检 | |
-| 独立 agent-turn 协议（不混用 researchAgent tool_batch） | 待检 | |
-| 复用 session 串行锁 | 待检 | |
-| ToolRegistry 可扩展；平台地基可挂 | 待检 | |
-| 时间线统一 agentEvent | 待检 | |
-| 无荐股/窄 IPC/可测 | 待检 | |
-| README 已更新 | 待检 | |
+| 北星：本地投研 Agent / 多源数据 / 单交互面 | 部分 | 框子与主路径已接；多源外置 MCP 仍属第二期 |
+| 目标驱动 Planner–Executor；复杂任务有计划/完成条件/缺口/修订 | 单测通过 | 待手工验收 |
+| 模型/Provider 与框子解耦；确定性 mock 可验收状态机 | 通过 | |
+| HITL 仅写操作；联网走持久开关 | 通过 | Settings 开关 + gate 单测 |
+| 联网默认关闭；开启后自主联网；关闭阻断 | 单测通过 | 待手工 3a |
+| 深挖作异步 SubAgent；waiting → terminal → 幂等 continuation | 部分 | 启动/桥接/幂等闸门有；完整报告续总结待加深 |
+| 独立 agent-turn 协议（不混用 researchAgent tool_batch） | 通过 | |
+| 复用 session 串行锁 | 通过 | agentTurnService |
+| ToolRegistry 可扩展；多源（含后续 MCP）可挂 | 通过 | 第一期预留 |
+| 时间线统一 agentEvent | 通过 | UI 已消费 |
+| 无荐股/窄 IPC/可测 | 通过 | Skill 禁止项 |
+| README 已更新 | 通过 | AIAnalysis / Settings |
+| （第二期）外部 MCP A/B/C | 未做 | |
 
-**总评：** （完成后填）  
-**检核人 / 日期：**  
+**总评：** 第一期框子代码与单测已落地；请用户重启应用后做 §8 / 联网门禁手工验收，再补全检核结论。  
+**检核人 / 日期：** （待填）
 
 ---
 
@@ -403,4 +464,6 @@
 - 2026-08-11：北星改为「OpenClaw 融入本平台」；自适应深度；修正独立动作协议、session 锁、深挖 busy 不自锁、入口收敛与 tool 失败回注。  
 - 2026-08-11：完成 OpenClaw commit `46bdbe585f96663d6ecff932ad6790d6cd26e3a3` 源码测绘后，收敛为「借鉴契约，不抄栈」；默认自主实现，不引入其运行时依赖，仅极小独立函数允许另行评估 MIT 改编。  
 - 2026-08-11：用户确认先解决框子智能化：第一阶段升级为目标驱动 Planner–Executor，模型/Provider 建设排除；保留任务/能力/上下文/事件/审计契约，后续按评测门槛演进到通用多 Agent。  
+- 2026-08-11：按用户要求把二开北星与外部 MCP（A/B/C）**补充进本文与同日 design**；第一期 Tasks 不变；新增「第二期 Tasks」M0–M2。  
+- 2026-08-12：用户批准执行第一期；本机研究访问改为旁路表述。  
 

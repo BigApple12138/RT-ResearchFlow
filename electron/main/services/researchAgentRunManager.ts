@@ -82,6 +82,7 @@ import {
 } from './researchAgentNetworkTools'
 import { withDiscussionSessionLock } from './discussionSessionLock'
 import { deleteSessionWithSessionLock } from './discussionSessionLifecycleService'
+import { notifyResearchAgentBridge } from '../agent/researchAgentBridge'
 import {
   MULTI_PERSPECTIVE_PROTOCOL_VERSION,
   MULTI_PERSPECTIVE_UNRESTRICTED_PROMPT_RULE_VERSION,
@@ -739,12 +740,25 @@ export class ResearchAgentRunManager {
   }
 
   private emit(event: ResearchAgentRunnerProgress): void {
+    // Agent Hub：progress 桥接总线（ai:agentEvent）；不改变既有 researchAgent:progress
+    notifyResearchAgentBridge('progress', {
+      runId: event.runId,
+      phase: event.phase,
+      message: event.message,
+      status: event.status,
+    })
     const window = this.dependencies.getWindow?.()
     if (!window || window.isDestroyed()) return
     window.webContents.send('researchAgent:progress', event)
   }
 
   private emitDelta(event: ResearchAgentRunnerDelta): void {
+    notifyResearchAgentBridge('delta', {
+      runId: event.runId,
+      phase: event.phase,
+      type: event.type,
+      accumulated: event.accumulated,
+    })
     const window = this.dependencies.getWindow?.()
     if (!window || window.isDestroyed()) return
     try {

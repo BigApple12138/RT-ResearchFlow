@@ -113,7 +113,13 @@ import {
 import {
   validateDiscussionCompactionInput,
   validateDiscussionFollowUpInput,
+  validateAgentTurnInput,
+  validateAgentConfirmInput,
 } from './discussionIpcContract'
+import { runAgentTurnForSession } from '../services/agentTurnService'
+import { getAgentHitlGate, getAgentToolRegistry, subscribeAgentEvents } from '../agent/agentRuntime'
+import { subscribeResearchAgentBridge } from '../agent/researchAgentBridge'
+import type { AgentEvent } from '../agent/types'
 export { isUuid } from './discussionIpcContract'
 
 export interface DiscussionCompactionDto {
@@ -1004,6 +1010,37 @@ function getCachedStockFetchSummary(
 }
 
 export function registerAIHandlers(getWindow: () => BrowserWindow | null): void {
+  // Agent Hub：确保种子 Tool + deep_start 已注册；事件推送到 Renderer
+  try {
+    getAgentToolRegistry()
+  } catch (error) {
+    console.warn('[ai] Agent ToolRegistry 初始化失败:', error instanceof Error ? error.message : error)
+  }
+
+  const pushAgentEvent = (event: AgentEvent) => {
+    const win = getWindow()
+    if (!win || win.isDestroyed()) return
+    try {
+      win.webContents.send('ai:agentEvent', event)
+    } catch { /* UI only */ }
+  }
+  subscribeAgentEvents(pushAgentEvent)
+  subscribeResearchAgentBridge((kind, event) => {
+    const runId = String(event.runId ?? '')
+    if (!runId) return
+    pushAgentEvent({
+      type: kind === 'progress' ? 'status' : 'tool_result',
+      requestId: typeof event.agentRequestId === 'string' ? event.agentRequestId : `bridge:${runId}`,
+      sessionId: typeof event.sessionId === 'number' ? event.sessionId : 0,
+      at: Date.now(),
+      payload: {
+        source: kind === 'progress' ? 'researchAgent.progress' : 'researchAgent.delta',
+        ...event,
+        name: kind === 'delta' ? 'research.deep_start' : undefined,
+      },
+    })
+  })
+
   // ── FR-072 / FR-081: per-stock per-provider forecast cache (in-process memory) ──
   interface StockForecastCache {
     today?: { time: string; price: number }[]
@@ -1707,6 +1744,37 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
         } catch { /* UI only */ }
       },
     })
+  })
+
+  // ── ai:agentTurn ──────────────────────────────────────────────────────────────
+  // Agent Hub 主路径：Planner–Executor；深挖 busy 时拒绝新 turn，但 progress 桥接放行
+  ipcMain.handle('ai:agentTurn', async (_e, data: unknown) => {
+    const validation = validateAgentTurnInput(data)
+    if (!validation.ok) return { error: validation.message, code: validation.code }
+    const { requestId, sessionId, message } = validation.data
+    const db = getDb()
+    return runAgentTurnForSession(db, { requestId, sessionId, message }, {
+      onEvent: pushAgentEvent,
+    }).catch((error) => ({
+      error: error instanceof Error ? error.message : String(error),
+      code: 'AGENT_TURN_FAILED',
+    }))
+  })
+
+  // ── ai:agentConfirm ───────────────────────────────────────────────────────────
+  ipcMain.handle('ai:agentConfirm', async (_e, data: unknown) => {
+    const validation = validateAgentConfirmInput(data)
+    if (!validation.ok) return { ok: false, error: validation.message, code: validation.code }
+    try {
+      getAgentHitlGate().resolveHitl(validation.data.hitlId, validation.data.approved)
+      return { ok: true, requestId: validation.data.requestId, hitlId: validation.data.hitlId, approved: validation.data.approved }
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'HITL_RESOLVE_FAILED',
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
   })
 
   // ── ai:runPortfolioBrief ──────────────────────────────────────────────────────

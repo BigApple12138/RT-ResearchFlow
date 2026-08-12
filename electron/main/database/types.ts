@@ -1143,6 +1143,8 @@ export interface AppSettingsRow {
   decision_notify_in_app_enabled?: number  // FR-260: 应用内主动提醒开关，0/1，默认 1
   supply_chain_llm_fallback?: number       // FR-171: 产业链传导分析 LLM 兜底开关，0=关，1=开
   decision_center_filters_json?: string | null // FR-241: 今日看板筛选的跨 renderer-origin 持久偏好
+  /** Agent 联网授权：0=关（默认），1=开；仅控制 Registry 中 sideEffect=network 的 Tool */
+  ai_agent_network_enabled?: number
 }
 
 // FR-159: 历史回测明细行
@@ -1345,6 +1347,85 @@ export interface DiscussionTurnRequestRow {
   created_at: number
   updated_at: number
   completed_at: number | null
+}
+
+/** Agent Hub 执行账本（Migration 148） */
+export type AgentTurnStatus =
+  | 'running'
+  | 'waiting_subagent'
+  | 'interrupted'
+  | 'done'
+  | 'error'
+  | 'cancelled'
+
+export type AgentTurnTerminal = 'done' | 'error' | 'cancelled'
+
+export type AgentStepStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting_subagent'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+
+export type AgentObservationFailureCategory = 'retryable' | 'replanable' | 'blocked'
+
+export interface AgentTurnRow {
+  id: string
+  request_id: string
+  request_fingerprint: string
+  session_id: number
+  goal: string
+  completion_criteria_json: string
+  plan_revision: number
+  status: AgentTurnStatus
+  terminal: AgentTurnTerminal | null
+  error_code: string | null
+  error_message: string | null
+  revision: number
+  created_at: number
+  updated_at: number
+  completed_at: number | null
+}
+
+export interface AgentStepRow {
+  id: string
+  turn_id: string
+  agent_id: string
+  role: string
+  task_id: string | null
+  parent_task_id: string | null
+  title: string
+  depends_on_json: string
+  capability_need_json: string
+  plan_revision: number
+  attempt: number
+  status: AgentStepStatus
+  subagent_run_id: string | null
+  intent_json: string | null
+  intent_sha256: string | null
+  outcome_json: string | null
+  outcome_sha256: string | null
+  revision: number
+  error_code: string | null
+  error_message: string | null
+  created_at: number
+  updated_at: number
+  started_at: number | null
+  completed_at: number | null
+}
+
+export interface AgentObservationRow {
+  id: string
+  turn_id: string
+  step_id: string | null
+  summary: string
+  evidence_refs_json: string
+  failure_category: AgentObservationFailureCategory | null
+  remaining_gaps_json: string
+  content_hash: string
+  created_at: number
 }
 
 export interface ProviderConfigRow {

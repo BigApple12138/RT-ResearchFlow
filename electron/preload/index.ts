@@ -1796,6 +1796,37 @@ const api = {
         code?: string
         warning?: string
       }>,
+    agentTurn: (payload: { requestId: string; sessionId: number; message: string }) =>
+      ipcRenderer.invoke('ai:agentTurn', payload) as Promise<{
+        text?: string
+        messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
+        terminal?: 'done' | 'error' | 'cancelled'
+        waitingSubagent?: { runId: string }
+        error?: string
+        code?: string
+      }>,
+    agentConfirm: (payload: { requestId: string; hitlId: string; approved: boolean }) =>
+      ipcRenderer.invoke('ai:agentConfirm', payload) as Promise<{
+        ok: boolean
+        requestId?: string
+        hitlId?: string
+        approved?: boolean
+        error?: string
+        code?: string
+      }>,
+    onAgentEvent: (
+      listener: (data: {
+        type: string
+        requestId: string
+        sessionId: number
+        at: number
+        payload?: Record<string, unknown>
+      }) => void,
+    ) => {
+      const wrapped = (_event: unknown, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('ai:agentEvent', wrapped)
+      return () => { ipcRenderer.removeListener('ai:agentEvent', wrapped) }
+    },
     compactDiscussionContext: (payload: {
       requestId: string
       sessionId: number
