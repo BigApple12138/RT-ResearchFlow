@@ -10,6 +10,8 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 
 **One-page（2026-08-12）：** 深度研究不是底部常驻账本窗，而是聊天时间线中的回合块（`DeepResearchTurnView`：可折叠过程 + 结论 + 来源提示；详情复用 `ResearchAgentRunDetail`）。`ResearchAgentPanel` 仅作启动/进度控制器（预检 modal / 确认框），经 `onTimelineContextChange` 把 runs 投影给父级。
 
+**Cursor 式会话面（2026-08-12）：** 讨论路径主表面 = 会话线程 + composer。左右栏为可折叠抽屉（`ai-drawer-toggle-left` / `ai-drawer-toggle-right`），偏好写入 localStorage（`rt-researchflow.ai-analysis.drawer.*`）；无存储时讨论默认左开右收、文章默认左右都开（按会话 kind 回退）。研究增量：`xl+` 在右抽屉，`<xl` 在主区内联面板（`ai-research-increment-inline`），避免窄屏点开后入口消失。Agent 过程在上、正文草稿在下（`ai-agent-turn-live` / `ai-agent-streaming`）；JSON 协议未出正文前明示整段返回。首轮 composer 乐观插入 user 消息以便展示过程滚动。
+
 ### FR：Agent 工作台（Agent Hub）
 
 - **主发送路径**：若 preload 暴露 `window.api.ai.agentTurn`，composer 走 `ai:agentTurn`（目标驱动 Planner–Executor）；否则回退 `ai:followUp`（兼容旧构建）。
@@ -31,7 +33,7 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 
 ## 实现思路
 
-组件继续复用 `window.api.ai` 会话接口, 并优先读取 P2 新增的 `structuredResult`。页面保持左侧分析记录、中间研判工作区、右侧研判侧栏三栏结构; 右侧的候选股票、可信度、主线、验证清单和状态优先来自结构化 JSON, 当结构化结果缺失或解析失败时回退到 P1 的文本派生逻辑。顶部标题不直接使用模型正文首行, 而是优先用结构化主线与摘要生成可读研判标题, 避免展示模型过程句或长段原文。
+组件继续复用 `window.api.ai` 会话接口, 并优先读取 P2 新增的 `structuredResult`。页面保持左侧分析记录、中间研判工作区、右侧研判/研究侧栏三栏结构，但左右栏可小按钮收起（Cursor 式）；右侧的候选股票、可信度、主线、验证清单和状态优先来自结构化 JSON（文章会话），讨论会话右侧优先研究增量；当结构化结果缺失或解析失败时回退到 P1 的文本派生逻辑。顶部标题不直接使用模型正文首行, 而是优先用结构化主线与摘要生成可读研判标题, 避免展示模型过程句或长段原文。
 
 ## 主要 props/state/事件流
 
@@ -43,7 +45,8 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - `followUpInput/sendingFollowUp`: 控制追问/新对话输入与发送状态；无选中会话时走 create-and-send。
 - 讨论消息由主进程分配稳定 `sequence`；Renderer 不计算或用数组下标定位消息。`ai:followUp` / `ai:agentTurn` 必须携带 UUID `requestId`，同一请求重放返回已有 turn，不重复追加 user/assistant。
 - FR（流式）：`ai:followUp` 期间主进程通过 `ai:followUpDelta`（`start` / `delta` / `reset` / `error`）推送累计正文；Renderer 展示 `ai-followup-streaming` 草稿气泡，**结束再**以 `getSession` 权威消息替换。流式过程不写 `messages` JSON。含网页搜索的 turn 可降级为整段返回并明示。深度研究保留 `researchAgent:progress`，写作步另推 `researchAgent:delta`；同时桥接进 `ai:agentEvent`。时间线 `deep-research-timeline` / `DeepResearchTurnView` 展示过程与结论投影。
-- Agent 时间线：默认 Cursor 式状态滚动（`AgentStatusScroll` / `deriveAgentStatusScroll`）；明细折叠；HITL 条 `agent-hitl-bar`；联网提示 `agent-network-hint`。
+- FR（抽屉）：`sessionDrawerPrefs` 按会话 kind 回退默认；讨论默认右收、文章默认右开；研究增量 `xl` 右抽屉 + `<xl` 内联（`ai-research-increment-inline`）。
+- FR（Agent 正文流式）：`ai:agentTurn` 对用户可见 final 推送 `ai:agentEvent` `message`（`stream: 'delta'|'final'`）；UI `ai-agent-turn-live`（过程→草稿）；无正文时明示整段返回，不独占空「思考中…」。
 - 研究讨论的消息热区只保留未归档原文；历史原文进入归档账本，累计摘要独立保存并在模型调用时与 `promptSent` 硬事实、热消息一起组装。摘要不是一条伪造的 chat message，也不进入 FR-239 变更游标。
 - 讨论达到未归档的 12 个完整问答后，下一次追问前默认自动调用上下文整理；AI 配置可关闭。讨论页的“整理聊天上下文”是显式手动入口，与“整理本次讨论”研究变更动作严格区分，最近 6 条原文作为热尾部保留。
 - 快捷芯片：`chip-analyze-portfolio` / `chip-list-portfolio` / `chip-check-ai-config`；`new-conversation` 回到新对话；`research-composer` 为底部输入区。

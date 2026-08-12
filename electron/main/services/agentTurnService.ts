@@ -108,6 +108,7 @@ function buildDefaultReasoningCall(db: Database.Database): ReasoningCall {
     const result = await callWithFallback(db, {
       messages: chatMessages,
       webSearch: undefined,
+      onDelta: input.onDelta,
     })
     return result.text
   }

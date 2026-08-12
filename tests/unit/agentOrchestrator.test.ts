@@ -90,6 +90,30 @@ describe('agentOrchestrator', () => {
     expect(c.terminal()).toHaveLength(1)
     expect(c.terminal()[0].type).toBe('done')
     expect(events.some((e) => e.type === 'tool_call')).toBe(false)
+    const messages = events.filter((e) => e.type === 'message')
+    expect(messages.some((e) => e.payload?.stream === 'delta')).toBe(true)
+    expect(messages.some((e) => e.payload?.stream === 'final')).toBe(true)
+    expect(messages.find((e) => e.payload?.stream === 'final')?.payload?.text).toContain('投研助手')
+  })
+
+  it('reasoningCall onDelta 在可解析 final 时推送 stream=delta', async () => {
+    const events: AgentEvent[] = []
+    const registry = createToolRegistry()
+    const result = await runAgentTurn({
+      sessionId: 1,
+      userMessage: '你好',
+      requestId: 'req-delta',
+      registry,
+      onEvent: (e) => events.push(e),
+      reasoningCall: async (input) => {
+        const finalJson = JSON.stringify({ type: 'final', text: '流式正文' })
+        input.onDelta?.(finalJson)
+        return finalJson
+      },
+    })
+    expect(result.terminal).toBe('done')
+    const deltas = events.filter((e) => e.type === 'message' && e.payload?.stream === 'delta')
+    expect(deltas.some((e) => e.payload?.text === '流式正文')).toBe(true)
   })
 
   it('复杂目标：计划 → 本地事实 → 缺口 Tool → 完成；事件顺序与唯一终态', async () => {
