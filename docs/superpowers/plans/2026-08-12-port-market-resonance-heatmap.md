@@ -14,7 +14,7 @@
 - Branch：`port/market-resonance-heatmap-cao`（基于 `origin/develop`）
 - Remote 参考：`cao` → `https://github.com/caoritian002-wq/RT-ResearchFlow.git`（`cao/dev`）
 - Commits：市场共振历史 + 行业云图动量 + SDD 归档
-- Migration：对方 136 → 本仓 **148**（`origin/develop` 当前最高 147）
+- Migration：对方 136 → 本仓 **151**（为本地已提交、尚未推送的 Agent Hub 148–150 留空；`origin/develop` 当前最高 147，跳号合法）
 
 ## 设计初衷检核
 

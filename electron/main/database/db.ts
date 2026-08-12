@@ -4963,8 +4963,8 @@ const MIGRATIONS: DatabaseMigration[] = [
   },
   {
     // FR-261: local-first daily archives for historical market resonance playback.
-    // Port from cao/dev (originally Migration 136); renumbered to next free version on origin/develop.
-    version: 148,
+    // Port from cao/dev (originally Migration 136); use 151 so local Agent Hub 148–150 can land first.
+    version: 151,
     sql: `
       CREATE TABLE market_resonance_daily_snapshots (
         trade_date          TEXT PRIMARY KEY CHECK (length(trade_date) = 8),

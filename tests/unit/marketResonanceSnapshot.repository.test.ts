@@ -35,7 +35,7 @@ describe('FR-261 市场共振日快照仓储', () => {
 
   beforeEach(() => {
     db = new Database(':memory:')
-    runMigrations(db, DATABASE_MIGRATIONS.filter((migration) => migration.version === 148))
+    runMigrations(db, DATABASE_MIGRATIONS.filter((migration) => migration.version === 151))
   })
 
   afterEach(() => db.close())
