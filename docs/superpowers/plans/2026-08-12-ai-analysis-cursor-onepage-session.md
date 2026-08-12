@@ -99,15 +99,16 @@
 
 | Spec 项 | 结果 | 说明 |
 |---|---|---|
-| §8.1 主表面 + 右默认收 + 偏好 | 符合 | 讨论默认右收；文章无存储时右开；`<xl` 内联增量 |
+| §8.1 主表面 + 右默认收 + 偏好 | 符合 | 讨论默认右收；文章无存储右开；只写变更侧（PR#6）；`<xl` 内联增量 |
 | §8.2 误完成刹车（回归） | 已有 | 本 plan 未改 `completionEvaluator`；既有单测仍绿 |
-| §8.3 Agent 正文流式/降级 | 符合 | 过程→草稿；首轮乐观 user；无正文时明示整段返回 |
+| §8.3 Agent 正文流式/降级 | 符合 | 过程→草稿；final 后清草稿；首轮乐观+抛错回滚；requestId ref |
 | §8.4 研究增量挪位 | 符合 | 主区不常驻；xl 抽屉 / 窄屏内联可开关 |
-| §8.5 README + 单测 | 符合 | README FR；prefs/timeline/orchestrator 单测绿 |
+| §8.5 README + 单测 | 符合 | README FR；prefs（含 article 只改左）/ timeline / orchestrator |
 | §8.6 无 openclaw 依赖 | 符合 | 未新增依赖 |
 
-**总评：** Cursor 式抽屉 + Agent 正文流式 v1 已落地；审阅后修窄屏增量可达性、首轮过程滚动、块顺序与文章默认右开。  
-**检核人 / 日期：** Auto / 2026-08-12
+**总评：** Cursor 式抽屉 + Agent 正文流式 v1 已合入 `develop`（PR #5）；二次审阅 High/Medium follow-up 已合入（PR #6）。  
+**检核人 / 日期：** Auto / 2026-08-12  
+**合入：** https://github.com/BigApple12138/RT-ResearchFlow/pull/5 · https://github.com/BigApple12138/RT-ResearchFlow/pull/6
 
 ## 修订记录
 
@@ -115,3 +116,4 @@
 - 2026-08-12：用户批准执行；完成 Task 1–5 与设计初衷检核。
 - 2026-08-12：审阅修复 High（窄屏增量自锁、首轮无过程滚动）及 Medium（顺序/文章默认/降级文案）。
 - 2026-08-12：PR#5 二次审阅 follow-up——偏好只写变更侧、乐观消息抛错回滚、agentEvent requestId ref、testid expand/collapse、final 后清草稿。
+- 2026-08-12：收尾——更新检核表与合入链接；清理残留远端功能分支。
