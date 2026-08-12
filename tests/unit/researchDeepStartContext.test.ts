@@ -42,6 +42,30 @@ describe('researchDeepStartContext', () => {
     expect(pkg.recentMessages[0].content).toBe(source.content)
   })
 
+  it('isolated 优先保留硬事实/摘要并限制热尾长度', () => {
+    const session = emptySessionContext({
+      sessionId: 5,
+      userGoal: '深度分析一下',
+      requestId: 'req-iso-facts',
+    })
+    const messages = [
+      { role: 'user' as const, content: '【本地持仓事实】tsCode 002628 成都路桥' },
+      { role: 'assistant' as const, content: '【累计讨论摘要】已看过持仓。' },
+      { role: 'user' as const, content: '闲聊1' },
+      { role: 'assistant' as const, content: '闲聊答1' },
+      { role: 'user' as const, content: '闲聊2' },
+      { role: 'assistant' as const, content: '闲聊答2' },
+      { role: 'user' as const, content: '闲聊3' },
+      { role: 'assistant' as const, content: '闲聊答3' },
+      { role: 'user' as const, content: '深度分析一下' },
+    ]
+    const pkg = buildResearchDeepStartContext({ session, messages, contextMode: 'isolated' })
+    expect(pkg.contextMode).toBe('isolated')
+    expect(pkg.recentMessages.length).toBeLessThanOrEqual(6)
+    expect(pkg.recentMessages.some((m) => m.content.includes('002628'))).toBe(true)
+    expect(pkg.candidateSubjects.some((s) => s.kind === 'stock' && s.tsCode === '002628.SZ')).toBe(true)
+  })
+
   it('显式 fork 时 contextMode=fork', () => {
     const session = emptySessionContext({
       sessionId: 4,

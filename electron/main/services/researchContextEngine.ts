@@ -60,6 +60,27 @@ export type PrepareDiscussionTurnContextResult = {
   warning?: string
   softCompacted: boolean
   hardCompacted: boolean
+  /** hard 后仍超窗时丢弃了更早热消息 */
+  truncated?: boolean
+}
+
+/**
+ * 在仍超 `CONTEXT_WINDOW_CHARS` 时从头部丢弃热消息，直到装配估算落入窗内或只剩 1 条。
+ */
+export function trimHotMessagesToCharBudget(
+  db: Database.Database,
+  sessionId: number,
+  hotMessages: NormalizedConversationMessage[],
+  userMessage: ConversationMessage,
+  windowChars: number = CONTEXT_WINDOW_CHARS,
+): NormalizedConversationMessage[] {
+  let current = [...hotMessages]
+  while (current.length > 1) {
+    const assembled = buildDiscussionModelMessages(db, sessionId, [...current, userMessage])
+    if (estimateMessagesChars(assembled) <= windowChars) break
+    current = current.slice(1)
+  }
+  return current
 }
 
 async function runCompact(
@@ -143,9 +164,6 @@ export async function prepareDiscussionTurnContext(
       if (compacted.ok) {
         hotMessages = compacted.messages
         if (compacted.compaction) hardCompacted = true
-        else if (!warning && compacted.skippedReason) {
-          // 无法归档足够消息时由调用方软截断兜底
-        }
       } else {
         const hardWarn = `窗将满时整理上下文失败：${compacted.message}`
         warning = warning ? `${warning}；${hardWarn}` : hardWarn
@@ -158,7 +176,19 @@ export async function prepareDiscussionTurnContext(
     }
   }
 
-  return { hotMessages, warning, softCompacted, hardCompacted }
+  // hard 仍超预算时：丢弃更早热消息（保留尾部），followUp/agent 共用兜底，避免 silent 超窗。
+  let truncated = false
+  if (shouldHardCompact(probeAssemble(), CONTEXT_WINDOW_CHARS, 0)) {
+    const beforeLen = hotMessages.length
+    hotMessages = trimHotMessagesToCharBudget(db, input.sessionId, hotMessages, input.userMessage)
+    truncated = hotMessages.length < beforeLen
+    if (truncated) {
+      const trimWarn = '上下文仍超窗，已截断更早热消息'
+      warning = warning ? `${warning}；${trimWarn}` : trimWarn
+    }
+  }
+
+  return { hotMessages, warning, softCompacted, hardCompacted, truncated }
 }
 
 export type AfterDiscussionTurnCompactInput = {

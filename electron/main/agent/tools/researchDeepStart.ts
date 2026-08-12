@@ -131,19 +131,50 @@ function clampQuestion(raw: string): string {
 /**
  * 从 SessionContext + 会话消息构建深挖上下文包（禁止弹预检窗）。
  * recentMessages 恒为新对象快照，不保留调用方数组元素引用。
+ *
+ * isolated：优先硬事实 / 累计摘要 + 短热尾（默认最多 6 条），不灌全量父热对话。
+ * fork：更长热尾快照（仍为拷贝）。
  */
 export function buildResearchDeepStartContext(
   input: BuildResearchDeepStartContextInput,
 ): ResearchDeepStartContextPackage {
   const contextMode = input.contextMode === 'fork' ? 'fork' : 'isolated'
-  const maxMessages = input.maxMessages ?? (contextMode === 'fork' ? 40 : 12)
   const maxChars = input.maxMessageChars ?? (contextMode === 'isolated' ? 800 : 1200)
-  const recentMessages = input.messages
-    .slice(-maxMessages)
-    .map((m) => ({
-      role: m.role,
-      content: String(m.content).slice(0, maxChars),
-    }))
+  const maxMessages = input.maxMessages ?? (contextMode === 'fork' ? 40 : 6)
+
+  const copied = input.messages.map((m) => ({
+    role: m.role,
+    content: String(m.content),
+  }))
+
+  let selected = copied
+  if (contextMode === 'isolated') {
+    const factsAndSummaries = copied.filter((m) => (
+      m.content.includes('【累计讨论摘要')
+      || m.content.includes('硬事实')
+      || m.content.includes('【本地持仓')
+      || m.content.includes('promptSent')
+      || m.content.startsWith('【')
+    ))
+    const tail = copied.slice(-Math.min(4, maxMessages))
+    const merged: ResearchDeepStartMessage[] = []
+    const seen = new Set<string>()
+    for (const message of [...factsAndSummaries.slice(0, 2), ...tail]) {
+      const key = `${message.role}:${message.content.slice(0, 120)}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      merged.push(message)
+      if (merged.length >= maxMessages) break
+    }
+    selected = merged.length > 0 ? merged : copied.slice(-maxMessages)
+  } else {
+    selected = copied.slice(-maxMessages)
+  }
+
+  const recentMessages = selected.map((m) => ({
+    role: m.role,
+    content: m.content.slice(0, maxChars),
+  }))
 
   const corpus = [
     input.session.userGoal,

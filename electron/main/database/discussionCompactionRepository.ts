@@ -32,8 +32,7 @@ function hasSameCompactionIdentity(
   existing: DiscussionCompactionRow,
   input: InsertDiscussionCompactionInput,
 ): boolean {
-  const tokensBefore = input.tokensBefore ?? null
-  const tokensAfter = input.tokensAfter ?? null
+  // tokens_before/after 仅为检查点观测字段，不参与幂等身份（避免公式微调导致 REQUEST_CONFLICT）
   return existing.session_id === input.sessionId
     && existing.source_start_sequence === input.sourceStartSequence
     && existing.covered_through_sequence === input.coveredThroughSequence
@@ -42,8 +41,6 @@ function hasSameCompactionIdentity(
     && existing.summary_text === input.summary
     && existing.provider === input.provider
     && existing.model === input.model
-    && (existing.tokens_before ?? null) === tokensBefore
-    && (existing.tokens_after ?? null) === tokensAfter
 }
 
 function assertPositiveSequences(input: InsertDiscussionCompactionInput): void {

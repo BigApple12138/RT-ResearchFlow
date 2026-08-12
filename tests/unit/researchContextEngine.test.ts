@@ -152,6 +152,58 @@ describe('prepareDiscussionTurnContext hard 闸', () => {
     expect(modes).toContain('manual')
     compactSpy.mockRestore()
   })
+
+  it('hard 无法归档足够消息时仍会截断热尾以落入窗预算', async () => {
+    const sessionId = createSession(db, {
+      provider: 'qwen',
+      model: 'test-model',
+      articleUrls: [],
+      promptSent: '硬事实',
+      response: null,
+      scanRunId: null,
+      isError: false,
+      messages: [],
+    })
+    createResearchDiscussionContext(db, {
+      sessionId,
+      requestId: `discussion-${sessionId}`,
+      originType: 'manual',
+      originId: null,
+      originTitle: '测试讨论',
+      originOccurredAt: null,
+      originContentHash: 'context-hash',
+      contextSnapshotJson: JSON.stringify({ schemaVersion: 1, title: '测试讨论', items: [] }),
+      contextKeysJson: '[]',
+      includedContextKeysJson: '[]',
+      returnTargetJson: JSON.stringify({ tab: 'ai-analysis' }),
+      projectId: null,
+      baseSnapshotId: null,
+      baseSelectionReason: 'unassigned',
+    })
+    const chunk = '东'.repeat(20_000)
+    updateSessionMessages(db, sessionId, [
+      { role: 'user', content: chunk, sequence: 1 },
+      { role: 'assistant', content: chunk, sequence: 2 },
+      { role: 'user', content: chunk, sequence: 3 },
+      { role: 'assistant', content: chunk, sequence: 4 },
+    ])
+    vi.spyOn(compaction, 'compactDiscussionContextWithinLock').mockResolvedValue({
+      ok: true,
+      compaction: null,
+      messages: getSessionMessages(db, sessionId),
+      archivedCount: 0,
+      skippedReason: 'not_enough_messages',
+    })
+    const result = await prepareDiscussionTurnContext(db, {
+      sessionId,
+      requestId: 'trim-1',
+      hotMessages: getSessionMessages(db, sessionId),
+      userMessage: { role: 'user', content: '继续', requestId: 'trim-1' },
+    })
+    expect(result.truncated).toBe(true)
+    expect(result.hotMessages.length).toBeLessThan(4)
+    expect(result.warning).toMatch(/截断/)
+  })
 })
 
 describe('afterDiscussionTurnCompact', () => {

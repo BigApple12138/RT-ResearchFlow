@@ -87,15 +87,22 @@ export function getAgentToolRegistry(dbProvider: () => Database.Database = getDb
       startRun: async (input) => defaultDeepStartRunner(input),
       loadMessages: (sessionId) => {
         const db = dbProvider()
-        // isolated 默认：经讨论装配契约生成快照（promptSent+摘要+热尾），逐条拷贝，不共享可变引用。
+        // isolated/fork 共用装配快照拷贝；无 discussion 上下文时仍必须带上 promptSent（硬事实）。
         // 对照 OpenClaw prepareSubagentSpawn isolated（E:\代码库\git\openclaw\src\agents\subagents\spawn\subagent-spawn-context.ts）。
         const hot = getSessionMessages(db, sessionId)
         const assembled = buildDiscussionModelMessages(db, sessionId, hot)
-        return assembled
+        const copied = assembled
           .filter((m): m is typeof m & { role: 'user' | 'assistant' } => (
             m.role === 'user' || m.role === 'assistant'
           ))
           .map((m) => ({ role: m.role, content: String(m.content) }))
+        const prompt = getSession(db, sessionId)?.promptSent?.trim()
+        if (!prompt) return copied
+        const alreadyHasPrompt = copied.some((m) => (
+          m.role === 'user' && (m.content === prompt || m.content.startsWith(prompt.slice(0, Math.min(80, prompt.length))))
+        ))
+        if (alreadyHasPrompt) return copied
+        return [{ role: 'user' as const, content: prompt }, ...copied]
       },
       loadTitle: (sessionId) => {
         const db = dbProvider()
