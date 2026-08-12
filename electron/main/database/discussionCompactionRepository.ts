@@ -75,6 +75,21 @@ export function getLatestDiscussionCompaction(
   `).get(sessionId) as DiscussionCompactionRow | undefined) ?? null
 }
 
+/** 压缩检查点列表（P2 list；restore UI 另开）。按覆盖序号降序。 */
+export function listDiscussionCompactionCheckpoints(
+  db: Database.Database,
+  sessionId: number,
+  limit = 20,
+): DiscussionCompactionRow[] {
+  const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 100) : 20
+  return db.prepare(`
+    SELECT * FROM ai_discussion_context_compactions
+    WHERE session_id = ?
+    ORDER BY covered_through_sequence DESC, id DESC
+    LIMIT ?
+  `).all(sessionId, safeLimit) as DiscussionCompactionRow[]
+}
+
 export function insertDiscussionCompaction(
   db: Database.Database,
   input: InsertDiscussionCompactionInput,

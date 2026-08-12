@@ -6,6 +6,7 @@ import {
   updateSessionMessages,
 } from '../../electron/main/database/aiAnalysisSessionRepository'
 import { runMigrations } from '../../electron/main/database/db'
+import { updateAIConfig } from '../../electron/main/database/aiConfigRepository'
 import { createResearchDiscussionContext } from '../../electron/main/database/researchDiscussionRepository'
 import {
   CONTEXT_RESERVE_CHARS,
@@ -91,6 +92,64 @@ describe('prepareDiscussionTurnContext hard 闸', () => {
     const modes = compactSpy.mock.calls.map((call) => call[1]?.mode)
     expect(modes).toContain('manual')
     expect(result.hardCompacted).toBe(false) // mock 未真正写入 compaction 行
+    compactSpy.mockRestore()
+  })
+
+  it('关闭 autoCompactDiscussion 时 soft 不跑，hard 仍可触发 manual compact', async () => {
+    const sessionId = createSession(db, {
+      provider: 'qwen',
+      model: 'test-model',
+      articleUrls: [],
+      promptSent: '硬事实',
+      response: null,
+      scanRunId: null,
+      isError: false,
+      messages: [
+        { role: 'user', content: '短问' },
+        { role: 'assistant', content: '短答' },
+      ],
+    })
+    createResearchDiscussionContext(db, {
+      sessionId,
+      requestId: `discussion-${sessionId}`,
+      originType: 'manual',
+      originId: null,
+      originTitle: '测试讨论',
+      originOccurredAt: null,
+      originContentHash: 'context-hash',
+      contextSnapshotJson: JSON.stringify({ schemaVersion: 1, title: '测试讨论', items: [] }),
+      contextKeysJson: '[]',
+      includedContextKeysJson: '[]',
+      returnTargetJson: JSON.stringify({ tab: 'ai-analysis' }),
+      projectId: null,
+      baseSnapshotId: null,
+      baseSelectionReason: 'unassigned',
+    })
+    updateAIConfig(db, { autoCompactDiscussion: 0 })
+    const huge = '东'.repeat(CONTEXT_WINDOW_CHARS)
+    updateSessionMessages(db, sessionId, [
+      { role: 'user', content: '短问', sequence: 1 },
+      { role: 'assistant', content: huge, sequence: 2 },
+    ])
+
+    const compactSpy = vi.spyOn(compaction, 'compactDiscussionContextWithinLock').mockResolvedValue({
+      ok: true,
+      compaction: null,
+      messages: getSessionMessages(db, sessionId),
+      archivedCount: 0,
+      skippedReason: 'not_enough_messages',
+    })
+
+    await prepareDiscussionTurnContext(db, {
+      sessionId,
+      requestId: 'hard-only-1',
+      hotMessages: getSessionMessages(db, sessionId),
+      userMessage: { role: 'user', content: '继续', requestId: 'hard-only-1' },
+    })
+
+    const modes = compactSpy.mock.calls.map((call) => call[1]?.mode)
+    expect(modes).not.toContain('auto')
+    expect(modes).toContain('manual')
     compactSpy.mockRestore()
   })
 })

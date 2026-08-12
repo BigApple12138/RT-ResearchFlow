@@ -196,3 +196,5 @@ export async function afterDiscussionTurnCompact(
     hardCompacted: prepared.hardCompacted,
   }
 }
+
+export { listDiscussionCompactionCheckpoints } from '../database/discussionCompactionRepository'

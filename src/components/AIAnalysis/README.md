@@ -15,7 +15,7 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - **主发送路径**：若 preload 暴露 `window.api.ai.agentTurn`，composer 走 `ai:agentTurn`（目标驱动 Planner–Executor）；否则回退 `ai:followUp`（兼容旧构建）。
 - **会话记忆（2026-08-12）**：Agent 与讨论 followUp **共用**压缩装配——`promptSent` 硬事实 + 累计摘要 + 热尾 + 当前句；turn 前按同一阈值自动 compact。编排器禁止只见当前短句。会话账本只存 user + assistant 最终回复；plan/tool 仅时间线投影，不把 tool 原文写入 `messages`。
 - **Context Engine（2026-08-12）**：发模前统一 `prepareDiscussionTurnContext`：soft（未归档 ≥12 对）+ hard（装配字符 > `CONTEXT_WINDOW_CHARS − CONTEXT_RESERVE_CHARS`，对照 OpenClaw `shouldCompact`）。硬事实仍为 `promptSent`；不引入 `openclaw` 运行时。参考本地源码 `E:\代码库\git\openclaw` @ `46bdbe585f9`。
-- **子编排 isolated（P1）**：`research.deep_start` 默认 `contextMode=isolated`，上下文为装配快照拷贝（不共享父热 `messages` 可变引用）；显式 `fork` 才带更长热尾。回合落账后 `afterDiscussionTurnCompact` 再评估压缩；compaction 记录含 `tokens_before`/`tokens_after` 检查点字段。
+- **子编排 isolated（P1）**：`research.deep_start` 默认 `contextMode=isolated`，上下文为装配快照拷贝（不共享父热 `messages` 可变引用）；显式 `fork` 才带更长热尾。回合落账后 `afterDiscussionTurnCompact` 再评估压缩；compaction 记录含 `tokens_before`/`tokens_after` 检查点字段。关闭「自动整理讨论」时 soft 对数闸可关，**hard 窗预算闸仍生效**。`listDiscussionCompactionCheckpoints` 可供复盘列出检查点（restore UI 属后续）。
 - 统一消费 `ai:agentEvent`（plan / status / tool_call / tool_result / message / hitl / done|error|cancelled）；不展示隐藏推理。投影见 `agentTimelineModel.ts`。
 - **自主取数**：本地只读 Tool（持仓/行情快照/基本面）免确认；`research.deep_start` 与外部 MCP 投影 Tool（`mcp__<serverId>__<toolName>`）为 network Tool，须在配置中心 → Agent 开启「允许 Agent 联网」。观察池「联网补充分类」走「本应用联网搜索」通道，**不依赖**该开关。
 - **官方披露 / 财务多方取数（2026-08-12）**：`official.disclosure_search` 先探测本应用联网搜索与 Tushare；网页侧用短 `site:`（巨潮+沪/深/北交所）并可降级过滤；已启用 Tushare 且有股票主体时并行拉预告/快报等结构化事实（**不是** URL 候选，不可作正文 `candidateId`）。任一侧成功则工具不整单失败。`company.fundamentals_refresh` 有 Tushare 优先，否则降级东财。MCP `isError` 透出 content 摘要。

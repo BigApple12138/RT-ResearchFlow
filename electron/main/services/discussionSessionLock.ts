@@ -4,6 +4,10 @@ const sessionTails = new Map<number, Promise<void>>()
  * Serializes every write-capable operation for one discussion session in the
  * main process. The promise tail is kept per session so unrelated sessions
  * can continue concurrently.
+ *
+ * 产品语义对齐 OpenClaw `session:<key>` lane
+ *（`E:\代码库\git\openclaw\src\agents\embedded-agent-runner\lanes.ts` @ 46bdbe585f9）：
+ * 同一 session 上 agentTurn / followUp / compact / deep 写回互斥串行。
  */
 export async function withDiscussionSessionLock<T>(
   sessionId: number,

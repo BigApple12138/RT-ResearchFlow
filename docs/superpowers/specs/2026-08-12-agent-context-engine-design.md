@@ -1,6 +1,6 @@
 # 投研 Agent Context Engine（借鉴 OpenClaw）设计
 
-**状态：** P0+P1 已完成（2026-08-12）；P2 待续  
+**状态：** P0+P1 已完成并加固（2026-08-12）；P2 flush/restore UI 待续  
 **Plan：** [`../plans/2026-08-12-agent-context-engine.md`](../plans/2026-08-12-agent-context-engine.md)  
 **日期：** 2026-08-12  
 **关联：**  

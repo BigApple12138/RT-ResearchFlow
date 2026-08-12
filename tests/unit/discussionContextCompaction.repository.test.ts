@@ -7,6 +7,7 @@ import { getAIConfig, updateAIConfig } from '../../electron/main/database/aiConf
 import {
   getLatestDiscussionCompaction,
   insertDiscussionCompaction,
+  listDiscussionCompactionCheckpoints,
 } from '../../electron/main/database/discussionCompactionRepository'
 import { archiveDiscussionMessages } from '../../electron/main/database/discussionMessageArchiveRepository'
 import {
@@ -147,16 +148,19 @@ describe('讨论上下文归档相关数据库契约', () => {
       provider: 'qwen', model: 'test-model', articleUrls: [], promptSent: '', response: null,
       scanRunId: null, isError: false,
     })
-    const compaction = insertDiscussionCompaction(legacy, {
-      sessionId: first, requestId: randomUUID(), sourceStartSequence: 1, coveredThroughSequence: 1,
-      sourceMessagesHash: 'a'.repeat(64), summary: '摘要', summaryHash: 'b'.repeat(64),
-      provider: 'qwen', model: 'test-model', now: 1_000,
-    })
+    // 预 153 表无 tokens_* 列；用裸 SQL 写入，避免仓库 INSERT 依赖新列
+    const compactionId = randomUUID()
+    legacy.prepare(`
+      INSERT INTO ai_discussion_context_compactions (
+        id, session_id, request_id, source_start_sequence, covered_through_sequence,
+        source_messages_hash, summary_text, summary_hash, provider, model, created_at
+      ) VALUES (?, ?, ?, 1, 1, ?, '摘要', ?, 'qwen', 'test-model', 1000)
+    `).run(compactionId, first, randomUUID(), 'a'.repeat(64), 'b'.repeat(64))
 
     runMigrations(legacy)
     runMigrations(legacy)
     expect(() => archiveDiscussionMessages(legacy, {
-      sessionId: second, compactionId: compaction.id,
+      sessionId: second, compactionId,
       messages: [{ role: 'user', content: '跨会话归档', sequence: 1 }], archivedAt: 2_000,
     })).toThrow('COMPACTION_SESSION_MISMATCH')
     expect(() => insertDiscussionCompaction(legacy, {
@@ -165,6 +169,37 @@ describe('讨论上下文归档相关数据库契约', () => {
       provider: 'qwen', model: 'test-model', now: 2_000,
     })).toThrow('COMPACTION_SEQUENCE_MUST_BE_POSITIVE')
     legacy.close()
+  })
+
+  it('Migration 153 后可写入并列出含 tokens 检查点', () => {
+    const sessionId = createSession(db, {
+      provider: 'qwen', model: 'test-model', articleUrls: [], promptSent: '', response: null,
+      scanRunId: null, isError: false,
+    })
+    const row = insertDiscussionCompaction(db, {
+      sessionId,
+      requestId: randomUUID(),
+      sourceStartSequence: 1,
+      coveredThroughSequence: 3,
+      sourceMessagesHash: 'e'.repeat(64),
+      summary: '检查点摘要',
+      summaryHash: 'f'.repeat(64),
+      provider: 'qwen',
+      model: 'test-model',
+      tokensBefore: 9000,
+      tokensAfter: 1200,
+      now: 4_000,
+    })
+    expect(row.tokens_before).toBe(9000)
+    expect(row.tokens_after).toBe(1200)
+    const listed = listDiscussionCompactionCheckpoints(db, sessionId)
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({
+      id: row.id,
+      tokens_before: 9000,
+      tokens_after: 1200,
+      covered_through_sequence: 3,
+    })
   })
 
   it('turn request 按 requestId 幂等，并保存完成后的响应文本', () => {
