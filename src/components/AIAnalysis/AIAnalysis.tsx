@@ -32,6 +32,10 @@ import {
   type AgentTimelineEvent,
 } from './agentTimelineModel'
 import { AgentStatusScroll } from './AgentStatusScroll'
+import {
+  buildCompactionCheckpointListModel,
+  type CompactionCheckpointItem,
+} from './compactionCheckpointListModel'
 
 /** 探测 preload 是否暴露 agentTurn；有则走 Agent 主路径。 */
 function isAgentTurnAvailable(): boolean {
@@ -471,6 +475,8 @@ export function AIAnalysis() {
   const [newDiscussionOpen, setNewDiscussionOpen] = useState(false)
   const [updatingContext, setUpdatingContext] = useState(false)
   const [compactingContext, setCompactingContext] = useState(false)
+  const [restoringCompaction, setRestoringCompaction] = useState(false)
+  const [compactionCheckpoints, setCompactionCheckpoints] = useState<CompactionCheckpointItem[]>([])
   const [agentSuggest, setAgentSuggest] = useState<null | { intent: 'deep_research' | 'industry_research'; question: string }>(null)
   const [agentOpenSignal, setAgentOpenSignal] = useState(0)
   const [preferredAgentQuestion, setPreferredAgentQuestion] = useState<string | null>(null)
@@ -528,6 +534,14 @@ export function AIAnalysis() {
       setPortfolioByCode(new Map(result.data.map((item) => [stockKey(item.tsCode), item.stockName])))
     })
   }, [])
+
+  useEffect(() => {
+    if (!detail?.discussion) {
+      setCompactionCheckpoints([])
+      return
+    }
+    void refreshCompactionCheckpoints(detail.id)
+  }, [detail?.id, detail?.discussion?.contextCompaction?.id, detail?.discussion?.contextCompaction?.coveredThroughSequence])
 
   useEffect(() => {
     const unsubscribe = window.api.ai.onTushareNotConfigured(() => {
@@ -640,11 +654,28 @@ export function AIAnalysis() {
     publishAppToast(message, 'info')
   }
 
+  async function refreshCompactionCheckpoints(sessionId: number) {
+    try {
+      const response = await window.api.ai.listDiscussionCompactionCheckpoints({
+        sessionId,
+        limit: 5,
+      })
+      if (!response.ok || !response.checkpoints) {
+        setCompactionCheckpoints([])
+        return
+      }
+      setCompactionCheckpoints(buildCompactionCheckpointListModel(response.checkpoints))
+    } catch {
+      setCompactionCheckpoints([])
+    }
+  }
+
   const refreshAfterResearchAgent = useCallback(async () => {
     if (selectedId == null) return
     const latest = await window.api.ai.getSession(selectedId)
     if (latest) setDetail(latest)
     await loadAISessions()
+    await refreshCompactionCheckpoints(selectedId)
   }, [loadAISessions, selectedId])
 
   async function handleSelectSession(id: number) {
@@ -655,6 +686,11 @@ export function AIAnalysis() {
       const sessionDetail = await window.api.ai.getSession(id)
       setDetail(sessionDetail)
       setActiveTab(sessionDetail?.discussion ? 'chat' : sessionDetail?.responseRound2 ? 'round2' : 'analysis')
+      if (sessionDetail?.discussion) {
+        await refreshCompactionCheckpoints(id)
+      } else {
+        setCompactionCheckpoints([])
+      }
     } finally {
       setLoadingDetail(false)
     }
@@ -818,6 +854,7 @@ export function AIAnalysis() {
       }
       const latest = await window.api.ai.getSession(detail.id)
       if (latest) setDetail(latest)
+      await refreshCompactionCheckpoints(detail.id)
       await loadAISessions()
       showToast(response.skippedReason
         ? '当前没有足够的完整对话可整理。'
@@ -826,6 +863,37 @@ export function AIAnalysis() {
       showToast(error instanceof Error ? error.message : '整理聊天上下文失败')
     } finally {
       setCompactingContext(false)
+    }
+  }
+
+  async function handleRestoreLatestCompaction() {
+    if (!detail?.discussion || restoringCompaction || compactingContext || sendingFollowUp || sessionAgentBusy) return
+    if (compactionCheckpoints.length === 0) return
+    const confirmed = window.confirm(
+      '将恢复最近一次整理：把该次归档消息拼回当前对话，并删除该检查点。是否继续？',
+    )
+    if (!confirmed) return
+    setRestoringCompaction(true)
+    try {
+      const response = await window.api.ai.restoreDiscussionCompaction({
+        requestId: crypto.randomUUID(),
+        sessionId: detail.id,
+      })
+      if (!response.ok) {
+        showToast(response.message || '恢复检查点失败')
+        return
+      }
+      const latest = await window.api.ai.getSession(detail.id)
+      if (latest) setDetail(latest)
+      await refreshCompactionCheckpoints(detail.id)
+      await loadAISessions()
+      showToast(
+        `已恢复 ${response.restoredCount ?? 0} 条归档消息。若上下文仍过大，下次发送前可能再次整理。`,
+      )
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '恢复检查点失败')
+    } finally {
+      setRestoringCompaction(false)
     }
   }
 
@@ -1515,17 +1583,63 @@ export function AIAnalysis() {
                         )}
                       </div>
                       {detail.discussion && (
-                        <button
-                          type="button"
-                          data-testid="ai-compact-discussion-context"
-                          onClick={() => { void handleCompactDiscussionContext() }}
-                          disabled={compactingContext || sendingFollowUp || sessionAgentBusy}
-                          className="rounded-md border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-[11px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
-                        >
-                          {compactingContext ? '正在整理聊天上下文…' : '整理聊天上下文'}
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            data-testid="ai-compact-discussion-context"
+                            onClick={() => { void handleCompactDiscussionContext() }}
+                            disabled={compactingContext || restoringCompaction || sendingFollowUp || sessionAgentBusy}
+                            className="rounded-md border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-[11px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+                          >
+                            {compactingContext ? '正在整理聊天上下文…' : '整理聊天上下文'}
+                          </button>
+                          {compactionCheckpoints.length > 0 && (
+                            <button
+                              type="button"
+                              data-testid="ai-restore-discussion-compaction"
+                              onClick={() => { void handleRestoreLatestCompaction() }}
+                              disabled={restoringCompaction || compactingContext || sendingFollowUp || sessionAgentBusy}
+                              className="rounded-md border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                            >
+                              {restoringCompaction ? '正在恢复…' : '恢复最近整理'}
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
+                    {detail.discussion && compactionCheckpoints.length > 0 && (
+                      <div
+                        data-testid="ai-compaction-checkpoints"
+                        className="mt-3 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 dark:border-slate-700 dark:bg-slate-950/40"
+                      >
+                        <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">上下文检查点</p>
+                        <ul className="space-y-1.5">
+                          {compactionCheckpoints.map((checkpoint) => (
+                            <li
+                              key={checkpoint.id}
+                              className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-[11px] text-slate-600 dark:text-slate-400"
+                            >
+                              <span>
+                                序号 {checkpoint.sourceStartSequence}–{checkpoint.coveredThroughSequence}
+                                {checkpoint.isLatest ? (
+                                  <span className="ml-1.5 rounded bg-violet-100 px-1 py-0.5 text-[10px] font-semibold text-violet-800 dark:bg-violet-950/50 dark:text-violet-200">
+                                    可恢复
+                                  </span>
+                                ) : (
+                                  <span className="ml-1.5 text-[10px] text-slate-400">请先恢复更新的检查点</span>
+                                )}
+                              </span>
+                              <span className="shrink-0 text-slate-400">
+                                {new Date(checkpoint.createdAt).toLocaleString()}
+                                {checkpoint.tokensBefore != null && checkpoint.tokensAfter != null
+                                  ? ` · ${checkpoint.tokensBefore}→${checkpoint.tokensAfter}`
+                                  : ''}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {detail.messages && detail.messages.length > 0 ? (
                       <div className="mt-4 space-y-3">
                         {detail.messages.map((message, index) => (

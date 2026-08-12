@@ -1,6 +1,6 @@
 # 投研 Agent Context Engine（借鉴 OpenClaw）设计
 
-**状态：** P0+P1+P2 已完成（2026-08-12；restore UI 未做，IPC 已暴露）  
+**状态：** P0+P1+P2 已完成（2026-08-12；restore UI 见 [`2026-08-12-compaction-checkpoint-restore-ui-design.md`](./2026-08-12-compaction-checkpoint-restore-ui-design.md)）  
 **Plan：** [`../plans/2026-08-12-agent-context-engine.md`](../plans/2026-08-12-agent-context-engine.md)  
 **日期：** 2026-08-12  
 **关联：**  
@@ -190,3 +190,4 @@
 - 2026-08-12：用户确认产品终局为投研 Agent 助手；应对齐 OpenClaw Context Engine；本地源码 `E:\代码库\git\openclaw` 写入规格；可参考处直接对照源文件；采用方案 C（窄引擎 + 双触发 + 保留投研账本）。
 - 2026-08-12：P0 落地后继续执行 P1（isolated deep_start、afterTurn compact、压缩检查点 tokens 字段）。
 - 2026-08-12：PR #3 审阅修复后合入；推进 P2（压缩前 research flush + 检查点 list/restore IPC，无 UI）。
+- 2026-08-12：P2 后置 UI 另开 [`2026-08-12-compaction-checkpoint-restore-ui-design.md`](./2026-08-12-compaction-checkpoint-restore-ui-design.md)（方案 B：列表可见 + 仅恢复最新层）。
