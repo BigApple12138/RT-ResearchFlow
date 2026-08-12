@@ -1868,11 +1868,46 @@ const api = {
         provider: string
         model: string
         createdAt: number
+        tokensBefore?: number | null
+        tokensAfter?: number | null
       } | null
       messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
       code?: string
       message?: string
       error?: string
+    }>,
+    listDiscussionCompactionCheckpoints: (payload: {
+      sessionId: number
+      limit?: number
+    }) => ipcRenderer.invoke('ai:listDiscussionCompactionCheckpoints', payload) as Promise<{
+      ok: boolean
+      sessionId?: number
+      checkpoints?: Array<{
+        id: string
+        sessionId: number
+        requestId: string
+        sourceStartSequence: number
+        coveredThroughSequence: number
+        summary: string
+        tokensBefore?: number | null
+        tokensAfter?: number | null
+        createdAt: number
+      }>
+      code?: string
+      message?: string
+    }>,
+    restoreDiscussionCompaction: (payload: {
+      requestId: string
+      sessionId: number
+      compactionId?: string
+    }) => ipcRenderer.invoke('ai:restoreDiscussionCompaction', payload) as Promise<{
+      ok: boolean
+      sessionId?: number
+      restoredCompactionId?: string
+      restoredCount?: number
+      messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number }>
+      code?: string
+      message?: string
     }>,
     runPortfolioBrief: (payload: {
       requestId: string
