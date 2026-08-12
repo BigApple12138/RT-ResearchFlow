@@ -23,6 +23,34 @@ import { buildDefaultAgentSystemPrompt } from './skillPrompt'
 import { buildSessionContext } from './sessionContext'
 import type { AgentEvent, AgentSessionContext } from './types'
 
+/** 送模上下文软上限（字符）；超出时截断更早的会话消息，保留尾部与当前句。 */
+export const AGENT_MODEL_CONTEXT_MAX_CHARS = 48_000
+
+export function trimConversationMessagesForContext(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  maxChars = AGENT_MODEL_CONTEXT_MAX_CHARS,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  if (messages.length === 0) return messages
+  const total = messages.reduce((sum, m) => sum + m.content.length, 0)
+  if (total <= maxChars) return messages
+  const kept: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  let used = 0
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const item = messages[i]!
+    if (kept.length > 0 && used + item.content.length > maxChars) break
+    kept.push(item)
+    used += item.content.length
+  }
+  kept.reverse()
+  if (kept.length < messages.length) {
+    kept.unshift({
+      role: 'assistant',
+      content: '【系统】更早的会话内容已压缩或截断；请结合上方硬事实与摘要继续，勿假设空上下文。',
+    })
+  }
+  return kept
+}
+
 /** tool_result 注入模型前的字符上限（防爆上下文）。 */
 export const AGENT_TOOL_RESULT_MAX_CHARS = 4000
 
@@ -56,6 +84,11 @@ export type RunAgentTurnInput = {
   hitlGate?: HitlGate
   signal?: AbortSignal
   asOf?: string
+  /**
+   * 已装配的会话上下文（promptSent/摘要/热尾/当前句），不含 system。
+   * 缺省时仅用当前 userMessage（兼容旧测试）。
+   */
+  conversationMessages?: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
 export type RunAgentTurnResult = {
@@ -273,11 +306,19 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     plan.steps.length > 0
       ? `计划 revision=${plan.revision}：${plan.steps.map((s) => s.title).join(' → ')}`
       : '当前为轻量回合（可为 0-step）。',
+    '须结合上方会话上下文（含硬事实/摘要/热尾）；勿假设空持仓或空标的。',
+    '用户说「深度分析 / 深挖」时，优先继承已出现的股票代码与持仓事实；缺主体时先调用 local.portfolio_facts，再视需要 research.deep_start。',
   ])
+
+  const conversation = trimConversationMessagesForContext(
+    input.conversationMessages?.length
+      ? input.conversationMessages
+      : [{ role: 'user', content: input.userMessage }],
+  )
 
   const messages: ReasoningCallInput['messages'] = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: input.userMessage },
+    ...conversation.map((m) => ({ role: m.role, content: m.content })),
   ]
 
   try {

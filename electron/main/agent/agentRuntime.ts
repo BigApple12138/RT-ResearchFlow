@@ -86,10 +86,16 @@ export function getAgentToolRegistry(dbProvider: () => Database.Database = getDb
       startRun: async (input) => defaultDeepStartRunner(input),
       loadMessages: (sessionId) => {
         const db = dbProvider()
-        return getSessionMessages(db, sessionId).map((m) => ({
-          role: m.role,
-          content: m.content,
-        }))
+        const hot = getSessionMessages(db, sessionId)
+          .filter((m): m is typeof m & { role: 'user' | 'assistant' } => (
+            m.role === 'user' || m.role === 'assistant'
+          ))
+          .map((m) => ({ role: m.role, content: m.content }))
+        const session = getSession(db, sessionId)
+        const prompt = session?.promptSent?.trim()
+        if (!prompt) return hot
+        // 硬事实进 deep_start 抽标的，避免仅「深度分析一下」时丢持仓代码。
+        return [{ role: 'user' as const, content: prompt }, ...hot]
       },
       loadTitle: (sessionId) => {
         const db = dbProvider()

@@ -16,12 +16,18 @@ import {
   getDiscussionTurnRequest,
   insertDiscussionTurnRequest,
 } from '../database/discussionTurnRequestRepository'
-import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
 import { callWithFallback } from './aiFallbackService'
-import { buildDiscussionAIRequest } from './researchDiscussionContextService'
+import { buildDiscussionModelMessages } from './researchDiscussionContextService'
 import { withDiscussionSessionLock } from './discussionSessionLock'
 import { isDiscussionSessionBusy } from './researchAgentRunManager'
 import { getAiAgentNetworkEnabled } from '../database/settingsRepository'
+import { getAIConfig } from '../database/aiConfigRepository'
+import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
+import { getLatestDiscussionCompaction } from '../database/discussionCompactionRepository'
+import {
+  compactDiscussionContextWithinLock,
+  shouldAutoCompact,
+} from './discussionContextCompactionService'
 import {
   emitAgentEvent,
   getAgentHitlGate,
@@ -80,7 +86,7 @@ function errorResult(code: string, error: string, messages: NormalizedConversati
   return { error, code, messages }
 }
 
-function buildDefaultReasoningCall(db: Database.Database, sessionId: number): ReasoningCall {
+function buildDefaultReasoningCall(db: Database.Database): ReasoningCall {
   return async (input) => {
     const registry = getAgentToolRegistry(() => db)
     const fromOrchestrator = input.messages.find((m) => m.role === 'system')?.content
@@ -93,6 +99,7 @@ function buildDefaultReasoningCall(db: Database.Database, sessionId: number): Re
           : '当前为轻量回合（可为 0-step）。',
       ])
 
+    // conversationMessages 已在 TurnService 单次装配；此处禁止再走 buildDiscussionAIRequest。
     const chatMessages: ConversationMessage[] = [
       { role: 'user', content: system },
       ...input.messages
@@ -103,10 +110,8 @@ function buildDefaultReasoningCall(db: Database.Database, sessionId: number): Re
         })),
     ]
 
-    const request = buildDiscussionAIRequest(db, sessionId, chatMessages)
     const result = await callWithFallback(db, {
-      ...request,
-      // Agent 编排禁用网页搜索，避免与 Tool 路径混淆
+      messages: chatMessages,
       webSearch: undefined,
     })
     return result.text
@@ -209,6 +214,29 @@ async function runAgentTurnWithinLock(
   })
 
   let messages = getSessionMessages(db, input.sessionId)
+  const discussion = getResearchDiscussionContext(db, input.sessionId)
+  const autoCompactEnabled = getAIConfig(db).autoCompactDiscussion !== 0
+  const latestCompaction = discussion ? getLatestDiscussionCompaction(db, input.sessionId) : null
+  if (discussion && autoCompactEnabled && shouldAutoCompact(messages, latestCompaction?.covered_through_sequence ?? null)) {
+    try {
+      const compacted = await compactDiscussionContextWithinLock(db, {
+        sessionId: input.sessionId,
+        requestId: `${input.requestId}:auto-compact`,
+        mode: 'auto',
+      })
+      if (compacted.ok) {
+        messages = compacted.messages
+      } else {
+        console.warn(`[ai:agentTurn] 自动整理上下文失败：${compacted.message}`)
+      }
+    } catch (error) {
+      console.warn(
+        '[ai:agentTurn] 自动整理上下文失败：',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+  }
+
   if (messages.length === 0) {
     const context =
       (session.response ?? '') +
@@ -222,6 +250,12 @@ async function runAgentTurnWithinLock(
     requestId: input.requestId,
   }
   const requestMessages: ConversationMessage[] = [...messages, userMessage]
+  // 与 followUp 同契约单次装配；编排器与 deep_start 共用此历史，禁止失忆。
+  const conversationMessages = buildDiscussionModelMessages(db, input.sessionId, requestMessages)
+    .filter((m): m is ConversationMessage & { role: 'user' | 'assistant' } => (
+      m.role === 'user' || m.role === 'assistant'
+    ))
+    .map((m) => ({ role: m.role, content: m.content }))
 
   // 有 onEvent（IPC 已订阅/直推）时不再走全局 emit，避免时间线每条事件翻倍。
   const pushEvent = (event: AgentEvent) => {
@@ -263,11 +297,12 @@ async function runAgentTurnWithinLock(
         mcpErr instanceof Error ? mcpErr.message : String(mcpErr),
       )
     }
-    const reasoningCall = options.reasoningCall ?? buildDefaultReasoningCall(db, input.sessionId)
+    const reasoningCall = options.reasoningCall ?? buildDefaultReasoningCall(db)
     const result: RunAgentTurnResult = await runAgentTurn({
       sessionId: input.sessionId,
       userMessage: rawMessage,
       requestId: input.requestId,
+      conversationMessages,
       registry,
       reasoningCall,
       onEvent: pushEvent,

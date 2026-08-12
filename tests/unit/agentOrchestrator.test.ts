@@ -7,7 +7,7 @@ import {
   createPlanState,
   createPlanStep,
 } from '../../electron/main/agent/planner'
-import { runAgentTurn } from '../../electron/main/agent/orchestrator'
+import { runAgentTurn, trimConversationMessagesForContext } from '../../electron/main/agent/orchestrator'
 import { AGENT_TOOL_RESULT_MAX_CHARS } from '../../electron/main/agent/orchestrator'
 
 function collectEvents(events: AgentEvent[]) {
@@ -30,6 +30,44 @@ function readTool(name: string, result: unknown, sideEffect: ToolDefinition['sid
 }
 
 describe('agentOrchestrator', () => {
+  it('conversationMessages 进入推理上下文，禁止仅见当前短句', async () => {
+    const events: AgentEvent[] = []
+    const registry = createToolRegistry()
+    let sawHistory = false
+    const result = await runAgentTurn({
+      sessionId: 1,
+      userMessage: '深度分析一下',
+      requestId: 'req-memory',
+      registry,
+      conversationMessages: [
+        { role: 'user', content: '【本地持仓事实】002628 成都路桥' },
+        { role: 'assistant', content: '已看到成都路桥。' },
+        { role: 'user', content: '深度分析一下' },
+      ],
+      onEvent: (e) => events.push(e),
+      reasoningCall: async (input) => {
+        const blob = input.messages.map((m) => m.content).join('\n')
+        sawHistory = blob.includes('002628') && blob.includes('深度分析一下')
+        expect(input.messages.length).toBeGreaterThan(2)
+        return JSON.stringify({ type: 'final', text: sawHistory ? '继承上下文完成' : '失忆' })
+      },
+    })
+    expect(sawHistory).toBe(true)
+    expect(result.text).toContain('继承上下文')
+  })
+
+  it('trimConversationMessagesForContext 超限时保留尾部', () => {
+    const long = 'x'.repeat(1000)
+    const messages = [
+      { role: 'user' as const, content: `旧-${long}` },
+      { role: 'assistant' as const, content: `旧答-${long}` },
+      { role: 'user' as const, content: '深度分析一下' },
+    ]
+    const trimmed = trimConversationMessagesForContext(messages, 1500)
+    expect(trimmed.some((m) => m.content.includes('深度分析一下'))).toBe(true)
+    expect(trimmed.reduce((n, m) => n + m.content.length, 0)).toBeLessThanOrEqual(1500 + 80)
+  })
+
   it('0-step：简单目标直接 final，唯一 done 终态', async () => {
     const events: AgentEvent[] = []
     const registry = createToolRegistry()

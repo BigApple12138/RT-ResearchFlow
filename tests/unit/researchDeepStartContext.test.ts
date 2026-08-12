@@ -53,6 +53,27 @@ describe('researchDeepStartContext', () => {
     expect(pkg.candidateSubjects.some((s) => s.kind === 'stock' && s.tsCode === '601016.SH')).toBe(true)
   })
 
+  it('用户仅说深度分析时仍能从历史消息抽出股票主体', () => {
+    const session = emptySessionContext({
+      sessionId: 9,
+      userGoal: '深度分析一下',
+      requestId: 'req-inherit',
+      asOf: '20260812',
+    })
+    const pkg = buildResearchDeepStartContext({
+      session,
+      title: '持仓讨论',
+      messages: [
+        { role: 'user', content: '【本地持仓事实】tsCode 002628 成都路桥；601016 节能风电' },
+        { role: 'assistant', content: '已完成简要研判。' },
+        { role: 'user', content: '深度分析一下' },
+      ],
+      extraTexts: ['深度分析一下'],
+    })
+    expect(pkg.candidateSubjects.some((s) => s.kind === 'stock' && s.tsCode === '002628.SZ')).toBe(true)
+    expect(pkg.candidateSubjects.some((s) => s.kind === 'stock' && s.tsCode === '601016.SH')).toBe(true)
+  })
+
   it('extractTsCodesFromText 支持显式后缀与推断市场', () => {
     const subjects = extractTsCodesFromText('看下 600519.SH 和 000001，以及 920001')
     expect(subjects.map((s) => s.tsCode)).toEqual(['600519.SH', '000001.SZ', '920001.BJ'])
