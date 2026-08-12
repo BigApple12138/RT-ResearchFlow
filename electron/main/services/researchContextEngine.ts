@@ -12,6 +12,7 @@ import { getAIConfig } from '../database/aiConfigRepository'
 import { getLatestDiscussionCompaction } from '../database/discussionCompactionRepository'
 import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
 import type { ConversationMessage, NormalizedConversationMessage } from '../database/aiAnalysisSessionRepository'
+import { getSessionMessages } from '../database/aiAnalysisSessionRepository'
 import {
   compactDiscussionContextWithinLock,
   shouldAutoCompact,
@@ -158,4 +159,40 @@ export async function prepareDiscussionTurnContext(
   }
 
   return { hotMessages, warning, softCompacted, hardCompacted }
+}
+
+export type AfterDiscussionTurnCompactInput = {
+  sessionId: number
+  requestId: string
+  compactAI?: CompactionAICaller
+}
+
+export type AfterDiscussionTurnCompactResult = {
+  warning?: string
+  softCompacted: boolean
+  hardCompacted: boolean
+}
+
+/**
+ * 回合成功落账后的 afterTurn：再评估 soft/hard compact（对照 OpenClaw afterTurn）。
+ * 调用方须仍持有 session lock；失败只返回 warning，不抛、不回滚已提交回合。
+ */
+export async function afterDiscussionTurnCompact(
+  db: Database.Database,
+  input: AfterDiscussionTurnCompactInput,
+): Promise<AfterDiscussionTurnCompactResult> {
+  const hotMessages = getSessionMessages(db, input.sessionId)
+  // 无「下一句用户」；用占位空 user 仅触发 hard 探测装配（content 不计实质）
+  const prepared = await prepareDiscussionTurnContext(db, {
+    sessionId: input.sessionId,
+    requestId: `${input.requestId}:after-turn`,
+    hotMessages,
+    userMessage: { role: 'user', content: '' },
+    compactAI: input.compactAI,
+  })
+  return {
+    warning: prepared.warning,
+    softCompacted: prepared.softCompacted,
+    hardCompacted: prepared.hardCompacted,
+  }
 }

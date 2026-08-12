@@ -12,6 +12,10 @@ export interface InsertDiscussionCompactionInput {
   summaryHash: string
   provider: string
   model: string
+  /** 字符启发式；对齐 OpenClaw tokensBefore */
+  tokensBefore?: number | null
+  /** 字符启发式；对齐 OpenClaw tokensAfter */
+  tokensAfter?: number | null
   now?: number
 }
 
@@ -28,6 +32,8 @@ function hasSameCompactionIdentity(
   existing: DiscussionCompactionRow,
   input: InsertDiscussionCompactionInput,
 ): boolean {
+  const tokensBefore = input.tokensBefore ?? null
+  const tokensAfter = input.tokensAfter ?? null
   return existing.session_id === input.sessionId
     && existing.source_start_sequence === input.sourceStartSequence
     && existing.covered_through_sequence === input.coveredThroughSequence
@@ -36,6 +42,8 @@ function hasSameCompactionIdentity(
     && existing.summary_text === input.summary
     && existing.provider === input.provider
     && existing.model === input.model
+    && (existing.tokens_before ?? null) === tokensBefore
+    && (existing.tokens_after ?? null) === tokensAfter
 }
 
 function assertPositiveSequences(input: InsertDiscussionCompactionInput): void {
@@ -82,8 +90,9 @@ export function insertDiscussionCompaction(
     db.prepare(`
       INSERT INTO ai_discussion_context_compactions (
         id, session_id, request_id, source_start_sequence, covered_through_sequence,
-        source_messages_hash, summary_text, summary_hash, provider, model, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_messages_hash, summary_text, summary_hash, provider, model, created_at,
+        tokens_before, tokens_after
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       input.sessionId,
@@ -96,6 +105,8 @@ export function insertDiscussionCompaction(
       input.provider,
       input.model,
       input.now ?? Date.now(),
+      input.tokensBefore ?? null,
+      input.tokensAfter ?? null,
     )
   } catch (error) {
     const replay = getDiscussionCompactionByRequestId(db, input.requestId)

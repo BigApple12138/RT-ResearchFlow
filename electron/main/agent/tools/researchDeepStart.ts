@@ -29,12 +29,20 @@ export interface ResearchDeepStartContextPackage {
   candidateSubjects: ResearchDeepStartSubject[]
   /** 明确声明：由 Agent 上下文包启动，不经预检窗 */
   skipPreflightUi: true
+  /**
+   * 对照 OpenClaw subagent `isolated` / `fork`。
+   * isolated（默认）：装配快照，不共享父会话可变 messages 引用。
+   * fork：显式要求时注入更长热对话快照（仍为拷贝）。
+   */
+  contextMode: 'isolated' | 'fork'
 }
 
 export interface ResearchDeepStartArgs {
   question?: string
   includePortfolio?: boolean
   subjects?: ResearchDeepStartSubject[]
+  /** 默认 isolated；仅显式 fork 时携带更长热尾快照 */
+  contextMode?: 'isolated' | 'fork'
   [key: string]: unknown
 }
 
@@ -64,6 +72,7 @@ export interface BuildResearchDeepStartContextInput {
   extraTexts?: string[]
   maxMessages?: number
   maxMessageChars?: number
+  contextMode?: 'isolated' | 'fork'
 }
 
 export interface ResearchDeepStartDeps {
@@ -121,17 +130,19 @@ function clampQuestion(raw: string): string {
 
 /**
  * 从 SessionContext + 会话消息构建深挖上下文包（禁止弹预检窗）。
+ * recentMessages 恒为新对象快照，不保留调用方数组元素引用。
  */
 export function buildResearchDeepStartContext(
   input: BuildResearchDeepStartContextInput,
 ): ResearchDeepStartContextPackage {
-  const maxMessages = input.maxMessages ?? 20
-  const maxChars = input.maxMessageChars ?? 800
+  const contextMode = input.contextMode === 'fork' ? 'fork' : 'isolated'
+  const maxMessages = input.maxMessages ?? (contextMode === 'fork' ? 40 : 12)
+  const maxChars = input.maxMessageChars ?? (contextMode === 'isolated' ? 800 : 1200)
   const recentMessages = input.messages
     .slice(-maxMessages)
     .map((m) => ({
       role: m.role,
-      content: m.content.slice(0, maxChars),
+      content: String(m.content).slice(0, maxChars),
     }))
 
   const corpus = [
@@ -159,6 +170,7 @@ export function buildResearchDeepStartContext(
     recentMessages,
     candidateSubjects,
     skipPreflightUi: true,
+    contextMode,
   }
 }
 
@@ -187,9 +199,15 @@ export function createResearchDeepStartTool(
           description: '可选显式主体；省略则从会话消息提取',
           items: { type: 'object' },
         },
+        contextMode: {
+          type: 'string',
+          description: 'isolated（默认）= 装配快照；fork = 更长热对话快照',
+          enum: ['isolated', 'fork'],
+        },
       },
     },
     async execute(ctx: AgentSessionContext, args: ResearchDeepStartArgs): Promise<ResearchDeepStartResult> {
+      const contextMode = args?.contextMode === 'fork' ? 'fork' : 'isolated'
       const messages = deps.loadMessages(ctx.sessionId)
       const title = deps.loadTitle?.(ctx.sessionId) ?? null
       const projectSubject = deps.loadProjectSubject?.(ctx.sessionId) ?? null
@@ -201,6 +219,7 @@ export function createResearchDeepStartTool(
         title,
         projectSubject,
         extraTexts: [questionSeed],
+        contextMode,
       })
 
       const subjectsFromArgs = Array.isArray(args?.subjects) ? args.subjects : []

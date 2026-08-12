@@ -23,7 +23,7 @@ import {
   buildBlockedResearchText,
 } from './researchEvidenceAuditService'
 import { type CompactionAICaller } from './discussionContextCompactionService'
-import { prepareDiscussionTurnContext } from './researchContextEngine'
+import { prepareDiscussionTurnContext, afterDiscussionTurnCompact } from './researchContextEngine'
 import { withDiscussionSessionLock } from './discussionSessionLock'
 import { isDiscussionSessionBusy } from './researchAgentRunManager'
 import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
@@ -233,6 +233,21 @@ async function runDiscussionFollowUpWithinLock(
     })
     commit()
     if (options.onSuccess) await options.onSuccess(db, input.sessionId)
+    try {
+      const after = await afterDiscussionTurnCompact(db, {
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+        compactAI: options.compactAI,
+      })
+      if (after.warning) {
+        console.warn(`[ai:followUp] afterTurn compact: ${after.warning}`)
+      }
+    } catch (error) {
+      console.warn(
+        '[ai:followUp] afterTurn compact failed:',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
     return {
       text: persistedText,
       messages: getSessionMessages(db, input.sessionId),

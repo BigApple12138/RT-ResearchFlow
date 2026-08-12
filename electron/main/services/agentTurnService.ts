@@ -22,7 +22,7 @@ import { withDiscussionSessionLock } from './discussionSessionLock'
 import { isDiscussionSessionBusy } from './researchAgentRunManager'
 import { getAiAgentNetworkEnabled } from '../database/settingsRepository'
 import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
-import { prepareDiscussionTurnContext } from './researchContextEngine'
+import { prepareDiscussionTurnContext, afterDiscussionTurnCompact } from './researchContextEngine'
 import {
   emitAgentEvent,
   getAgentHitlGate,
@@ -354,6 +354,19 @@ async function runAgentTurnWithinLock(
       completeDiscussionTurnRequest(db, input.requestId, assistantText)
     })
     commit()
+
+    try {
+      const after = await afterDiscussionTurnCompact(db, {
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+      })
+      if (after.warning) console.warn(`[ai:agentTurn] afterTurn compact: ${after.warning}`)
+    } catch (error) {
+      console.warn(
+        '[ai:agentTurn] afterTurn compact failed:',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
 
     return {
       text: assistantText,

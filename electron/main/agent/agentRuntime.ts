@@ -6,6 +6,7 @@ import type Database from 'better-sqlite3'
 import { getDb } from '../database/db'
 import { getSession, getSessionMessages } from '../database/aiAnalysisSessionRepository'
 import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
+import { buildDiscussionModelMessages } from '../services/researchDiscussionContextService'
 import { createHitlGate, type HitlGate } from './hitlGate'
 import { createToolRegistry, type ToolRegistry } from './toolRegistry'
 import { registerBuiltinTools } from './registerBuiltinTools'
@@ -86,16 +87,15 @@ export function getAgentToolRegistry(dbProvider: () => Database.Database = getDb
       startRun: async (input) => defaultDeepStartRunner(input),
       loadMessages: (sessionId) => {
         const db = dbProvider()
+        // isolated 默认：经讨论装配契约生成快照（promptSent+摘要+热尾），逐条拷贝，不共享可变引用。
+        // 对照 OpenClaw prepareSubagentSpawn isolated（E:\代码库\git\openclaw\src\agents\subagents\spawn\subagent-spawn-context.ts）。
         const hot = getSessionMessages(db, sessionId)
+        const assembled = buildDiscussionModelMessages(db, sessionId, hot)
+        return assembled
           .filter((m): m is typeof m & { role: 'user' | 'assistant' } => (
             m.role === 'user' || m.role === 'assistant'
           ))
-          .map((m) => ({ role: m.role, content: m.content }))
-        const session = getSession(db, sessionId)
-        const prompt = session?.promptSent?.trim()
-        if (!prompt) return hot
-        // 硬事实进 deep_start 抽标的，避免仅「深度分析一下」时丢持仓代码。
-        return [{ role: 'user' as const, content: prompt }, ...hot]
+          .map((m) => ({ role: m.role, content: String(m.content) }))
       },
       loadTitle: (sessionId) => {
         const db = dbProvider()

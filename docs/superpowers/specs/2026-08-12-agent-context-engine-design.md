@@ -1,6 +1,6 @@
 # 投研 Agent Context Engine（借鉴 OpenClaw）设计
 
-**状态：** P0 已完成（2026-08-12）；P1/P2 待续  
+**状态：** P0+P1 已完成（2026-08-12）；P2 待续  
 **Plan：** [`../plans/2026-08-12-agent-context-engine.md`](../plans/2026-08-12-agent-context-engine.md)  
 **日期：** 2026-08-12  
 **关联：**  
@@ -188,3 +188,4 @@
 ## 10. 修订记录
 
 - 2026-08-12：用户确认产品终局为投研 Agent 助手；应对齐 OpenClaw Context Engine；本地源码 `E:\代码库\git\openclaw` 写入规格；可参考处直接对照源文件；采用方案 C（窄引擎 + 双触发 + 保留投研账本）。
+- 2026-08-12：P0 落地后继续执行 P1（isolated deep_start、afterTurn compact、压缩检查点 tokens 字段）。

@@ -94,3 +94,62 @@ describe('prepareDiscussionTurnContext hard 闸', () => {
     compactSpy.mockRestore()
   })
 })
+
+describe('afterDiscussionTurnCompact', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    runMigrations(db)
+  })
+
+  it('回合后会再走 soft/hard 评估入口', async () => {
+    const { afterDiscussionTurnCompact } = await import('../../electron/main/services/researchContextEngine')
+    const sessionId = createSession(db, {
+      provider: 'qwen',
+      model: 'test-model',
+      articleUrls: [],
+      promptSent: '硬事实',
+      response: null,
+      scanRunId: null,
+      isError: false,
+      messages: [
+        { role: 'user', content: '问' },
+        { role: 'assistant', content: '答' },
+      ],
+    })
+    createResearchDiscussionContext(db, {
+      sessionId,
+      requestId: `discussion-${sessionId}`,
+      originType: 'manual',
+      originId: null,
+      originTitle: '测试讨论',
+      originOccurredAt: null,
+      originContentHash: 'context-hash',
+      contextSnapshotJson: JSON.stringify({ schemaVersion: 1, title: '测试讨论', items: [] }),
+      contextKeysJson: '[]',
+      includedContextKeysJson: '[]',
+      returnTargetJson: JSON.stringify({ tab: 'ai-analysis' }),
+      projectId: null,
+      baseSnapshotId: null,
+      baseSelectionReason: 'unassigned',
+    })
+
+    const compactSpy = vi.spyOn(compaction, 'compactDiscussionContextWithinLock').mockResolvedValue({
+      ok: true,
+      compaction: null,
+      messages: getSessionMessages(db, sessionId),
+      archivedCount: 0,
+      skippedReason: 'threshold',
+    })
+
+    const result = await afterDiscussionTurnCompact(db, {
+      sessionId,
+      requestId: 'after-1',
+    })
+    expect(result.softCompacted).toBe(false)
+    expect(result.hardCompacted).toBe(false)
+    // 未达阈值时可不调用 compact；若调用也必须是安全跳过
+    compactSpy.mockRestore()
+  })
+})

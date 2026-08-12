@@ -1332,6 +1332,10 @@ export interface DiscussionCompactionRow {
   provider: string
   model: string
   created_at: number
+  /** 压缩前上下文规模（字符启发式，对齐 OpenClaw tokensBefore） */
+  tokens_before: number | null
+  /** 压缩后上下文规模（字符启发式，对齐 OpenClaw tokensAfter） */
+  tokens_after: number | null
 }
 
 export interface DiscussionMessageArchiveRow {
