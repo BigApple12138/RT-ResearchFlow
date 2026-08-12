@@ -12,8 +12,6 @@ import {
   getDiscussionTurnRequest,
   insertDiscussionTurnRequest,
 } from '../database/discussionTurnRequestRepository'
-import { getAIConfig } from '../database/aiConfigRepository'
-import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
 import type { AIProvider } from '../database/types'
 import { callWithFallback, type AIFallbackResult } from './aiFallbackService'
 import {
@@ -24,14 +22,11 @@ import {
   auditResearchText,
   buildBlockedResearchText,
 } from './researchEvidenceAuditService'
-import {
-  compactDiscussionContextWithinLock,
-  shouldAutoCompact,
-  type CompactionAICaller,
-} from './discussionContextCompactionService'
-import { getLatestDiscussionCompaction } from '../database/discussionCompactionRepository'
+import { type CompactionAICaller } from './discussionContextCompactionService'
+import { prepareDiscussionTurnContext } from './researchContextEngine'
 import { withDiscussionSessionLock } from './discussionSessionLock'
 import { isDiscussionSessionBusy } from './researchAgentRunManager'
+import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
 
 export interface DiscussionFollowUpInput {
   requestId: string
@@ -144,28 +139,6 @@ async function runDiscussionFollowUpWithinLock(
 
   let messages = getSessionMessages(db, input.sessionId)
   const discussion = getResearchDiscussionContext(db, input.sessionId)
-  let warning: string | undefined
-  const autoCompactEnabled = getAIConfig(db).autoCompactDiscussion !== 0
-  const latestCompaction = discussion ? getLatestDiscussionCompaction(db, input.sessionId) : null
-  if (discussion && autoCompactEnabled && shouldAutoCompact(messages, latestCompaction?.covered_through_sequence ?? null)) {
-    try {
-      const compacted = await compactDiscussionContextWithinLock(db, {
-        sessionId: input.sessionId,
-        requestId: `${input.requestId}:auto-compact`,
-        mode: 'auto',
-      }, options.compactAI)
-      if (!compacted.ok) {
-        warning = `自动整理上下文失败：${compacted.message}`
-        console.warn(`[ai:followUp] ${warning}`)
-      } else {
-        messages = compacted.messages
-      }
-    } catch (error) {
-      warning = `自动整理上下文失败：${normalizeError(error)}`
-      console.warn(`[ai:followUp] ${warning}`)
-    }
-  }
-
   if (messages.length === 0) {
     const context = (session.response ?? '')
       + (session.responseRound2 ? `\n\n【第二轮深度分析】\n${session.responseRound2}` : '')
@@ -177,6 +150,16 @@ async function runDiscussionFollowUpWithinLock(
     content: injectTimePrefix(rawMessage),
     requestId: input.requestId,
   }
+  const prepared = await prepareDiscussionTurnContext(db, {
+    sessionId: input.sessionId,
+    requestId: input.requestId,
+    hotMessages: messages,
+    userMessage,
+    compactAI: options.compactAI,
+  })
+  const warning = prepared.warning
+  if (warning) console.warn(`[ai:followUp] ${warning}`)
+  messages = prepared.hotMessages
   const requestMessages: ConversationMessage[] = [...messages, userMessage]
 
   try {
