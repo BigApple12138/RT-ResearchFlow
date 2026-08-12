@@ -5071,6 +5071,31 @@ const MIGRATIONS: DatabaseMigration[] = [
     `
   },
   {
+    // Agent Hub 第二期 M0：外部 MCP 客户端服务器配置（密钥整段加密；stdio + argv）
+    version: 150,
+    sql: `
+      CREATE TABLE IF NOT EXISTS external_mcp_servers (
+        id                  TEXT PRIMARY KEY NOT NULL,
+        name                TEXT NOT NULL CHECK (length(trim(name)) > 0 AND length(name) <= 120),
+        enabled             INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        transport           TEXT NOT NULL DEFAULT 'stdio' CHECK (transport = 'stdio'),
+        command             TEXT NOT NULL CHECK (length(trim(command)) > 0 AND length(command) <= 1024),
+        args_json           TEXT NOT NULL DEFAULT '[]'
+                            CHECK (json_valid(args_json) AND length(args_json) <= 8192),
+        env_encrypted       BLOB DEFAULT NULL,
+        cwd                 TEXT DEFAULT NULL CHECK (cwd IS NULL OR length(cwd) <= 1024),
+        last_tested_at      INTEGER DEFAULT NULL,
+        last_error_code     TEXT DEFAULT NULL CHECK (last_error_code IS NULL OR length(last_error_code) <= 64),
+        last_tools_json     TEXT DEFAULT NULL
+                            CHECK (last_tools_json IS NULL OR (json_valid(last_tools_json) AND length(last_tools_json) <= 65536)),
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_external_mcp_servers_updated
+        ON external_mcp_servers(updated_at DESC);
+    `
+  },
+  {
     // FR-261: local-first daily archives for historical market resonance playback.
     // Port from cao/dev (originally Migration 136); use 151 so local Agent Hub 148–150 can land first.
     version: 151,
