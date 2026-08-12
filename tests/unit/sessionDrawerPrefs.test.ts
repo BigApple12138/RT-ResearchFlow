@@ -40,10 +40,17 @@ describe('sessionDrawerPrefs', () => {
     expect(loadSessionDrawerPrefs('discussion', storage)).toEqual({ leftOpen: false, rightOpen: true })
   })
 
-  it('部分更新保留另一侧', () => {
-    saveSessionDrawerPrefs({ leftOpen: true, rightOpen: true }, storage)
-    saveSessionDrawerPrefs({ rightOpen: false }, storage)
-    expect(loadSessionDrawerPrefs('discussion', storage)).toEqual({ leftOpen: true, rightOpen: false })
+  it('部分更新只写变更侧，不固化另一侧默认', () => {
+    saveSessionDrawerPrefs({ leftOpen: false }, storage, { kind: 'article' })
+    expect(storage.store.has(SESSION_DRAWER_LEFT_KEY)).toBe(true)
+    expect(storage.store.has(SESSION_DRAWER_RIGHT_KEY)).toBe(false)
+    expect(loadSessionDrawerPrefs('article', storage)).toEqual({ leftOpen: false, rightOpen: true })
+  })
+
+  it('article 空存储右开；只改左侧后右栏仍开', () => {
+    expect(loadSessionDrawerPrefs('article', storage).rightOpen).toBe(true)
+    saveSessionDrawerPrefs({ leftOpen: false }, storage, { kind: 'article' })
+    expect(loadSessionDrawerPrefs('article', storage)).toEqual({ leftOpen: false, rightOpen: true })
   })
 
   it('坏数据回退默认', () => {

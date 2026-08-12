@@ -496,6 +496,8 @@ export function AIAnalysis() {
   const [rightDrawerOpen, setRightDrawerOpen] = useState(() => loadSessionDrawerPrefs('discussion').rightOpen)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const agentRequestIdRef = useRef<string | null>(null)
+  const detailIdRef = useRef<number | null>(null)
   const agentPathEnabled = isAgentTurnAvailable()
   const agentTimeline = useMemo(
     () => buildAgentTimelineModel(agentEvents, agentRequestId ? { requestId: agentRequestId } : {}),
@@ -609,19 +611,33 @@ export function AIAnalysis() {
   }, [])
 
   useEffect(() => {
+    agentRequestIdRef.current = agentRequestId
+  }, [agentRequestId])
+
+  useEffect(() => {
+    detailIdRef.current = detail?.id ?? null
+  }, [detail?.id])
+
+  useEffect(() => {
     const api = window.api.ai as {
       onAgentEvent?: (listener: (data: AgentTimelineEvent) => void) => () => void
     }
     if (!api.onAgentEvent) return
     const unsubscribe = api.onAgentEvent((event) => {
-      if (agentRequestId && event.requestId !== agentRequestId && !String(event.requestId).startsWith('bridge:')) {
+      const currentRequestId = agentRequestIdRef.current
+      if (
+        currentRequestId
+        && event.requestId !== currentRequestId
+        && !String(event.requestId).startsWith('bridge:')
+      ) {
         return
       }
-      if (detail && event.sessionId > 0 && event.sessionId !== detail.id) return
+      const currentDetailId = detailIdRef.current
+      if (currentDetailId != null && event.sessionId > 0 && event.sessionId !== currentDetailId) return
       setAgentEvents((prev) => [...prev, event].slice(-200))
     })
     return () => { unsubscribe() }
-  }, [agentRequestId, detail?.id])
+  }, [])
 
   useEffect(() => {
     if (pendingDiscussionSessionId == null || !sessionsReady) return
@@ -852,6 +868,10 @@ export function AIAnalysis() {
         setDetail((prev) => prev ? { ...prev, messages: detail.messages } : prev)
         setFollowUpInput(message)
       }
+    } catch (error) {
+      showToast(`追问失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setDetail((prev) => prev ? { ...prev, messages: detail.messages } : prev)
+      setFollowUpInput(message)
     } finally {
       followUpRequestRef.current = null
       setFollowUpDraft(null)
@@ -1175,6 +1195,13 @@ export function AIAnalysis() {
           messages: (prev.messages ?? []).filter((item) => item.requestId !== requestId),
         } : prev)
       }
+    } catch (error) {
+      showToast(`发送失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setFollowUpInput(message)
+      setDetail((prev) => prev ? {
+        ...prev,
+        messages: (prev.messages ?? []).filter((item) => item.requestId !== requestId),
+      } : prev)
     } finally {
       followUpRequestRef.current = null
       setFollowUpDraft(null)
@@ -1291,7 +1318,7 @@ export function AIAnalysis() {
   function toggleLeftDrawer() {
     setLeftDrawerOpen((prev) => {
       const next = !prev
-      saveSessionDrawerPrefs({ leftOpen: next })
+      saveSessionDrawerPrefs({ leftOpen: next }, undefined, { kind: sessionDrawerKind ?? 'discussion' })
       return next
     })
   }
@@ -1299,7 +1326,7 @@ export function AIAnalysis() {
   function toggleRightDrawer() {
     setRightDrawerOpen((prev) => {
       const next = !prev
-      saveSessionDrawerPrefs({ rightOpen: next })
+      saveSessionDrawerPrefs({ rightOpen: next }, undefined, { kind: sessionDrawerKind ?? 'discussion' })
       return next
     })
   }
@@ -1378,7 +1405,7 @@ export function AIAnalysis() {
       {!leftDrawerOpen && (
         <button
           type="button"
-          data-testid="ai-drawer-toggle-left"
+          data-testid="ai-drawer-toggle-left-expand"
           aria-label="展开分析记录"
           title="展开分析记录"
           onClick={toggleLeftDrawer}
@@ -1398,7 +1425,7 @@ export function AIAnalysis() {
               <div className="mt-0.5 text-[11px] text-slate-500">{aiSessions.length} 条会话</div>
             </div>
             <div className="flex gap-1">
-              <button type="button" data-testid="ai-drawer-toggle-left" aria-label="收起分析记录" onClick={toggleLeftDrawer} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">‹</button>
+              <button type="button" data-testid="ai-drawer-toggle-left-collapse" aria-label="收起分析记录" onClick={toggleLeftDrawer} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">‹</button>
               <button type="button" data-testid="new-conversation" onClick={startNewConversation} className={`rounded-md px-2 py-1 text-[11px] font-semibold ${selectedId == null ? 'bg-cyan-700 text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300'}`}>新对话</button>
               <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">高级</button>
               <button onClick={requestDeleteAll} disabled={deleting || aiSessions.length === 0} className="rounded-md border border-red-200 px-2 py-1 text-[11px] text-red-500 transition-colors hover:bg-red-50 disabled:opacity-30 dark:border-red-900 dark:hover:bg-red-950/40">清除</button>
@@ -2044,7 +2071,7 @@ export function AIAnalysis() {
       {detail && !rightDrawerOpen && (
         <button
           type="button"
-          data-testid="ai-drawer-toggle-right"
+          data-testid="ai-drawer-toggle-right-expand"
           aria-label="展开研判侧栏"
           onClick={toggleRightDrawer}
           className="hidden w-8 flex-shrink-0 flex-col items-center border-l border-slate-200 bg-white pt-3 text-[11px] text-slate-500 hover:bg-slate-50 xl:flex dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800"
@@ -2065,7 +2092,7 @@ export function AIAnalysis() {
             </div>
             <button
               type="button"
-              data-testid="ai-drawer-toggle-right"
+              data-testid="ai-drawer-toggle-right-collapse"
               aria-label="收起研判侧栏"
               onClick={toggleRightDrawer}
               className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"

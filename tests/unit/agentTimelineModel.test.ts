@@ -59,20 +59,28 @@ describe('agentTimelineModel', () => {
       'terminal',
     ])
     expect(model.steps.find((s) => s.kind === 'plan')?.detail).toContain('读持仓')
-    expect(model.streamingMessage).toContain('根据持仓')
+    expect(model.streamingMessage).toBe('')
     expect(model.terminal).toBe('done')
     // done 后清掉 pending HITL
     expect(model.pendingHitl).toBeNull()
   })
 
-  it('message stream=delta 只更新 streamingMessage 不占过程步骤', () => {
+  it('message stream=delta 只更新 streamingMessage 不占过程步骤；final 后清空草稿', () => {
+    const mid = buildAgentTimelineModel([
+      ev({ type: 'status', payload: { decision: 'continue' } }),
+      ev({ type: 'message', payload: { text: '草稿一段', stream: 'delta' } }),
+      ev({ type: 'message', payload: { text: '草稿全文', stream: 'delta' } }),
+    ])
+    expect(mid.streamingMessage).toBe('草稿全文')
+    expect(mid.steps.filter((s) => s.kind === 'message')).toHaveLength(0)
+
     const model = buildAgentTimelineModel([
       ev({ type: 'status', payload: { decision: 'continue' } }),
       ev({ type: 'message', payload: { text: '草稿一段', stream: 'delta' } }),
       ev({ type: 'message', payload: { text: '草稿全文', stream: 'delta' } }),
       ev({ type: 'message', payload: { text: '草稿全文', stream: 'final' } }),
     ])
-    expect(model.streamingMessage).toBe('草稿全文')
+    expect(model.streamingMessage).toBe('')
     expect(model.steps.filter((s) => s.kind === 'message')).toHaveLength(1)
     expect(model.steps.find((s) => s.kind === 'message')?.detail).toBe('草稿全文')
   })
@@ -124,7 +132,8 @@ describe('agentTimelineModel', () => {
       { requestId: 'a' },
     )
     expect(model.steps).toHaveLength(1)
-    expect(model.streamingMessage).toBe('A')
+    expect(model.steps[0]?.detail).toBe('A')
+    expect(model.streamingMessage).toBe('')
   })
 
   it('deriveAgentStatusScroll 只露短状态行', () => {

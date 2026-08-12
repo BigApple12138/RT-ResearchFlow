@@ -264,25 +264,28 @@ export function buildAgentTimelineModel(
         if (text) streamingMessage = text
         return
       }
-      if (text) streamingMessage = text
+      // final / 无 stream：正文进入步骤后清空草稿，避免与气泡双显
+      streamingMessage = ''
     }
     const step = projectAgentEventToStep(event, index)
     if (!step) return
     steps.push(step)
-    if (step.kind === 'message' && step.detail) streamingMessage = step.detail
     if (step.networkHint) networkDisabledHint = step.networkHint
     if (step.kind === 'hitl' && step.hitl) pendingHitl = step
     if (event.type === 'done') {
       terminal = 'done'
       pendingHitl = null
+      streamingMessage = ''
     }
     if (event.type === 'error') {
       terminal = 'error'
       pendingHitl = null
+      streamingMessage = ''
     }
     if (event.type === 'cancelled') {
       terminal = 'cancelled'
       pendingHitl = null
+      streamingMessage = ''
     }
   })
 

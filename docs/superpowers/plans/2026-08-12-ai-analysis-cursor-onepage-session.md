@@ -114,3 +114,4 @@
 - 2026-08-12：按已批准 Cursor 式会话面 design 起草抽屉 + Agent 流式 plan；刹车/Skill 标为已完成跳过。
 - 2026-08-12：用户批准执行；完成 Task 1–5 与设计初衷检核。
 - 2026-08-12：审阅修复 High（窄屏增量自锁、首轮无过程滚动）及 Medium（顺序/文章默认/降级文案）。
+- 2026-08-12：PR#5 二次审阅 follow-up——偏好只写变更侧、乐观消息抛错回滚、agentEvent requestId ref、testid expand/collapse、final 后清草稿。
