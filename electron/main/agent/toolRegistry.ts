@@ -18,6 +18,10 @@ export class AgentToolRegistryError extends Error {
 
 export interface ToolRegistry {
   register(definition: ToolDefinition): void
+  /** 按名移除；不存在时返回 false。 */
+  unregister(name: string): boolean
+  /** 按谓词批量移除，返回移除数量。 */
+  unregisterWhere(predicate: (name: string, def: ToolDefinition) => boolean): number
   get(name: string): ToolDefinition
   listForPrompt(): ToolPromptEntry[]
   list(): ToolDefinition[]
@@ -45,6 +49,21 @@ export function createToolRegistry(): ToolRegistry {
         throw new AgentToolRegistryError('INVALID_TOOL', `Tool 缺少 execute：${name}`)
       }
       byName.set(name, definition)
+    },
+
+    unregister(name: string): boolean {
+      return byName.delete(name)
+    },
+
+    unregisterWhere(predicate: (name: string, def: ToolDefinition) => boolean): number {
+      let removed = 0
+      for (const [name, def] of [...byName.entries()]) {
+        if (predicate(name, def)) {
+          byName.delete(name)
+          removed += 1
+        }
+      }
+      return removed
     },
 
     get(name: string): ToolDefinition {

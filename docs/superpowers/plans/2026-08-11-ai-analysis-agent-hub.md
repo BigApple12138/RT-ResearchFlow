@@ -2,7 +2,7 @@
 
 > **For agentic workers:** 按任务勾选推进；推荐 `executing-plans` / `subagent-driven-development`。完成后填写文末「设计初衷检核」。**未批准 spec / 用户未说执行前，禁止改 `src/`、`electron/` 业务代码。**
 
-**状态：** 第一期 Tasks 1–9 已落地（2026-08-12；69 项相关单测通过；待手工验收后填检核表）  
+**状态：** 第一期 Tasks 1–9 + 第二期 M0–M2 代码已落地（2026-08-12；相关单测绿；待手工验收 §8 / 联网门禁后填检核表）  
 **Spec：** [`../specs/2026-08-11-ai-analysis-agent-hub-design.md`](../specs/2026-08-11-ai-analysis-agent-hub-design.md)  
 **参考架构：** SharkMind 2.0（ToolRegistry / SessionContext / SubAgentTool / HITL 写闸门）
 
@@ -374,14 +374,15 @@ OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 - 深挖终态后「读权威报告再跑一轮 Planner continuation」仍偏薄（有幂等闸门与 status 事件，完整总结续跑待加深）
 - Agent 执行账本与 orchestrator 运行时挂接未完全串联
 - Task 6 未单独建 IPC 契约单测文件
-- 第二期外部 MCP（M0–M2）未开始
+- 第二期外部 MCP（M0–M2）代码已落地；§8 第 11–13 条手工待用户
 
 ---
 
 ## 第二期 Tasks（外部 MCP 客户端；spec §4.4）
 
 > **执行门槛：** 第一期 Tasks 1–9 完成或用户书面指定「先做 MCP」后再勾选。未批准前仍禁止改业务代码。  
-> **对齐：** 聊天 + 深度研究两边都要用；分期 A → B → C。
+> **对齐：** 聊天 + 深度研究两边都要用；分期 A → B → C。  
+> **状态：** 2026-08-12 用户批准开二期；自 M0 起执行。
 
 ### Task M0：外部 MCP 配置模型 + Migration + 设置 UI（子期 A）
 
@@ -394,9 +395,9 @@ OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 
 **Produces：** 增删改/启停/连通测试/`list_tools`；Renderer 无明文常驻密钥回显；失败可诊断。
 
-- [ ] **Step 1:** Migration + repository 单测  
-- [ ] **Step 2:** 主进程连接与 list_tools（mock 传输）单测  
-- [ ] **Step 3:** 设置 UI + README（区分「本机研究访问」服务端 vs 本面板客户端）  
+- [x] **Step 1:** Migration + repository 单测  
+- [x] **Step 2:** 主进程连接与 list_tools（mock 传输）单测  
+- [x] **Step 3:** 设置 UI + README（区分「本机研究访问」服务端 vs 本面板客户端）  
 - [ ] **Step 4:** 手工：配置假/真服务器，能列出 tools  
 
 ### Task M1：MCP Tool 投影进 ToolRegistry + 挂聊天（子期 B）
@@ -407,8 +408,8 @@ OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 - `AIAnalysis` 时间线已能展示通用 tool 事件（复用第一期）
 - 单测：开关关闭拒绝；白名单外拒绝；结果截断
 
-- [ ] **Step 1:** 投影命名、schema、sideEffect 映射单测  
-- [ ] **Step 2:** Orchestrator 可调用；审计含 serverId/toolName  
+- [x] **Step 1:** 投影命名、schema、sideEffect 映射单测  
+- [x] **Step 2:** Orchestrator 可调用；审计含 serverId/toolName  
 - [ ] **Step 3:** 对照 spec §8 第 11–12 条手工验收  
 
 ### Task M2：深度研究挂 MCP（子期 C）
@@ -418,8 +419,10 @@ OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 - 账本投影与证据视图可追溯
 - 单测：主体/asOf 约束；门禁不因 MCP 原文绕过
 
-- [ ] **Step 1:** 契约单测（投影进证据、失败降级）  
-- [ ] **Step 2:** 实现桥接  
+**实现要点（方案 A）：** 受控工具 `mcp.invoke`（serverId + toolName + arguments + subjectRef + asOf）；enabled + 联网开关 + 主体绑定；结果 `partial` / secondary 外源样本落账；门禁不因 MCP 原文 complete。
+
+- [x] **Step 1:** 契约单测（投影进证据、失败降级）  
+- [x] **Step 2:** 实现桥接  
 - [ ] **Step 3:** 对照 spec §8 第 13 条验收  
 
 ---
@@ -450,9 +453,9 @@ OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 | 时间线统一 agentEvent | 通过 | UI 已消费 |
 | 无荐股/窄 IPC/可测 | 通过 | Skill 禁止项 |
 | README 已更新 | 通过 | AIAnalysis / Settings |
-| （第二期）外部 MCP A/B/C | 未做 | |
+| （第二期）外部 MCP A/B/C | A+B+C 代码落地 | M0–M2 单测绿；§8 第 11–13 条手工待用户 |
 
-**总评：** 第一期框子代码与单测已落地；请用户重启应用后做 §8 / 联网门禁手工验收，再补全检核结论。  
+**总评：** 第一期框子与第二期外部 MCP（M0–M2）代码与单测已落地；请用户重启应用后做 §8 / 联网门禁手工验收，再补全检核结论。  
 **检核人 / 日期：** （待填）
 
 ---
@@ -466,4 +469,5 @@ OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 - 2026-08-11：用户确认先解决框子智能化：第一阶段升级为目标驱动 Planner–Executor，模型/Provider 建设排除；保留任务/能力/上下文/事件/审计契约，后续按评测门槛演进到通用多 Agent。  
 - 2026-08-11：按用户要求把二开北星与外部 MCP（A/B/C）**补充进本文与同日 design**；第一期 Tasks 不变；新增「第二期 Tasks」M0–M2。  
 - 2026-08-12：用户批准执行第一期；本机研究访问改为旁路表述。  
+- 2026-08-12：第二期 M0–M2 代码落地；M2 采用方案 A（`mcp.invoke`）；待手工验收。  
 

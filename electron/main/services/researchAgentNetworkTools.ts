@@ -22,7 +22,7 @@ import {
   type ResearchAgentNetworkResponse,
 } from './researchAgentNetworkPolicy'
 
-export const RESEARCH_AGENT_TOOL_REGISTRY_VERSION = 'research-agent-tools.v5'
+export const RESEARCH_AGENT_TOOL_REGISTRY_VERSION = 'research-agent-tools.v6'
 
 export type ResearchAgentNetworkToolId =
   | 'web.search'
@@ -32,6 +32,7 @@ export type ResearchAgentNetworkToolId =
   | 'company.fundamentals_refresh'
   | 'market.price_refresh'
   | 'market.quote_snapshot'
+  | 'mcp.invoke'
 
 export interface ResearchAgentToolDefinition {
   id: string
@@ -63,6 +64,8 @@ export interface ResearchAgentSearchCredentials {
 export interface ResearchAgentNetworkToolDependencies {
   requestNetwork?: (request: ResearchAgentNetworkRequest) => Promise<ResearchAgentNetworkResponse>
   resolveSearchCredentials?: (db: Database.Database) => ResearchAgentSearchCredentials | null
+  /** Task M2：mcp.invoke 注入点（单测 / 主进程默认走 externalMcpClientService） */
+  mcp?: import('./researchAgentMcpTool').ResearchAgentMcpInvokeDeps
 }
 
 export interface ExecuteResearchAgentNetworkToolInput {
@@ -133,6 +136,7 @@ const NETWORK_TOOL_IDS = new Set<ResearchAgentNetworkToolId>([
   'company.fundamentals_refresh',
   'market.price_refresh',
   'market.quote_snapshot',
+  'mcp.invoke',
 ])
 
 const asOfSchema = { type: ['string', 'null'], pattern: '^\\d{8}$' }
@@ -223,6 +227,22 @@ export const RESEARCH_AGENT_NETWORK_TOOL_DEFINITIONS = [
     maxItems: 1,
     inputSchema: objectSchema({ stockCode: stockCodeSchema }, ['stockCode']),
   },
+  {
+    id: 'mcp.invoke',
+    externalName: 'mcp_invoke',
+    description:
+      '调用已启用外部 MCP 工具补证。入参仅 serverId、toolName、arguments、subjectRef 与运行 asOf；结果为外源样本，不自动满足证据门禁 complete。需开启「允许 Agent 联网」。',
+    scope: 'research.read',
+    asOf: 'supported',
+    maxItems: 1,
+    inputSchema: objectSchema({
+      serverId: { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' },
+      toolName: { type: 'string', maxLength: 160, pattern: '\\S{1}' },
+      arguments: { type: 'object' },
+      subjectRef: { type: 'string', maxLength: 160, pattern: '\\S{1}' },
+      asOf: asOfSchema,
+    }, ['serverId', 'toolName', 'subjectRef', 'asOf']),
+  },
 ] as const satisfies readonly ResearchAgentToolDefinition[]
 
 export function isResearchAgentNetworkToolId(value: string): value is ResearchAgentNetworkToolId {
@@ -255,6 +275,10 @@ export async function executeResearchAgentNetworkTool(
       return executePriceRefresh(input)
     case 'market.quote_snapshot':
       return executeQuoteSnapshot(input)
+    case 'mcp.invoke': {
+      const { executeResearchAgentMcpInvoke } = await import('./researchAgentMcpTool')
+      return executeResearchAgentMcpInvoke(input, input.dependencies?.mcp)
+    }
     default:
       throw new ResearchAgentNetworkToolError('UNKNOWN_TOOL', '未知Agent联网工具')
   }

@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/appStore'
 import type { AppSettingsRow } from '../../../electron/main/database/types'
 import { SupplyChainSettingsPanel } from '../SupplyChain/SupplyChainSettingsPanel'
 import { ResearchAccessSettings } from './ResearchAccessSettings'
+import { ExternalMcpSettings } from './ExternalMcpSettings'
 import { PremarketCaptureSettings } from './PremarketCaptureSettings'
 
 const INTERVALS: { value: AppSettingsRow['scanIntervalMinutes']; label: string }[] = [
@@ -340,6 +341,8 @@ export function Settings() {
           <p className="text-xs text-green-600 mt-2">{clearResult}</p>
         )}
       </section>
+
+      <ExternalMcpSettings />
 
       <ResearchAccessSettings />
 

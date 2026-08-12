@@ -425,6 +425,7 @@ describe('FR-256 research agent run manager', () => {
       'company.fundamentals_refresh',
       'market.price_refresh',
       'market.quote_snapshot',
+      'mcp.invoke',
     ])
     expect(run).not.toHaveBeenCalled()
   })

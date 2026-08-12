@@ -512,7 +512,17 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
         type: 'tool_call',
         requestId,
         sessionId,
-        payload: { name: action.name, args: action.args },
+        payload: {
+          name: action.name,
+          args: action.args,
+          ...(def.audit
+            ? {
+                source: def.audit.source,
+                serverId: def.audit.serverId,
+                toolName: def.audit.toolName,
+              }
+            : {}),
+        },
       })
 
       // gates
@@ -676,6 +686,13 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
           cappedText: capped.text,
           truncated: capped.truncated,
           waitSubagent: obs.waitSubagent,
+          ...(def.audit
+            ? {
+                source: def.audit.source,
+                serverId: def.audit.serverId,
+                toolName: def.audit.toolName,
+              }
+            : {}),
         },
       })
       messages.push({ role: 'assistant', content: rawAction })

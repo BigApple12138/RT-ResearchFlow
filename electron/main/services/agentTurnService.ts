@@ -34,6 +34,7 @@ import {
 } from '../agent/orchestrator'
 import { buildDefaultAgentSystemPrompt } from '../agent/skillPrompt'
 import type { AgentEvent } from '../agent/types'
+import { registerMcpProjectedTools } from '../agent/tools/mcpProjection'
 import { registerSubagentContinuation, notifySubagentTerminal } from '../agent/subagentContinuation'
 import {
   subscribeResearchAgentBridge,
@@ -252,6 +253,15 @@ async function runAgentTurnWithinLock(
 
   try {
     const registry = getAgentToolRegistry(() => db)
+    // 每轮刷新：仅 enabled 外部 MCP 投影进 Registry（disabled 不注册）
+    try {
+      await registerMcpProjectedTools(registry, { getDb: () => db })
+    } catch (mcpErr) {
+      console.warn(
+        '[agent:mcp-projection]',
+        mcpErr instanceof Error ? mcpErr.message : String(mcpErr),
+      )
+    }
     const reasoningCall = options.reasoningCall ?? buildDefaultReasoningCall(db, input.sessionId)
     const result: RunAgentTurnResult = await runAgentTurn({
       sessionId: input.sessionId,

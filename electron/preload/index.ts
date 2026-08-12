@@ -45,6 +45,14 @@ import type {
   ResearchAccessWorkbench,
 } from '../main/ipc/researchAccessHandlers'
 import type {
+  ExternalMcpApiResult,
+  ExternalMcpIdRequest,
+  ExternalMcpSaveRequest,
+  ExternalMcpServerView,
+  ExternalMcpSetEnabledRequest,
+  ExternalMcpTestResponse,
+} from '../main/ipc/externalMcpHandlers'
+import type {
   ResearchAgentDetailResponse,
   ResearchAgentDeleteResponse,
   ResearchAgentListResponse,
@@ -1590,6 +1598,18 @@ const api = {
       ipcRenderer.invoke('researchAccess:revokeProfile', payload) as Promise<ResearchAccessApiResult<ResearchAccessWorkbench['profiles'][number]>>,
     listAudit: (payload: ResearchAccessAuditRequest = {}) =>
       ipcRenderer.invoke('researchAccess:listAudit', payload) as Promise<ResearchAccessApiResult<{ items: ResearchAccessAuditView[]; nextCursor: number | null }>>,
+  },
+  externalMcp: {
+    listServers: () =>
+      ipcRenderer.invoke('externalMcp:listServers') as Promise<ExternalMcpApiResult<ExternalMcpServerView[]>>,
+    saveServer: (payload: ExternalMcpSaveRequest) =>
+      ipcRenderer.invoke('externalMcp:saveServer', payload) as Promise<ExternalMcpApiResult<ExternalMcpServerView>>,
+    deleteServer: (payload: ExternalMcpIdRequest) =>
+      ipcRenderer.invoke('externalMcp:deleteServer', payload) as Promise<ExternalMcpApiResult<{ id: string }>>,
+    setEnabled: (payload: ExternalMcpSetEnabledRequest) =>
+      ipcRenderer.invoke('externalMcp:setEnabled', payload) as Promise<ExternalMcpApiResult<ExternalMcpServerView>>,
+    testServer: (payload: ExternalMcpIdRequest) =>
+      ipcRenderer.invoke('externalMcp:testServer', payload) as Promise<ExternalMcpApiResult<ExternalMcpTestResponse>>,
   },
   app: {
     relaunch: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),

@@ -236,12 +236,15 @@ export interface ResearchAgentRunDetailView {
     coverage: Record<string, unknown>
     warnings: unknown[]
     scope: 'local' | 'network'
-    kind: 'local' | 'search' | 'document' | 'refresh'
+    kind: 'local' | 'search' | 'document' | 'refresh' | 'mcp'
     request: {
       query: string | null
       candidateId: string | null
       stockCode: string | null
       requestedLimit: number | null
+      serverId: string | null
+      toolName: string | null
+      subjectRef: string | null
     }
     searchProvider: string | null
     candidates: Array<{
@@ -267,6 +270,17 @@ export interface ResearchAgentRunDetailView {
       contentSha256: string
       rawBodySha256: string
       mimeKind: string
+    } | null
+    mcp: {
+      serverId: string
+      serverName: string | null
+      toolName: string
+      subjectRef: string | null
+      sourceClass: 'secondary'
+      sourceKind: 'external_mcp'
+      truncated: boolean
+      resultPreview: string | null
+      resultSha256: string | null
     } | null
     network: {
       method: string
@@ -799,6 +813,7 @@ export class ResearchAgentRunManager {
     }
     toolIds.add('web.search')
     toolIds.add('web.fetch_page')
+    toolIds.add('mcp.invoke')
     if (input.includeJudgmentHistory) toolIds.add('decision.judgment_history')
     toolIds.add('portfolio.holdings')
     return {
@@ -829,8 +844,8 @@ export class ResearchAgentRunManager {
         mode: 'local_then_network',
         networkToolsAvailable: true,
         message: searchConfigured
-          ? '本地证据不足时可通过受控搜索、候选正文、正式披露及必要行情工具补证；补证后仍有缺口时继续生成降级报告，并明确披露未知项。'
-          : '行情与财务受控补证可用；网页搜索尚未配置密钥时仍继续综合，但新闻、披露或产业正文结论会明确降级。',
+          ? '本地证据不足时可通过受控搜索、候选正文、正式披露、外部 MCP（mcp.invoke）及必要行情工具补证；MCP 外源样本可追溯但不得单独使门禁 complete；补证后仍有缺口时继续生成降级报告，并明确披露未知项。'
+          : '行情与财务受控补证及外部 MCP（需开启联网）可用；网页搜索尚未配置密钥时仍继续综合，但新闻、披露或产业正文结论会明确降级。',
       },
     }
   }
@@ -1396,6 +1411,7 @@ function projectResearchAgentToolCall(
     ? data.candidates.flatMap((candidate) => projectCandidate(candidate)).slice(0, 8)
     : []
   const document = projectDocument(data?.document)
+  const mcp = projectMcpSample(data?.mcp)
   const network = projectNetworkEnvelope(data?.networkEnvelope)
   const failure = projectToolFailure(call.status, call.error_code, call.error_message)
   return {
@@ -1417,10 +1433,14 @@ function projectResearchAgentToolCall(
       candidateId: boundedText(input?.candidateId, 40),
       stockCode: boundedText(input?.stockCode, 16),
       requestedLimit: boundedIntegerView(input?.maxResults ?? input?.limit),
+      serverId: boundedText(input?.serverId, 80),
+      toolName: boundedText(input?.toolName, 160),
+      subjectRef: boundedText(input?.subjectRef, 160),
     },
     searchProvider: boundedText(data?.providerId, 40),
     candidates,
     document,
+    mcp,
     network,
     failure,
     durationMs: call.duration_ms,
@@ -1478,6 +1498,26 @@ function projectDocument(value: unknown): ResearchAgentRunDetailView['toolCalls'
   }
 }
 
+function projectMcpSample(value: unknown): ResearchAgentRunDetailView['toolCalls'][number]['mcp'] {
+  const mcp = recordValue(value)
+  const serverId = boundedText(mcp?.serverId, 80)
+  const toolName = boundedText(mcp?.toolName, 160)
+  if (!serverId || !toolName || mcp?.sourceClass !== 'secondary' || mcp?.sourceKind !== 'external_mcp') {
+    return null
+  }
+  return {
+    serverId,
+    serverName: boundedText(mcp.serverName, 120),
+    toolName,
+    subjectRef: boundedText(mcp.subjectRef, 160),
+    sourceClass: 'secondary',
+    sourceKind: 'external_mcp',
+    truncated: mcp.truncated === true,
+    resultPreview: boundedText(mcp.resultPreview, 4_000),
+    resultSha256: hashValue(mcp.resultSha256),
+  }
+}
+
 function projectNetworkEnvelope(value: unknown): ResearchAgentRunDetailView['toolCalls'][number]['network'] {
   const envelope = recordValue(value)
   const request = recordValue(envelope?.request)
@@ -1518,7 +1558,7 @@ function projectToolFailure(
   else if (status === 'cancelled' || /CANCEL/i.test(code)) category = 'cancelled'
   else if (code === 'NETWORK_RATE_LIMITED') category = 'rate_limited'
   else if (/NOT_CONFIGURED|CONFIG_INVALID/.test(code)) category = 'configuration'
-  else if (/SUBJECT_DENIED|CANDIDATE_NOT_AUTHORIZED|URL_INVALID|PROTOCOL_NOT_ALLOWED|HOST_BLOCKED|REDIRECT_(?:INVALID|UNSAFE)|DNS_REBIND/.test(code)) category = 'security'
+  else if (/SUBJECT_DENIED|CANDIDATE_NOT_AUTHORIZED|URL_INVALID|PROTOCOL_NOT_ALLOWED|HOST_BLOCKED|REDIRECT_(?:INVALID|UNSAFE)|DNS_REBIND|MCP_SERVER_DISABLED|MCP_TOOL_NOT_AUTHORIZED|NETWORK_DISABLED/.test(code)) category = 'security'
   else if (code.startsWith('NETWORK_') || /_FETCH_FAILED|_REFRESH_FAILED|_PROVIDER_FAILED/.test(code)) category = 'network'
   return {
     category,
@@ -1536,6 +1576,7 @@ function isNetworkToolId(toolId: string): boolean {
 function toolCallKind(toolId: string): ResearchAgentRunDetailView['toolCalls'][number]['kind'] {
   if (toolId === 'web.search' || toolId === 'official.disclosure_search') return 'search'
   if (toolId === 'web.fetch_page' || toolId === 'official.disclosure_document') return 'document'
+  if (toolId === 'mcp.invoke') return 'mcp'
   return isNetworkToolId(toolId) ? 'refresh' : 'local'
 }
 

@@ -1014,6 +1014,31 @@ function NetworkToolCall({ call }: { call: ResearchAgentToolCallView }) {
         </div>
       )}
 
+      {call.kind === 'mcp' && call.mcp && (
+        <div className="mt-2 grid gap-1 sm:grid-cols-[88px_minmax(0,1fr)]" data-testid="research-agent-mcp-sample">
+          <span className="text-slate-400">MCP 工具</span>
+          <span className="min-w-0 break-words font-mono text-slate-700 dark:text-slate-200">
+            {call.mcp.serverName ? `${call.mcp.serverName} / ` : ''}{call.mcp.toolName}
+          </span>
+          {call.mcp.subjectRef && (
+            <>
+              <span className="text-slate-400">主体</span>
+              <span>{call.mcp.subjectRef}</span>
+            </>
+          )}
+          <span className="text-slate-400">来源等级</span>
+          <span>{sourceClassLabel(call.mcp.sourceClass)} · 外源样本（不计正式正文）</span>
+          {call.mcp.resultPreview && (
+            <>
+              <span className="text-slate-400">结果摘要</span>
+              <pre className="min-w-0 whitespace-pre-wrap break-words rounded border border-slate-200 bg-slate-50 p-2 text-[11px] leading-5 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+                {call.mcp.resultPreview}{call.mcp.truncated ? '…' : ''}
+              </pre>
+            </>
+          )}
+        </div>
+      )}
+
       {call.candidates.length > 0 && (
         <ol className="mt-2 divide-y divide-slate-200 border-y border-slate-200 dark:divide-slate-800 dark:border-slate-800" data-testid="research-agent-search-candidates">
           {call.candidates.map((candidate, index) => (

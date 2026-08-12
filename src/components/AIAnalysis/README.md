@@ -12,7 +12,8 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 
 - **主发送路径**：若 preload 暴露 `window.api.ai.agentTurn`，composer 走 `ai:agentTurn`（目标驱动 Planner–Executor）；否则回退 `ai:followUp`（兼容旧构建）。
 - 统一消费 `ai:agentEvent`（plan / status / tool_call / tool_result / message / hitl / done|error|cancelled）；不展示隐藏推理。投影见 `agentTimelineModel.ts`。
-- **自主取数**：本地只读 Tool（持仓/行情快照/基本面）免确认；`research.deep_start` 为 network Tool，须设置中开启「允许 Agent 联网」，开启后不逐次确认。
+- **自主取数**：本地只读 Tool（持仓/行情快照/基本面）免确认；`research.deep_start` 与外部 MCP 投影 Tool（`mcp__<serverId>__<toolName>`）为 network Tool，须设置中开启「允许 Agent 联网」，开启后不逐次确认。
+- **外部 MCP（第二期 B+C）**：每轮 `ai:agentTurn` 开始时，主进程将 **enabled** 服务器的 tools 投影进 ToolRegistry（可用 `last_tools_json` 缓存，过期刷新）；disabled 不注册；执行走主进程 `callTool`，结果截断，时间线审计带 `serverId`/`toolName`。深度研究经受控工具 `mcp.invoke`（仅 serverId/toolName/arguments/subjectRef/asOf）补证，结果落账为 secondary 外源样本，证据门禁不因 MCP 原文自动 complete。
 - **深挖**：Agent 自主调用 `research.deep_start` 为主路径；既有 suggest→「启动深度研究」降为**手动兜底**（Agent 路径开启时发送不再拦截深挖意图）。
 - **写闸门**：`sideEffect=write` 推 HITL 条，经 `ai:agentConfirm` 确认/拒绝后继续；未确认不执行。
 - **联网关闭提示**：时间线展示「去设置开启」文案（非逐次确认）。
