@@ -5158,6 +5158,26 @@ const MIGRATIONS: DatabaseMigration[] = [
       ALTER TABLE ai_discussion_context_compactions ADD COLUMN tokens_before INTEGER;
       ALTER TABLE ai_discussion_context_compactions ADD COLUMN tokens_after INTEGER;
     `
+  },
+  {
+    // 压缩前研究笔记 flush（对照 OpenClaw memory flush，落本地表而非 ~/.openclaw）
+    version: 154,
+    sql: `
+      CREATE TABLE ai_discussion_research_flushes (
+        id                     TEXT PRIMARY KEY,
+        session_id             INTEGER NOT NULL,
+        request_id             TEXT NOT NULL UNIQUE,
+        source_start_sequence  INTEGER NOT NULL CHECK (source_start_sequence > 0),
+        source_end_sequence    INTEGER NOT NULL CHECK (source_end_sequence >= source_start_sequence),
+        note_text              TEXT NOT NULL CHECK (length(note_text) > 0),
+        note_hash              TEXT NOT NULL CHECK (length(note_hash) = 64),
+        compaction_id          TEXT DEFAULT NULL
+                               REFERENCES ai_discussion_context_compactions(id) ON DELETE SET NULL,
+        created_at             INTEGER NOT NULL CHECK (created_at > 0)
+      );
+      CREATE INDEX idx_ai_discussion_research_flushes_session
+        ON ai_discussion_research_flushes(session_id, created_at DESC);
+    `
   }
 ]
 

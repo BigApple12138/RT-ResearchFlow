@@ -105,6 +105,8 @@ import { getResearchAgentAuditContext, isDiscussionSessionBusy } from '../servic
 import { runDiscussionFollowUp } from '../services/discussionFollowUpService'
 import { compactDiscussionContextWithinLock } from '../services/discussionContextCompactionService'
 import { withDiscussionSessionLock } from '../services/discussionSessionLock'
+import { listDiscussionCompactionCheckpoints } from '../database/discussionCompactionRepository'
+import { restoreLatestDiscussionCompactionWithinLock } from '../services/discussionCompactionRestoreService'
 import {
   deleteAllSessionsWithSessionLocks,
   deleteSessionWithSessionLock,
@@ -115,6 +117,7 @@ import {
   validateDiscussionFollowUpInput,
   validateAgentTurnInput,
   validateAgentConfirmInput,
+  isUuid,
 } from './discussionIpcContract'
 import { runAgentTurnForSession } from '../services/agentTurnService'
 import { getAgentHitlGate, getAgentToolRegistry, subscribeAgentEvents } from '../agent/agentRuntime'
@@ -1718,6 +1721,62 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
         compaction: result.compaction ? toDiscussionCompactionDto(result.compaction) : null,
         archivedCount: result.archivedCount,
         skippedReason: result.skippedReason,
+        messages: result.messages,
+      }
+    })
+  })
+
+  // ── ai:listDiscussionCompactionCheckpoints ──────────────────────────────────
+  ipcMain.handle('ai:listDiscussionCompactionCheckpoints', async (_e, data: {
+    sessionId?: unknown
+    limit?: unknown
+  }) => {
+    const sessionId = typeof data?.sessionId === 'number' ? data.sessionId : Number(data?.sessionId)
+    if (!Number.isInteger(sessionId) || sessionId <= 0) {
+      return { ok: false, code: 'INVALID_ARGUMENT', message: 'sessionId 无效' }
+    }
+    const limit = data?.limit == null ? 20 : Number(data.limit)
+    const db = getDb()
+    if (!getSession(db, sessionId)) return { ok: false, code: 'NOT_FOUND', message: 'Session not found' }
+    const rows = listDiscussionCompactionCheckpoints(db, sessionId, limit)
+    return {
+      ok: true,
+      sessionId,
+      checkpoints: rows.map((row) => toDiscussionCompactionDto(row)),
+    }
+  })
+
+  // ── ai:restoreDiscussionCompaction ─────────────────────────────────────────
+  ipcMain.handle('ai:restoreDiscussionCompaction', async (_e, data: {
+    requestId?: unknown
+    sessionId?: unknown
+    compactionId?: unknown
+  }) => {
+    if (!isUuid(String(data?.requestId ?? ''))) {
+      return { ok: false, code: 'INVALID_ARGUMENT', message: 'requestId 必须是 UUID' }
+    }
+    const sessionId = typeof data?.sessionId === 'number' ? data.sessionId : Number(data?.sessionId)
+    if (!Number.isInteger(sessionId) || sessionId <= 0) {
+      return { ok: false, code: 'INVALID_ARGUMENT', message: 'sessionId 无效' }
+    }
+    const compactionId = data?.compactionId == null ? undefined : String(data.compactionId)
+    const db = getDb()
+    return withDiscussionSessionLock(sessionId, async () => {
+      if (!getSession(db, sessionId)) return { ok: false, code: 'NOT_FOUND', message: 'Session not found' }
+      if (isDiscussionSessionBusy(db, sessionId)) {
+        return { ok: false, code: 'SESSION_BUSY', message: '当前会话有深度研究进行中，请等待完成或取消后再恢复检查点。' }
+      }
+      const result = restoreLatestDiscussionCompactionWithinLock(db, {
+        sessionId,
+        requestId: String(data.requestId),
+        compactionId,
+      })
+      if (!result.ok) return result
+      return {
+        ok: true,
+        sessionId,
+        restoredCompactionId: result.restoredCompactionId,
+        restoredCount: result.restoredCount,
         messages: result.messages,
       }
     })

@@ -21,6 +21,11 @@ import type { DiscussionCompactionRow } from '../database/types'
 import { callWithFallback, type AIFallbackResult } from './aiFallbackService'
 import { withDiscussionSessionLock } from './discussionSessionLock'
 import { auditResearchText } from './researchEvidenceAuditService'
+import {
+  attachFlushCompactionId,
+  buildResearchFlushNoteText,
+  insertDiscussionResearchFlush,
+} from '../database/discussionResearchFlushRepository'
 
 export const AUTO_COMPACT_MIN_PAIRS = 12
 export const HOT_TAIL_MESSAGE_COUNT = 6
@@ -215,6 +220,28 @@ export async function compactDiscussionContextWithinLock(
   }
   const prompt = buildCompactionPrompt(session.promptSent, latest?.summary_text ?? null, selectedForArchive)
 
+  // 压缩前 flush：对照 OpenClaw memory flush，落本地研究笔记表（不依赖额外 AI 调用）
+  let flushId: string | null = null
+  try {
+    const noteText = buildResearchFlushNoteText({
+      previousSummary: latest?.summary_text ?? null,
+      messages: selectedForArchive,
+    })
+    const flush = insertDiscussionResearchFlush(db, {
+      sessionId: input.sessionId,
+      requestId: `${input.requestId}:flush`,
+      sourceStartSequence,
+      sourceEndSequence: coveredThroughSequence,
+      noteText,
+    })
+    flushId = flush.id
+  } catch (error) {
+    console.warn(
+      '[discussionCompact] research flush failed:',
+      error instanceof Error ? error.message : String(error),
+    )
+  }
+
   let aiResult: AIFallbackResult
   try {
     aiResult = await callAI(db, { prompt, maxTokens: COMPACTION_MAX_OUTPUT_TOKENS })
@@ -253,6 +280,16 @@ export async function compactDiscussionContextWithinLock(
     })
     const remaining = hotMessages.filter((message) => message.sequence > coveredThroughSequence)
     updateSessionMessages(db, input.sessionId, remaining)
+    if (flushId) {
+      try {
+        attachFlushCompactionId(db, flushId, compaction.id)
+      } catch (error) {
+        console.warn(
+          '[discussionCompact] attach flush compaction_id failed:',
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+    }
     return { compaction, archivedCount }
   })
   let committed: { compaction: DiscussionCompactionRow; archivedCount: number }
