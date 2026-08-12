@@ -21,10 +21,11 @@
 | Spec 项 | 结果 | 说明 |
 |---|---|---|
 | 两提交能力合入 | 通过 | |
-| Migration 改号不冲突 | 通过 | **148** |
+| Migration 改号不冲突 | 通过 | **151**（避开本地 Agent 148–150） |
 | 不夹带未推送 Agent 提交 | 通过 | 相对 origin/develop 仅 port 相关 |
 | 独立分支可审阅 / PR | 通过 | |
 
 ## 修订记录
 
-- 2026-08-12：worktree 合入；为开 PR 重建于 origin/develop，Migration 定为 148。
+- 2026-08-12：worktree 合入；为开 PR 重建于 origin/develop；Migration 定为 **151** 以免与本地 Agent 148–150 碰撞。
+- 2026-08-12：PR 审阅修复 — 历史探针失败不短路；禁空曲线占位落库；今日 `tradeDate` 走单日实时；新浪 list/node 限流隔离；历史二级缺事实显式报错。

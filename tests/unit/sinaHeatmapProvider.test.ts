@@ -79,12 +79,28 @@ describe('FR-263 新浪行业云图轻量刷新与按需成分', () => {
     expect(stocks[0].marketCap).toBe(1_200_000)
   })
 
-  it.each([403, 429, 456])('HTTP %s不快速重试并进入共享冷却', async (status) => {
+  it.each([403, 429, 456])('HTTP %s不快速重试并进入列表通道冷却', async (status) => {
     mocks.responses.push({ status, body: '' })
     const { fetchSinaSnapshot } = await import('../../electron/main/services/sinaHeatmapProvider')
 
     await expect(fetchSinaSnapshot()).rejects.toThrow(`SINA_RATE_LIMITED_${status}`)
     await expect(fetchSinaSnapshot()).rejects.toThrow('SINA_RATE_LIMIT_COOLDOWN')
     expect(mocks.request).toHaveBeenCalledTimes(1)
+  })
+
+  it('成分股通道限流不冻结行业总表请求', async () => {
+    mocks.responses.push(
+      { status: 403, body: '' },
+      { status: 200, body: industryListBody },
+    )
+    const {
+      fetchSinaIndustryConstituents,
+      fetchSinaSnapshot,
+    } = await import('../../electron/main/services/sinaHeatmapProvider')
+
+    expect(await fetchSinaIndustryConstituents('hangye_ZJ66')).toEqual([])
+    const snapshot = await fetchSinaSnapshot()
+    expect(snapshot.industries).toHaveLength(2)
+    expect(mocks.request).toHaveBeenCalledTimes(2)
   })
 })

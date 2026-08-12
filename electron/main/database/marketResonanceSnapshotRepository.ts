@@ -140,8 +140,8 @@ function validateSnapshotJson(
         sectorTrends?: { available?: unknown; total?: unknown }
         boardFacts?: { available?: unknown; total?: unknown }
       }
-      benchmarks?: Array<{ tradeDate?: unknown }>
-      sectors?: Array<{ tradeDate?: unknown }>
+      benchmarks?: Array<{ tradeDate?: unknown; points?: unknown }>
+      sectors?: Array<{ tradeDate?: unknown; points?: unknown }>
     }
     const benchmarkCoverage = parsed.coverage?.benchmarkTrends
     const sectorCoverage = parsed.coverage?.sectorTrends
@@ -157,8 +157,16 @@ function validateSnapshotJson(
       || parsed.benchmarks.length === 0
       || !Array.isArray(parsed.sectors)
       || parsed.sectors.length < 10
-      || parsed.benchmarks.some((item) => item?.tradeDate !== expected.tradeDate)
-      || parsed.sectors.some((item) => item?.tradeDate !== expected.tradeDate)
+      || parsed.benchmarks.some((item) => (
+        item?.tradeDate !== expected.tradeDate
+        || !Array.isArray(item?.points)
+        || item.points.length === 0
+      ))
+      || parsed.sectors.some((item) => (
+        item?.tradeDate !== expected.tradeDate
+        || !Array.isArray(item?.points)
+        || item.points.length === 0
+      ))
       || parsed.coverage?.available !== expected.coverageAvailable
       || parsed.coverage?.total !== expected.coverageTotal
       || !isCoverageDimension(benchmarkCoverage)

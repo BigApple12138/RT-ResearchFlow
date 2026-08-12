@@ -149,7 +149,8 @@ const RETRY_BASE_DELAY_MS = 400
 const RATE_LIMIT_COOLDOWN_MS = 5 * 60_000
 const RATE_LIMIT_STATUS_CODES = new Set([403, 429, 456])
 
-let rateLimitedUntil = 0
+type SinaCooldownChannel = 'list' | 'node'
+const rateLimitedUntil: Record<SinaCooldownChannel, number> = { list: 0, node: 0 }
 
 const HEADERS: Record<string, string> = {
   'User-Agent':
@@ -185,8 +186,8 @@ class SinaHttpError extends Error {
   }
 }
 
-function throwIfCoolingDown(): void {
-  if (Date.now() < rateLimitedUntil) {
+function throwIfCoolingDown(channel: SinaCooldownChannel): void {
+  if (Date.now() < rateLimitedUntil[channel]) {
     throw new Error('SINA_RATE_LIMIT_COOLDOWN')
   }
 }
@@ -235,8 +236,12 @@ function httpsGetRaw(url: string, parentSignal: AbortSignal): Promise<Buffer> {
   })
 }
 
-async function httpsGetWithRetry(url: string, parentSignal: AbortSignal): Promise<Buffer> {
-  throwIfCoolingDown()
+async function httpsGetWithRetry(
+  url: string,
+  parentSignal: AbortSignal,
+  channel: SinaCooldownChannel,
+): Promise<Buffer> {
+  throwIfCoolingDown(channel)
   let lastErr: unknown
   for (let attempt = 0; attempt <= RETRY_MAX; attempt++) {
     if (parentSignal.aborted) throw new Error('aborted')
@@ -245,7 +250,7 @@ async function httpsGetWithRetry(url: string, parentSignal: AbortSignal): Promis
     } catch (err) {
       lastErr = err
       if (err instanceof SinaHttpError && RATE_LIMIT_STATUS_CODES.has(err.statusCode)) {
-        rateLimitedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS
+        rateLimitedUntil[channel] = Date.now() + RATE_LIMIT_COOLDOWN_MS
         throw new Error(`SINA_RATE_LIMITED_${err.statusCode}`)
       }
       if (attempt < RETRY_MAX) {
@@ -355,7 +360,7 @@ export async function fetchSinaSnapshot(): Promise<MarketSnapshot> {
   try {
     console.log('[sinaProvider] fetching industry list (L1)...')
     const t0 = Date.now()
-    const listBuf = await httpsGetWithRetry(SINA_INDUSTRY_LIST_URL, controller.signal)
+    const listBuf = await httpsGetWithRetry(SINA_INDUSTRY_LIST_URL, controller.signal, 'list')
     const listText = decodeBody(listBuf)
     const industries = parseIndustryList(listText)
     console.log(`[sinaProvider] L1 returned ${industries.length} industries in ${Date.now() - t0}ms`)
@@ -425,7 +430,7 @@ export async function fetchSinaIndustryConstituents(industryCode: string): Promi
   const timer = setTimeout(() => controller.abort(), PER_REQUEST_TIMEOUT_MS)
   try {
     const url = SINA_INDUSTRY_NODE_URL + encodeURIComponent(industryCode)
-    const buf = await httpsGetWithRetry(url, controller.signal)
+    const buf = await httpsGetWithRetry(url, controller.signal, 'node')
     const text = decodeBody(buf)
     const stocks = parseIndustryStocks(text)
     return stocks.sort((a, b) => b.change - a.change)

@@ -147,38 +147,45 @@ describe('FR-261 市场共振历史补采', () => {
     expect(snapshot.sectors.every((sector) => sector.breadthRate == null && sector.mainNetInflow == null)).toBe(true)
   })
 
-  it('历史分钟曲线不可恢复时仍用同日板块事实形成可回看降级页', async () => {
+  it('历史分钟曲线不可恢复时拒绝空曲线落库, 且探针失败不短路后续请求', async () => {
     fetchMock.mockRejectedValue(new Error('NETWORK_UNAVAILABLE'))
 
-    const snapshot = await getMarketResonanceSnapshot(db, {
+    await expect(getMarketResonanceSnapshot(db, {
       tradeDate: '20260807',
       forceRefresh: true,
-    })
+    })).rejects.toThrow('MARKET_RESONANCE_INSUFFICIENT')
 
-    expect(snapshot.dataMode).toBe('partial')
-    expect(snapshot.sourceMode).toBe('network_backfill')
-    expect(snapshot.sourceLabel).toContain('历史分钟曲线暂不可恢复')
-    expect(snapshot.coverage).toMatchObject({
-      available: 0,
-      benchmarkTrends: { available: 0, total: 3 },
-      sectorTrends: { available: 0, total: SHENWAN_L1_INDUSTRIES.length },
-      boardFacts: {
-        available: SHENWAN_L1_INDUSTRIES.length,
-        total: SHENWAN_L1_INDUSTRIES.length,
-      },
-    })
-    expect(snapshot.benchmarks).toHaveLength(3)
-    expect(snapshot.benchmarks.every((benchmark) => benchmark.points.length === 0)).toBe(true)
-    expect(snapshot.sectors).toHaveLength(SHENWAN_L1_INDUSTRIES.length)
-    expect(snapshot.sectors.every((sector) => (
-      sector.change === 1.5
-      && sector.points.length === 0
-      && sector.metrics.shanghai.state === 'insufficient'
-    ))).toBe(true)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    expect(fetchMock.mock.calls.every(([input]) => (
-      new URL(String(input)).searchParams.get('secid') === '1.000001'
-    ))).toBe(true)
+    const requestedSecids = fetchMock.mock.calls.map(([input]) => (
+      new URL(String(input)).searchParams.get('secid')
+    ))
+    expect(requestedSecids.length).toBeGreaterThan(3)
+    expect(new Set(requestedSecids).size).toBeGreaterThan(1)
+    const row = db.prepare(`
+      SELECT COUNT(*) AS count FROM market_resonance_daily_snapshots WHERE trade_date = '20260807'
+    `).get() as { count: number }
+    expect(row.count).toBe(0)
+  })
+
+  it('今日盘中传入 tradeDate 时用单日实时链路, 不退化到 his/ndays=5', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-10T02:00:00.000Z'))
+    try {
+      const snapshot = await getMarketResonanceSnapshot(db, {
+        tradeDate: '20260810',
+        forceRefresh: true,
+      })
+      const urls = fetchMock.mock.calls.map(([input]) => new URL(String(input)))
+      const shanghaiRequest = urls.find((url) => url.searchParams.get('secid') === '1.000001')
+      const sectorRequest = urls.find((url) => url.searchParams.get('secid')?.startsWith('90.'))
+
+      expect(shanghaiRequest?.searchParams.get('ndays')).toBe('1')
+      expect(shanghaiRequest?.hostname).toBe('push2.eastmoney.com')
+      expect(sectorRequest?.searchParams.get('ndays')).toBe('1')
+      expect(snapshot.tradeDate).toBe('20260810')
+      expect(snapshot.sourceMode).toBe('realtime')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('低质量重新补采不会替换或投影覆盖更好的本地快照', async () => {

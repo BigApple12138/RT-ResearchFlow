@@ -25,8 +25,11 @@ function snapshotJson(
     sourceLabel: '测试存档',
     generatedAt: 1_786_093_200_000,
     coverage: { available: coverageAvailable, total: 31, ...coverage },
-    benchmarks: [{ tradeDate }],
-    sectors: Array.from({ length: sectorCount }, () => ({ tradeDate })),
+    benchmarks: [{ tradeDate, points: [{ time: '09:31', change: 0.1 }] }],
+    sectors: Array.from({ length: sectorCount }, () => ({
+      tradeDate,
+      points: [{ time: '09:31', change: 0.1 }],
+    })),
   })
 }
 
@@ -153,6 +156,30 @@ describe('FR-261 市场共振日快照仓储', () => {
       tradeDate: '20260807', dataMode: 'archive', sourceLabel: '错误',
       coverageAvailable: 31, coverageTotal: 31,
       snapshotJson: snapshotJson('20260806', 'archive', 31), capturedAt: 20,
+    })).toThrow('INVALID_MARKET_RESONANCE_SNAPSHOT')
+  })
+
+  it('拒绝写入空分钟曲线的快照', () => {
+    const emptyPointsJson = JSON.stringify({
+      tradeDate: '20260807',
+      dataMode: 'partial',
+      sourceMode: 'network_backfill',
+      sourceLabel: '空曲线',
+      generatedAt: 1_786_093_200_000,
+      coverage: {
+        available: 0,
+        total: 31,
+        benchmarkTrends: { available: 3, total: 3 },
+        sectorTrends: { available: 31, total: 31 },
+        boardFacts: { available: 0, total: 31 },
+      },
+      benchmarks: [{ tradeDate: '20260807', points: [] }],
+      sectors: Array.from({ length: 31 }, () => ({ tradeDate: '20260807', points: [] })),
+    })
+    expect(() => saveMarketResonanceSnapshot(db, {
+      tradeDate: '20260807', dataMode: 'partial', sourceLabel: '空曲线',
+      coverageAvailable: 0, coverageTotal: 31,
+      snapshotJson: emptyPointsJson, capturedAt: 20,
     })).toThrow('INVALID_MARKET_RESONANCE_SNAPSHOT')
   })
 

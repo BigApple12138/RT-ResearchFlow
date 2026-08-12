@@ -104,7 +104,12 @@ async function buildChildren(
   const expectedNames = new Set(getShenwanL2Names(parent.name))
   const childFacts = [...facts.values()]
     .filter((fact) => expectedNames.has(fact.name))
+  // 历史日无本地板块事实时不得空数组「假成功」，否则二级永远空白且难以诊断。
+  if (childFacts.length === 0 && tradeDate !== beijingYmd()) {
+    throw new Error('MARKET_RESONANCE_CHILDREN_FACTS_UNAVAILABLE')
+  }
   const parentChange = facts.get(parent.code)?.weightedChange ?? null
+  const today = tradeDate === beijingYmd()
   const runTrendRequest = async (fact: MarketResonanceBoardFact) => ({
     boardCode: fact.boardCode,
     series: await fetchMarketTrendSeries(
@@ -112,23 +117,25 @@ async function buildChildren(
       fact.boardCode,
       fact.name,
       tradeDate,
-      5,
+      today ? 1 : 5,
     ),
   })
   let settled: Array<PromiseSettledResult<Awaited<ReturnType<typeof runTrendRequest>>>>
-  if (tradeDate === beijingYmd()) {
+  if (today) {
     settled = await Promise.allSettled(childFacts.map(runTrendRequest))
   } else {
     const [probeFact, ...remainingFacts] = childFacts
     settled = []
     if (probeFact) {
+      let probeResult: PromiseSettledResult<Awaited<ReturnType<typeof runTrendRequest>>>
       try {
-        settled.push({ status: 'fulfilled', value: await runTrendRequest(probeFact) })
-        settled.push(...await Promise.allSettled(remainingFacts.map(runTrendRequest)))
+        probeResult = { status: 'fulfilled', value: await runTrendRequest(probeFact) }
       } catch (reason) {
-        // Probe a missing historical window once before expanding into the whole child group.
-        settled.push({ status: 'rejected', reason })
+        probeResult = { status: 'rejected', reason }
       }
+      settled.push(probeResult)
+      // 探针失败也继续拉其余二级，避免整组被短路为空。
+      settled.push(...await Promise.allSettled(remainingFacts.map(runTrendRequest)))
     }
   }
   const seriesByCode = new Map(settled.flatMap((result) => (

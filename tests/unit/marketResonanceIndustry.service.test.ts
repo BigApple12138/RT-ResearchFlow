@@ -78,7 +78,7 @@ describe('FR-262 二级行业按需读取', () => {
     expect(result.trendCoverage).toEqual({ available: 6, total: 6 })
   })
 
-  it('历史分钟全部失败时仍返回同日二级日级事实', async () => {
+  it('历史分钟全部失败时仍返回同日二级日级事实, 且探针失败不短路其余二级', async () => {
     mocks.readFacts.mockReturnValue(electronicFactMap())
     mocks.fetchTrend.mockRejectedValue(new Error('EASTMONEY_TREND_DATE_UNAVAILABLE'))
 
@@ -91,7 +91,20 @@ describe('FR-262 二级行业按需读取', () => {
     expect(result.children).toHaveLength(6)
     expect(result.children.every((child) => child.tradeDate === '20260806' && child.points.length === 0)).toBe(true)
     expect(result.trendCoverage).toEqual({ available: 0, total: 6 })
-    expect(mocks.fetchTrend).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchTrend).toHaveBeenCalledTimes(getShenwanL2Names('电子').length)
+    expect(mocks.fetchCurrentFacts).not.toHaveBeenCalled()
+  })
+
+  it('历史日无本地板块事实时明确报错, 不返回空二级', async () => {
+    mocks.readFacts.mockReturnValue(new Map())
+
+    await expect(getMarketResonanceIndustryChildren(db, {
+      tradeDate: '20260806',
+      parentIndustryCode: 'BK1201',
+      forceRefresh: true,
+    })).rejects.toThrow('MARKET_RESONANCE_CHILDREN_FACTS_UNAVAILABLE')
+
+    expect(mocks.fetchTrend).not.toHaveBeenCalled()
     expect(mocks.fetchCurrentFacts).not.toHaveBeenCalled()
   })
 

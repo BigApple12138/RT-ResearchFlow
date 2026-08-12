@@ -193,6 +193,9 @@ async function buildSnapshot(
   db: Database.Database,
   requestedTradeDate: string | null,
 ): Promise<MarketResonanceSnapshot> {
+  // 日历「今日」一律走单日实时链路（含盘后）；不得因传入 tradeDate 退化到 his/ndays=5。
+  const todayRequest = !requestedTradeDate || requestedTradeDate === bjYmd()
+  const historicalWindow = Boolean(requestedTradeDate) && !todayRequest
   const trendRequests = [
     ...BENCHMARKS.map((benchmark) => ({
       kind: 'benchmark' as const,
@@ -200,29 +203,32 @@ async function buildSnapshot(
       code: benchmark.secid,
       name: benchmark.name,
       secid: benchmark.secid,
-      trendDays: requestedTradeDate || benchmark.key === 'shanghai' ? MAX_TREND_DAYS : 1,
+      // 今日：单日优先 push2；无 tradeDate 的最新视图仍对上海用多日窗口发现可回看日期。
+      trendDays: todayRequest
+        ? (requestedTradeDate ? 1 : (benchmark.key === 'shanghai' ? MAX_TREND_DAYS : 1))
+        : MAX_TREND_DAYS,
     })),
     ...SHENWAN_L1_INDUSTRIES.map((sector) => ({
       kind: 'sector' as const,
       code: sector.code,
       name: sector.name,
       secid: `90.${sector.code}`,
-      trendDays: requestedTradeDate ? MAX_TREND_DAYS : 1,
+      trendDays: todayRequest ? 1 : MAX_TREND_DAYS,
     })),
   ]
   const runTrendRequest = async (request: typeof trendRequests[number]) => ({
     request,
-      fetched: await fetchMarketTrendSeries(
+    fetched: await fetchMarketTrendSeries(
       request.secid,
       request.code,
       request.name,
-      requestedTradeDate,
+      todayRequest && !requestedTradeDate ? null : requestedTradeDate,
       request.trendDays,
     ),
   })
   let settled: Array<PromiseSettledResult<Awaited<ReturnType<typeof runTrendRequest>>>>
-  if (requestedTradeDate) {
-    // Avoid multiplying a missing historical window across every benchmark and sector.
+  if (historicalWindow) {
+    // 历史日可先探针，但失败不得短路后续行业/基准请求。
     const [probeRequest, ...remainingRequests] = trendRequests
     let probeResult: PromiseSettledResult<Awaited<ReturnType<typeof runTrendRequest>>>
     try {
@@ -230,9 +236,7 @@ async function buildSnapshot(
     } catch (reason) {
       probeResult = { status: 'rejected', reason }
     }
-    const remainingResults = probeResult.status === 'fulfilled'
-      ? await mapWithConcurrency(remainingRequests, 6, runTrendRequest)
-      : []
+    const remainingResults = await mapWithConcurrency(remainingRequests, 6, runTrendRequest)
     settled = [probeResult, ...remainingResults]
   } else {
     settled = await mapWithConcurrency(trendRequests, 6, runTrendRequest)
@@ -265,8 +269,8 @@ async function buildSnapshot(
     ...allBenchmarks.map((item) => item.tradeDate),
     ...allSectorSeries.map((item) => item.series.tradeDate),
   ])
-  const benchmarks = allBenchmarks.filter((item) => item.tradeDate === tradeDate)
-  const sectorSeries = allSectorSeries.filter((item) => item.series.tradeDate === tradeDate)
+  const benchmarks = allBenchmarks.filter((item) => item.tradeDate === tradeDate && item.points.length > 0)
+  const sectorSeries = allSectorSeries.filter((item) => item.series.tradeDate === tradeDate && item.series.points.length > 0)
   if (benchmarks.length < BENCHMARKS.length || sectorSeries.length < SHENWAN_L1_INDUSTRIES.length) {
     const rejected = settled
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -289,19 +293,15 @@ async function buildSnapshot(
       ? await fetchCurrentMarketIndustryBoardFacts().catch(() => new Map<string, MarketResonanceBoardFact>())
       : new Map<string, MarketResonanceBoardFact>()
   const facts = selectL1Facts(allFacts)
-  if (benchmarks.length === 0 && sectorSeries.length < 10 && facts.size < 10) {
+  // 趋势曲线不足时不得仅靠本地资金截面「假成功」。
+  if (benchmarks.length === 0 || sectorSeries.length < 10) {
     throw new Error('MARKET_RESONANCE_INSUFFICIENT')
   }
   const fetchedBenchmarkByKey = new Map(benchmarks.map((benchmark) => [benchmark.key, benchmark]))
-  const displayBenchmarkByKey = new Map(BENCHMARKS.map((definition) => {
-    const fetched = fetchedBenchmarkByKey.get(definition.key)
-    return [definition.key, fetched ?? placeholderBenchmark(definition, tradeDate)] as const
-  }))
   const sectorSeriesByCode = new Map(sectorSeries.map((item) => [item.boardCode, item.series]))
   const sectors = SHENWAN_L1_INDUSTRIES.flatMap((definition): MarketResonanceSector[] => {
     const fact = facts.get(definition.code)
     const series = sectorSeriesByCode.get(definition.code)
-      ?? (fact ? placeholderSector(definition.code, fact.name || definition.name, tradeDate, fact.weightedChange) : null)
     if (!series) return []
     const boardCode = definition.code
     const breadthRate = fact?.breadthRate ?? null
@@ -368,7 +368,8 @@ async function buildSnapshot(
       sectorTrends: { available: sectorTrendsAvailable, total: SHENWAN_L1_INDUSTRIES.length },
       boardFacts: { available: boardFactsAvailable, total: SHENWAN_L1_INDUSTRIES.length },
     },
-    benchmarks: BENCHMARKS.map(({ key }) => displayBenchmarkByKey.get(key) as MarketResonanceBenchmark),
+    // 只返回真实拉到的基准，禁止 change:0 / points:[] 占位污染 UI。
+    benchmarks,
     sectors,
   }
 }
@@ -537,8 +538,16 @@ function projectArchivedRecord(
       || !Array.isArray(snapshot.sectors)
       || snapshot.benchmarks.length === 0
       || snapshot.sectors.length < 10
-      || snapshot.benchmarks.some((item) => item?.tradeDate !== tradeDate)
-      || snapshot.sectors.some((item) => item?.tradeDate !== tradeDate)
+      || snapshot.benchmarks.some((item) => (
+        item?.tradeDate !== tradeDate
+        || !Array.isArray(item?.points)
+        || item.points.length === 0
+      ))
+      || snapshot.sectors.some((item) => (
+        item?.tradeDate !== tradeDate
+        || !Array.isArray(item?.points)
+        || item.points.length === 0
+      ))
     ) {
       throw new Error('MARKET_RESONANCE_ARCHIVE_CORRUPTED')
     }
@@ -760,35 +769,6 @@ function unavailableMetric(sectorReturn: number): MarketResonanceMetric {
     lagMinutes: null,
     score: 0,
     state: 'insufficient',
-  }
-}
-
-function placeholderBenchmark(
-  definition: { key: MarketBenchmarkKey; secid: string; name: string },
-  tradeDate: string,
-): MarketResonanceBenchmark {
-  return {
-    key: definition.key,
-    code: definition.secid,
-    name: definition.name,
-    tradeDate,
-    change: 0,
-    points: [],
-  }
-}
-
-function placeholderSector(
-  code: string,
-  name: string,
-  tradeDate: string,
-  weightedChange: number,
-): MarketTrendSeries {
-  return {
-    code,
-    name,
-    tradeDate,
-    change: weightedChange,
-    points: [],
   }
 }
 
