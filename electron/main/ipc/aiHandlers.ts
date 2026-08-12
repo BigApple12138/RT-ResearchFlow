@@ -134,6 +134,8 @@ export interface DiscussionCompactionDto {
   provider: string
   model: string
   createdAt: number
+  tokensBefore: number | null
+  tokensAfter: number | null
 }
 
 export function toDiscussionCompactionDto(row: DiscussionCompactionRow): DiscussionCompactionDto {
@@ -149,6 +151,8 @@ export function toDiscussionCompactionDto(row: DiscussionCompactionRow): Discuss
     provider: row.provider,
     model: row.model,
     createdAt: row.created_at,
+    tokensBefore: row.tokens_before ?? null,
+    tokensAfter: row.tokens_after ?? null,
   }
 }
 

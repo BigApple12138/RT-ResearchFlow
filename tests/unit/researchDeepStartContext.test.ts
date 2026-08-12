@@ -25,6 +25,61 @@ describe('researchDeepStartContext', () => {
     resetResearchAgentBridgeForTests()
   })
 
+  it('默认 isolated：recentMessages 为拷贝且不共享输入引用', () => {
+    const session = emptySessionContext({
+      sessionId: 3,
+      userGoal: '深挖 000001.SZ',
+      requestId: 'req-iso',
+      asOf: '20260812',
+    })
+    const source = { role: 'user' as const, content: '深挖 000001.SZ 基本面' }
+    const pkg = buildResearchDeepStartContext({
+      session,
+      messages: [source],
+    })
+    expect(pkg.contextMode).toBe('isolated')
+    expect(pkg.recentMessages[0]).not.toBe(source)
+    expect(pkg.recentMessages[0].content).toBe(source.content)
+  })
+
+  it('isolated 优先保留硬事实/摘要并限制热尾长度', () => {
+    const session = emptySessionContext({
+      sessionId: 5,
+      userGoal: '深度分析一下',
+      requestId: 'req-iso-facts',
+    })
+    const messages = [
+      { role: 'user' as const, content: '【本地持仓事实】tsCode 002628 成都路桥' },
+      { role: 'assistant' as const, content: '【累计讨论摘要】已看过持仓。' },
+      { role: 'user' as const, content: '闲聊1' },
+      { role: 'assistant' as const, content: '闲聊答1' },
+      { role: 'user' as const, content: '闲聊2' },
+      { role: 'assistant' as const, content: '闲聊答2' },
+      { role: 'user' as const, content: '闲聊3' },
+      { role: 'assistant' as const, content: '闲聊答3' },
+      { role: 'user' as const, content: '深度分析一下' },
+    ]
+    const pkg = buildResearchDeepStartContext({ session, messages, contextMode: 'isolated' })
+    expect(pkg.contextMode).toBe('isolated')
+    expect(pkg.recentMessages.length).toBeLessThanOrEqual(6)
+    expect(pkg.recentMessages.some((m) => m.content.includes('002628'))).toBe(true)
+    expect(pkg.candidateSubjects.some((s) => s.kind === 'stock' && s.tsCode === '002628.SZ')).toBe(true)
+  })
+
+  it('显式 fork 时 contextMode=fork', () => {
+    const session = emptySessionContext({
+      sessionId: 4,
+      userGoal: '继续',
+      requestId: 'req-fork',
+    })
+    const pkg = buildResearchDeepStartContext({
+      session,
+      messages: [{ role: 'user', content: '深挖 600519.SH' }],
+      contextMode: 'fork',
+    })
+    expect(pkg.contextMode).toBe('fork')
+  })
+
   it('上下文包含对话要点与标的提取', () => {
     const session = emptySessionContext({
       sessionId: 42,
@@ -44,6 +99,7 @@ describe('researchDeepStartContext', () => {
 
     expect(pkg.schemaVersion).toBe(1)
     expect(pkg.skipPreflightUi).toBe(true)
+    expect(pkg.contextMode).toBe('isolated')
     expect(pkg.sessionId).toBe(42)
     expect(pkg.title).toBe('节能风电讨论')
     expect(pkg.userGoal).toContain('节能风电')

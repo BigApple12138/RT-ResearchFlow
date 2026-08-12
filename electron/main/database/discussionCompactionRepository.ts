@@ -12,6 +12,10 @@ export interface InsertDiscussionCompactionInput {
   summaryHash: string
   provider: string
   model: string
+  /** 字符启发式；对齐 OpenClaw tokensBefore */
+  tokensBefore?: number | null
+  /** 字符启发式；对齐 OpenClaw tokensAfter */
+  tokensAfter?: number | null
   now?: number
 }
 
@@ -28,6 +32,7 @@ function hasSameCompactionIdentity(
   existing: DiscussionCompactionRow,
   input: InsertDiscussionCompactionInput,
 ): boolean {
+  // tokens_before/after 仅为检查点观测字段，不参与幂等身份（避免公式微调导致 REQUEST_CONFLICT）
   return existing.session_id === input.sessionId
     && existing.source_start_sequence === input.sourceStartSequence
     && existing.covered_through_sequence === input.coveredThroughSequence
@@ -67,6 +72,21 @@ export function getLatestDiscussionCompaction(
   `).get(sessionId) as DiscussionCompactionRow | undefined) ?? null
 }
 
+/** 压缩检查点列表（P2 list；restore UI 另开）。按覆盖序号降序。 */
+export function listDiscussionCompactionCheckpoints(
+  db: Database.Database,
+  sessionId: number,
+  limit = 20,
+): DiscussionCompactionRow[] {
+  const safeLimit = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), 100) : 20
+  return db.prepare(`
+    SELECT * FROM ai_discussion_context_compactions
+    WHERE session_id = ?
+    ORDER BY covered_through_sequence DESC, id DESC
+    LIMIT ?
+  `).all(sessionId, safeLimit) as DiscussionCompactionRow[]
+}
+
 export function insertDiscussionCompaction(
   db: Database.Database,
   input: InsertDiscussionCompactionInput,
@@ -82,8 +102,9 @@ export function insertDiscussionCompaction(
     db.prepare(`
       INSERT INTO ai_discussion_context_compactions (
         id, session_id, request_id, source_start_sequence, covered_through_sequence,
-        source_messages_hash, summary_text, summary_hash, provider, model, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_messages_hash, summary_text, summary_hash, provider, model, created_at,
+        tokens_before, tokens_after
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       input.sessionId,
@@ -96,6 +117,8 @@ export function insertDiscussionCompaction(
       input.provider,
       input.model,
       input.now ?? Date.now(),
+      input.tokensBefore ?? null,
+      input.tokensAfter ?? null,
     )
   } catch (error) {
     const replay = getDiscussionCompactionByRequestId(db, input.requestId)

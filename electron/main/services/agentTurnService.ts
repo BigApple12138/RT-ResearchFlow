@@ -21,13 +21,8 @@ import { buildDiscussionModelMessages } from './researchDiscussionContextService
 import { withDiscussionSessionLock } from './discussionSessionLock'
 import { isDiscussionSessionBusy } from './researchAgentRunManager'
 import { getAiAgentNetworkEnabled } from '../database/settingsRepository'
-import { getAIConfig } from '../database/aiConfigRepository'
 import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
-import { getLatestDiscussionCompaction } from '../database/discussionCompactionRepository'
-import {
-  compactDiscussionContextWithinLock,
-  shouldAutoCompact,
-} from './discussionContextCompactionService'
+import { prepareDiscussionTurnContext, afterDiscussionTurnCompact } from './researchContextEngine'
 import {
   emitAgentEvent,
   getAgentHitlGate,
@@ -214,29 +209,6 @@ async function runAgentTurnWithinLock(
   })
 
   let messages = getSessionMessages(db, input.sessionId)
-  const discussion = getResearchDiscussionContext(db, input.sessionId)
-  const autoCompactEnabled = getAIConfig(db).autoCompactDiscussion !== 0
-  const latestCompaction = discussion ? getLatestDiscussionCompaction(db, input.sessionId) : null
-  if (discussion && autoCompactEnabled && shouldAutoCompact(messages, latestCompaction?.covered_through_sequence ?? null)) {
-    try {
-      const compacted = await compactDiscussionContextWithinLock(db, {
-        sessionId: input.sessionId,
-        requestId: `${input.requestId}:auto-compact`,
-        mode: 'auto',
-      })
-      if (compacted.ok) {
-        messages = compacted.messages
-      } else {
-        console.warn(`[ai:agentTurn] 自动整理上下文失败：${compacted.message}`)
-      }
-    } catch (error) {
-      console.warn(
-        '[ai:agentTurn] 自动整理上下文失败：',
-        error instanceof Error ? error.message : String(error),
-      )
-    }
-  }
-
   if (messages.length === 0) {
     const context =
       (session.response ?? '') +
@@ -249,8 +221,18 @@ async function runAgentTurnWithinLock(
     content: injectTimePrefix(rawMessage),
     requestId: input.requestId,
   }
+  // soft + hard compact（ResearchContextEngine）；随后只装配一次，禁止双重拼接。
+  const prepared = await prepareDiscussionTurnContext(db, {
+    sessionId: input.sessionId,
+    requestId: input.requestId,
+    hotMessages: messages,
+    userMessage,
+  })
+  if (prepared.warning) {
+    console.warn(`[ai:agentTurn] ${prepared.warning}`)
+  }
+  messages = prepared.hotMessages
   const requestMessages: ConversationMessage[] = [...messages, userMessage]
-  // 与 followUp 同契约单次装配；编排器与 deep_start 共用此历史，禁止失忆。
   const conversationMessages = buildDiscussionModelMessages(db, input.sessionId, requestMessages)
     .filter((m): m is ConversationMessage & { role: 'user' | 'assistant' } => (
       m.role === 'user' || m.role === 'assistant'
@@ -372,6 +354,19 @@ async function runAgentTurnWithinLock(
       completeDiscussionTurnRequest(db, input.requestId, assistantText)
     })
     commit()
+
+    try {
+      const after = await afterDiscussionTurnCompact(db, {
+        sessionId: input.sessionId,
+        requestId: input.requestId,
+      })
+      if (after.warning) console.warn(`[ai:agentTurn] afterTurn compact: ${after.warning}`)
+    } catch (error) {
+      console.warn(
+        '[ai:agentTurn] afterTurn compact failed:',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
 
     return {
       text: assistantText,

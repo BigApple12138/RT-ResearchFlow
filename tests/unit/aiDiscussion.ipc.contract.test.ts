@@ -29,6 +29,8 @@ describe('AI 讨论 IPC 契约', () => {
       provider: 'qwen',
       model: 'qwen-plus',
       created_at: 123,
+      tokens_before: 9000,
+      tokens_after: 1200,
     }
 
     expect(toDiscussionCompactionDto(row)).toEqual({
@@ -43,6 +45,8 @@ describe('AI 讨论 IPC 契约', () => {
       provider: 'qwen',
       model: 'qwen-plus',
       createdAt: 123,
+      tokensBefore: 9000,
+      tokensAfter: 1200,
     })
   })
 

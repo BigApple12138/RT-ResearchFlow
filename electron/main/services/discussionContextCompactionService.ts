@@ -227,6 +227,11 @@ export async function compactDiscussionContextWithinLock(
   if (summaryError) return failure('COMPACTION_FAILED', summaryError, hotMessages)
 
   const summaryHash = createHash('sha256').update(summary).digest('hex')
+  const remainingPreview = hotMessages.filter((message) => message.sequence > coveredThroughSequence)
+  const tokensBefore = selectedForArchive.reduce((sum, message) => sum + message.content.length, 0)
+    + (latest?.summary_text?.length ?? 0)
+  const tokensAfter = remainingPreview.reduce((sum, message) => sum + message.content.length, 0)
+    + summary.length
   const commit = db.transaction(() => {
     const compaction = insertDiscussionCompaction(db, {
       sessionId: input.sessionId,
@@ -238,6 +243,8 @@ export async function compactDiscussionContextWithinLock(
       summaryHash,
       provider: aiResult.provider,
       model: aiResult.model,
+      tokensBefore,
+      tokensAfter,
     })
     const archivedCount = archiveDiscussionMessagesInTransaction(db, {
       sessionId: input.sessionId,

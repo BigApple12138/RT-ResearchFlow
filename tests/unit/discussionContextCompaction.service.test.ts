@@ -83,7 +83,12 @@ describe('讨论上下文压缩服务', () => {
     expect(getLatestDiscussionCompaction(db, sessionId)).toMatchObject({
       covered_through_sequence: 18,
       summary_text: '累计摘要：保留关键讨论结论',
+      tokens_before: expect.any(Number),
+      tokens_after: expect.any(Number),
     })
+    expect(getLatestDiscussionCompaction(db, sessionId)!.tokens_before!).toBeGreaterThan(
+      getLatestDiscussionCompaction(db, sessionId)!.tokens_after!,
+    )
     expect(prompts[0]).toContain('硬事实 prompt')
     expect(prompts[0]).toContain('消息-1')
     expect(JSON.parse(getSession(db, sessionId)!.messages!)).not.toContainEqual(

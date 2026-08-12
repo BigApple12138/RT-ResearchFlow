@@ -5150,6 +5150,14 @@ const MIGRATIONS: DatabaseMigration[] = [
       DROP TABLE research_web_search_config;
       ALTER TABLE research_web_search_config_v152 RENAME TO research_web_search_config;
     `
+  },
+  {
+    // 讨论压缩检查点：对齐 OpenClaw tokensBefore/After（本仓用字符启发式存储）
+    version: 153,
+    sql: `
+      ALTER TABLE ai_discussion_context_compactions ADD COLUMN tokens_before INTEGER;
+      ALTER TABLE ai_discussion_context_compactions ADD COLUMN tokens_after INTEGER;
+    `
   }
 ]
 

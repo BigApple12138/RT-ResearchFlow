@@ -23,8 +23,10 @@ import { buildDefaultAgentSystemPrompt } from './skillPrompt'
 import { buildSessionContext } from './sessionContext'
 import type { AgentEvent, AgentSessionContext } from './types'
 
-/** 送模上下文软上限（字符）；超出时截断更早的会话消息，保留尾部与当前句。 */
-export const AGENT_MODEL_CONTEXT_MAX_CHARS = 48_000
+import { CONTEXT_WINDOW_CHARS } from '../services/researchContextEngine'
+
+/** 送模上下文软上限（字符）；与 ResearchContextEngine.CONTEXT_WINDOW_CHARS 对齐。 */
+export const AGENT_MODEL_CONTEXT_MAX_CHARS = CONTEXT_WINDOW_CHARS
 
 export function trimConversationMessagesForContext(
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
