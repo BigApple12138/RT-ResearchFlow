@@ -101,7 +101,9 @@ function resolveWindowStatus(tradeDate: string): ClosingHalfHourWindowStatus {
   return 'closed'
 }
 
-function toTsCode(code: string): string {
+// 导出仅供单测：含 "." 的输入（如指数带后缀键 000001.SH）原样透传，避免拼出 000001.SH.SZ 畸形码
+export function toTsCode(code: string): string {
+  if (code.includes('.')) return code
   if (/^(4|8|92)/.test(code)) return `${code}.BJ`
   if (/^(5|6|9)/.test(code)) return `${code}.SH`
   return `${code}.SZ`
@@ -148,11 +150,13 @@ function realtimeCandidates(tradeDate: string, cache: Map<string, SharedRtKEntry
     .slice(0, MAX_REALTIME_CANDIDATES)
 }
 
-function queryLocalCandidateCodes(tradeDate: string): string[] {
+// 导出仅供单测：排除带点键（指数轮询落库的 000001.SH 等）——候选只认个股裸 6 位键，
+// 否则 toTsCode 归一会产出畸形码且 buildStock 会 split('.')[0] 串读平安银行裸键行
+export function queryLocalCandidateCodes(tradeDate: string): string[] {
   const rows = getDb().prepare(`
     SELECT stock_code AS stockCode, MAX(fetched_at) AS fetchedAt
     FROM stock_minute_cache
-    WHERE trade_date = ? AND ts_minute >= '14:30'
+    WHERE trade_date = ? AND ts_minute >= '14:30' AND stock_code NOT LIKE '%.%'
     GROUP BY stock_code
     ORDER BY fetchedAt DESC
     LIMIT ?

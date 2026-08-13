@@ -60,7 +60,7 @@ function getActiveTushareApiUrl(override?: string | null): string {
 }
 
 /** Eastmoney secid for each preset index (market.code) */
-const INDEX_SECID: Record<string, string> = {
+export const INDEX_SECID: Record<string, string> = {
   '000001.SH': '1.000001',
   '000300.SH': '1.000300',
   '399001.SZ': '0.399001',

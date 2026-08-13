@@ -198,8 +198,9 @@ function formatDate(yyyymmdd: string): string {
   return `${yyyymmdd.slice(4, 6)}/${yyyymmdd.slice(6, 8)}`;
 }
 
-// FR-123: 6 位 A 股代码 → Tushare ts_code 后缀
-function toTsCodeForMinute(code: string): string {
+// FR-123: 6 位 A 股代码 → Tushare ts_code 后缀；已含 "." 的指数代码原样透传（2026-08-13 指数分时专业版）
+export function toTsCodeForMinute(code: string): string {
+  if (code.includes(".")) return code;
   if (code.startsWith("6") || code.startsWith("5") || code.startsWith("9")) return `${code}.SH`;
   if (code.startsWith("4") || code.startsWith("8")) return `${code}.BJ`;
   return `${code}.SZ`;
@@ -207,7 +208,7 @@ function toTsCodeForMinute(code: string): string {
 
 // T616: 将 6 位纯数字代码转为带后缀 Tushare 代码（用于 chips/factor IPC）
 // 指数代码已含"."（如 000001.SH），返回空串表示跳过
-function toTsCodeWithSuffix(code: string): string {
+export function toTsCodeWithSuffix(code: string): string {
   if (code.includes(".")) return "";
   if (code.startsWith("6") || code.startsWith("5") || code.startsWith("9")) return `${code}.SH`;
   if (code.startsWith("4") || code.startsWith("8")) return `${code}.BJ`;
@@ -283,6 +284,159 @@ async function loadMinuteOHLCVFromDb(
   } catch {
     return [];
   }
+}
+
+// 2026-08-13 三维复审修复：分钟 K 线单次拉取——只调 1 次 getStockMinuteKline，用同一响应派生
+// items/ohlcv（消除轮询/首拉的重复 IPC）；同代码 in-flight 请求去重（进入分时 toggle handler 与
+// effect 双路并发时合并为 1 次）。导出仅供单测。
+const minuteKlineInflight = new Map<
+  string,
+  Promise<{
+    items: { time: string; price: number; volume: number }[];
+    ohlcv: Array<{ tsMinute: string; open: number; high: number; low: number; close: number; vol: number }>;
+  }>
+>();
+
+export function loadMinuteKlineOnce(
+  code: string,
+  tradeDate?: string,
+): Promise<{
+  items: { time: string; price: number; volume: number }[];
+  ohlcv: Array<{ tsMinute: string; open: number; high: number; low: number; close: number; vol: number }>;
+}> {
+  const tsCode = toTsCodeForMinute(code);
+  const key = `${tsCode}|${tradeDate ?? ""}`;
+  const inflight = minuteKlineInflight.get(key);
+  if (inflight) return inflight;
+  const task = (async () => {
+    try {
+      const api = window.api.datasource as unknown as {
+        getStockMinuteKline?: (
+          tsCode: string,
+          tradeDate?: string,
+        ) => Promise<{
+          ok: boolean;
+          data?: Array<{
+            tsMinute: string;
+            open: number | null;
+            high: number | null;
+            low: number | null;
+            close: number | null;
+            vol: number | null;
+          }>;
+        }>;
+      };
+      if (!api.getStockMinuteKline) return { items: [], ohlcv: [] };
+      const res = await api.getStockMinuteKline(tsCode, tradeDate);
+      const rows = !res?.ok || !Array.isArray(res.data) ? [] : res.data;
+      const inSession = (t: string) => !isAShareLunchBreak(t) && t >= "09:30" && t <= "15:00";
+      const items = rows
+        .filter((r) => r.close != null && Number.isFinite(r.close) && inSession(r.tsMinute))
+        .map((r) => ({ time: r.tsMinute, price: r.close as number, volume: r.vol ?? 0 }));
+      const ohlcv = rows
+        .filter(
+          (r) =>
+            r.open != null &&
+            r.high != null &&
+            r.low != null &&
+            r.close != null &&
+            Number.isFinite(r.close) &&
+            inSession(r.tsMinute),
+        )
+        .map((r) => ({
+          tsMinute: r.tsMinute,
+          open: r.open!,
+          high: r.high!,
+          low: r.low!,
+          close: r.close!,
+          vol: r.vol ?? 0,
+        }));
+      return { items, ohlcv };
+    } catch {
+      return { items: [], ohlcv: [] };
+    } finally {
+      minuteKlineInflight.delete(key);
+    }
+  })();
+  minuteKlineInflight.set(key, task);
+  return task;
+}
+
+// 2026-08-13 指数分时专业版：分钟 OHLCV → 折线点映射（close 作 price），只保留正式交易时段
+export function mapMinuteOhlcvToIntradayItems(
+  ohlcv: Array<{ tsMinute: string; close: number; vol: number }>,
+): { time: string; price: number; volume: number }[] {
+  return ohlcv
+    .filter(
+      (r) =>
+        Number.isFinite(r.close) &&
+        !isAShareLunchBreak(r.tsMinute) &&
+        r.tsMinute >= "09:30" &&
+        r.tsMinute <= "15:00",
+    )
+    .map((r) => ({ time: r.tsMinute, price: r.close, volume: r.vol ?? 0 }));
+}
+
+// 2026-08-13 指数分时专业版：分时视图打开期间 60s 轮询盘中刷新（指数不订阅，与个股订阅互斥；
+// getStockMinuteKline 对指数当日内部自动重拉东财 klt=1，DB 未命中自动补拉）。
+// 三维复审修复：每轮询周期只发 1 次 getStockMinuteKline，items/ohlcv 由同一响应派生。
+export function startIndexIntradayPolling(
+  code: string,
+  options: {
+    intervalMs?: number;
+    apply: (update: {
+      items: { time: string; price: number; volume: number }[];
+      ohlcv: Array<{ tsMinute: string; open: number; high: number; low: number; close: number; vol: number }>;
+    }) => void;
+  },
+): () => void {
+  const intervalMs = options.intervalMs ?? 60_000;
+  const timer = setInterval(() => {
+    void loadMinuteKlineOnce(code).then((update) => options.apply(update));
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
+
+// 2026-08-13 指数分时专业版：intradayStyle 全局单键切换（指数与个股共用同一展示偏好）
+export function nextIntradayStyle(prev: "candle" | "line"): "candle" | "line" {
+  const next = prev === "candle" ? "line" : "candle";
+  localStorage.setItem("intradayStyle", next);
+  return next;
+}
+
+// 2026-08-13 指数分时专业版：分时首拉三级降级（与个股既有降级对齐）：
+// ① 分钟链路（DB + 东财 klt=1）有数据 → 蜡烛/折线；② 分钟链路空 → 东财 5 分钟折线；③ 皆空 → 空态
+export async function resolveIntradayInitialData(
+  code: string,
+  options?: {
+    fetchFiveMinute?: (code: string) => Promise<{ time: string; price: number; volume: number }[]>;
+  },
+): Promise<{
+  items: { time: string; price: number; volume: number }[];
+  ohlcv: Array<{ tsMinute: string; open: number; high: number; low: number; close: number; vol: number }>;
+}> {
+  // 三维复审修复：首拉同样单次拉取 + in-flight 去重（toggle handler 与 effect 双路并发时合并）
+  const { items: loadedItems, ohlcv } = await loadMinuteKlineOnce(code);
+  let items = loadedItems;
+  if (items.length === 0 && ohlcv.length > 0) {
+    items = mapMinuteOhlcvToIntradayItems(ohlcv);
+  }
+  if (items.length === 0) {
+    const fetchFiveMinute =
+      options?.fetchFiveMinute ??
+      (async (c: string) => {
+        const result = (await window.api.datasource.getIntradayData(c)) as {
+          items?: { time: string; price: number; volume: number }[];
+        };
+        return filterLunchBreak(result?.items ?? []);
+      });
+    try {
+      items = await fetchFiveMinute(code);
+    } catch {
+      items = [];
+    }
+  }
+  return { items, ohlcv };
 }
 
 /**
@@ -890,10 +1044,33 @@ export function StockChart() {
     return () => { cancelled = true; };
   }, [selected]);
 
-  // FR-123: 分时模式订阅生命周期 + 60s 推送刷新 + Tushare 失败 fallback 到东财
+  // FR-123: 分时模式刷新生命周期——个股：订阅推送；预设指数：60s 轮询（互斥，2026-08-13 指数分时专业版）
   useEffect(() => {
     if (chartMode !== "intraday") return;
-    if (PRESET_CODES.includes(selected)) return; // 预设指数不订阅 374
+
+    // 指数分支：不订阅 374（Tushare rt_min 不支持指数），首拉读库（后端短路东财 klt=1 落库）+ 60s 轮询盘中刷新
+    if (PRESET_CODES.includes(selected)) {
+      let cancelled = false;
+      void (async () => {
+        const { items, ohlcv } = await resolveIntradayInitialData(selected);
+        if (cancelled) return;
+        setIntradayItems(items);
+        // 三维复审修复：无条件覆盖，避免旧标的蜡烛残留（空数组即落折线/空态分支）
+        setIntradayOHLCV(ohlcv);
+      })();
+      const stopPolling = startIndexIntradayPolling(selected, {
+        apply: ({ items, ohlcv }) => {
+          if (cancelled) return;
+          if (items.length > 0) setIntradayItems(items);
+          else if (ohlcv.length > 0) setIntradayItems(mapMinuteOhlcvToIntradayItems(ohlcv));
+          setIntradayOHLCV(ohlcv);
+        },
+      });
+      return () => {
+        cancelled = true;
+        stopPolling();
+      };
+    }
 
     const api = window.api.datasource as unknown as {
       subscribeStockMinute?: (code: string) => Promise<{ ok: boolean; gotData?: boolean; code?: string }>;
@@ -907,13 +1084,12 @@ export function StockChart() {
     void (async () => {
       await api.subscribeStockMinute?.(selected).catch(() => {});
       if (cancelled) return;
-      const [rows, ohlcv] = await Promise.all([
-        loadMinuteFromDb(selected),
-        loadMinuteOHLCVFromDb(selected),
-      ]);
+      // 三维复审修复：单次拉取派生 items/ohlcv（原双路各调一次 getStockMinuteKline）
+      const { items: rows, ohlcv } = await loadMinuteKlineOnce(selected);
       if (cancelled) return;
       if (rows.length > 0) setIntradayItems(rows);
-      if (ohlcv.length > 0) setIntradayOHLCV(ohlcv);
+      // 三维复审修复：无条件覆盖，避免旧标的蜡烛残留（空数组即落折线/空态分支）
+      setIntradayOHLCV(ohlcv);
     })();
 
     const offUpdated = api.onStockMinuteUpdated?.((payload) => {
@@ -921,9 +1097,9 @@ export function StockChart() {
       void loadMinuteFromDb(selected).then((rows) => {
         if (!cancelled && rows.length > 0) setIntradayItems(rows);
       });
-      // T617: 同步刷新 OHLCV 供蜡烛图使用
+      // T617: 同步刷新 OHLCV 供蜡烛图使用（三维复审修复：无条件覆盖，读空即回退折线/空态）
       void loadMinuteOHLCVFromDb(selected).then((ohlcv) => {
-        if (!cancelled && ohlcv.length > 0) setIntradayOHLCV(ohlcv);
+        if (!cancelled) setIntradayOHLCV(ohlcv);
       });
     });
 
@@ -1612,6 +1788,8 @@ export function StockChart() {
     if (chartMode === "intraday") {
       setChartMode("daily");
       setIntradayItems([]);
+      // 三维复审修复：退出分时同步清空蜡烛数据，避免切回时残留旧标的 OHLCV
+      setIntradayOHLCV([]);
       setIntradayOverlayMap({});
       // FR-123: 退出分时模式立即取消分钟 K 订阅
       try {
@@ -1627,9 +1805,8 @@ export function StockChart() {
     }
     setIntradayLoading(true);
     setChartMode("intraday");
-    // 主数据路径：优先本地分钟缓存；空则经 IPC 补拉（Tushare rt_min → 东财），再东财 5 分钟折线
-    let items: IntradayRow[] = [];
-    let ohlcv: Array<{ tsMinute: string; open: number; high: number; low: number; close: number; vol: number }> = [];
+    // 主数据路径：优先本地分钟缓存；空则经 IPC 补拉（个股 Tushare rt_min → 东财；指数短路直走东财 klt=1），再东财 5 分钟折线
+    // 指数不订阅 374（rt_min 不支持指数），但同样读库放行；个股订阅行为不变
     if (!PRESET_CODES.includes(selected)) {
       try {
         await (
@@ -1640,21 +1817,12 @@ export function StockChart() {
       } catch {
         /* 订阅失败仍继续读库 / 东财折线 */
       }
-      ;[items, ohlcv] = await Promise.all([
-        loadMinuteFromDb(selected),
-        loadMinuteOHLCVFromDb(selected),
-      ]);
     }
-    if (items.length === 0) {
-      try {
-        const result = await window.api.datasource.getIntradayData(selected) as { items?: IntradayRow[] };
-        items = filterLunchBreak(result?.items ?? []);
-      } catch {
-        items = [];
-      }
-    }
+    // 三级降级：分钟链路 → 东财 5 分钟折线 → 空态（首拉 await 后再判空态，不出现一直转圈）
+    const { items, ohlcv } = await resolveIntradayInitialData(selected);
     setIntradayItems(items);
-    if (ohlcv.length > 0) setIntradayOHLCV(ohlcv);
+    // 三维复审修复：无条件覆盖，避免旧标的蜡烛残留（空数组即落折线/空态分支）
+    setIntradayOHLCV(ohlcv);
     // FR-073: load intraday data for any already-active overlay indices
     if (overlayIndices.size > 0) {
       const overlayData: Record<string, IntradayRow[]> = {};
@@ -3448,15 +3616,15 @@ export function StockChart() {
                 >
                   {chartMode === "daily" ? "分时图" : "日线图"}
                 </button>
-                {/* 分时图样式切换：专业版（蜡烛）/ 传统版（折线）*/}
-                {chartMode === "intraday" && !PRESET_CODES.includes(selected) && (
+                {/* 分时图样式切换：专业版（蜡烛）/ 传统版（折线）；2026-08-13 起对预设指数同样显示（全局 intradayStyle 偏好）*/}
+                {chartMode === "intraday" && (
                   <button
+                    data-testid="intraday-style-toggle-btn"
                     onClick={() => {
-                      setIntradayStyle((prev) => {
-                        const next = prev === "candle" ? "line" : "candle";
-                        localStorage.setItem("intradayStyle", next);
-                        return next;
-                      });
+                      // 三维复审修复：localStorage 副作用移出 setState updater（StrictMode 下 updater 可能双调用），
+                      // 先算 next 再 set；nextIntradayStyle 自身及其单测不变
+                      const next = nextIntradayStyle(intradayStyle);
+                      setIntradayStyle(next);
                     }}
                     className="text-xs px-2.5 py-1 rounded border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 dark:bg-gray-800 transition-colors"
                     title={intradayStyle === "candle" ? "切换到传统折线分时图" : "切换到专业蜡烛分时图"}

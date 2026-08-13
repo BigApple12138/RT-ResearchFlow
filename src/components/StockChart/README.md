@@ -11,7 +11,7 @@ FR-204 起, 组件在单股研判摘要下方展示当前股票近 7/30/90 天�
 
 ## 实现思路
 
-组件以 `window.api.datasource` 读取本地行情缓存, 日 K 使用 `lightweight-charts` 渲染蜡烛图和**成交量(手)**柱（成交额仅作 hover 辅信息）。分时图优先使用本地分钟 OHLCV 缓存：有 Tushare 分钟权限时经官方 `rt_min` 拉取并落库；无权限或失败时回退东财 `push2his` 1 分钟 OHLCV。传统折线可再回退东财 5 分钟分时。进入分时会等待首轮订阅拉取后再判定空态。日 K 的「今日」若尚无正式日线，由分时/分钟合成；**盘中自动约每 60s（及分钟更新事件）覆盖刷新今日合成 bar**，无需点「更新数据」；收盘后不覆盖带成交额的正式日线。标题区在名称/代码旁展示现价与当日涨跌幅（日 K 用最新日 K；分时用最新分时价相对昨收；红涨绿跌）。MA5/10/20/30/60与BOLL(20,2)直接基于完整日K本地滚动计算，不受技术因子缓存保留期影响；BOLL本地公式与Tushare因子口径一致。BOLL中轨与MA20复用同一条紫色曲线，避免完全重合的灰色线遮盖MA20；MA30 使用独立青色虚线。底部「技术因子」面板经 `shortTerm:getStockFactor` 读 `stk_factor_cache`（Tushare 日频）；**缓存交易日落后于期望日（个股日线最新与市场参考取较新）且已开 Tushare 时自动补拉**，失败则回退旧缓存并仍显示其日期；因子为收盘口径，盘中不必等于「今日」K 线日期。日 K 十字准线通过 `subscribeCrosshairMove` 同步更新鼠标旁的不透明浮动行情卡。
+组件以 `window.api.datasource` 读取本地行情缓存, 日 K 使用 `lightweight-charts` 渲染蜡烛图和**成交量(手)**柱（成交额仅作 hover 辅信息）。分时图优先使用本地分钟 OHLCV 缓存：个股有 Tushare 分钟权限时经官方 `rt_min` 拉取并落库；无权限或失败时回退东财 `push2his` 1 分钟 OHLCV。三个预置指数自 2026-08-13 起同样接入分钟 OHLCV 链路（指数分时专业版）：后端 `datasource:getStockMinuteKline` 对指数短路（跳过 Tushare `rt_min`，直走东财 `klt=1` 落库），指数与个股默认都渲染 lightweight-charts 蜡烛+VWAP 专业版。传统折线可再回退东财 5 分钟分时。进入分时会等待首轮拉取后再判定空态。日 K 的「今日」若尚无正式日线，由分时/分钟合成；**盘中自动约每 60s（及分钟更新事件）覆盖刷新今日合成 bar**，无需点「更新数据」；收盘后不覆盖带成交额的正式日线。标题区在名称/代码旁展示现价与当日涨跌幅（日 K 用最新日 K；分时用最新分时价相对昨收；红涨绿跌）。MA5/10/20/30/60与BOLL(20,2)直接基于完整日K本地滚动计算，不受技术因子缓存保留期影响；BOLL本地公式与Tushare因子口径一致。BOLL中轨与MA20复用同一条紫色曲线，避免完全重合的灰色线遮盖MA20；MA30 使用独立青色虚线。底部「技术因子」面板经 `shortTerm:getStockFactor` 读 `stk_factor_cache`（Tushare 日频）；**缓存交易日落后于期望日（个股日线最新与市场参考取较新）且已开 Tushare 时自动补拉**，失败则回退旧缓存并仍显示其日期；因子为收盘口径，盘中不必等于「今日」K 线日期。日 K 十字准线通过 `subscribeCrosshairMove` 同步更新鼠标旁的不透明浮动行情卡。
 筹码结构摘要通过只读 `chipStructure:getSummaries` 获取。普通最新视图以最后一根日 K 为参考日并显式使用 `latest_complete`, 优先展示最近的 `cyq_perf + cyq_chips + daily_close` 同日完整快照及其真实事实日; 较旧快照标记“历史参考”。点击日 K 蜡烛后固定到该交易日并精确查询, 点击摘要日期可恢复最新视图, 历史查询不跨日回退。缺失、部分或历史快照可由用户点击“补齐最新/补齐该日”, 固定当前单股、结构范围和强制刷新; 页面加载与切换仍只读本地。现有价格级筹码 Canvas 继续使用独立数据路径, 不由结构摘要替代。
 左侧列表排序保留预置指数固定顶部, 普通股票区根据 `portfolio:list` 返回的持仓集合分组, 持仓股按 `addedAt` 倒序置顶, 非持仓股保持原有手动排序。
 今日看板跳转会通过 Zustand `pendingStockContext` 携带信号快照, `stockDecisionContextModel` 将信号来源、持仓状态、成本价、浮盈亏、预测记录、筹码和技术因子状态整理为顶部研判摘要。普通搜索或左侧列表切换不会复用旧信号上下文。
@@ -52,6 +52,13 @@ FR-261 起, 加股成功（搜索 Enter / 点选候选 / 待跳转 `fetchStock`�
 
 ## 特殊逻辑备忘
 
+- 指数分时专业版（2026-08-13）：预置指数（`000001.SH` / `399001.SZ` / `399006.SZ`）分钟缓存键强制使用带后缀 tsCode（如 `stock_code='000001.SH'`），与平安银行裸键 `000001` 同表天然隔离；表结构无变化，故无需新增 Migration（`upsertStockMinute` 的 `INSERT OR REPLACE` 对轮询重写幂等）。回滚时旧代码只读写裸键，指数行不影响旧逻辑，会被按日清理自然消化。
+- 指数分钟链路后端短路：`datasource:getStockMinuteKline` 命中 `INDEX_SECID` 即判定指数，跳过 Tushare `rt_min`（不支持指数，调用必失败）；当日重拉东财 `klt=1` 供盘中轮询刷新（前端每轮询周期只发 1 次本 IPC，故东财 klt=1 真实速率 1 次/60s，不触发反爬），历史日缓存命中直接返回；东财失败/空时 console.warn 留痕并静默返回既有缓存或空数组。
+- 指数盘中刷新是前端 60s 轮询（`startIndexIntradayPolling`），个股是订阅推送（`subscribeStockMinute` + `onStockMinuteUpdated`），两者互斥：指数只轮询不订阅，个股只订阅不轮询；离开分时或切换标的时定时器/订阅统一清理。轮询/首拉均经 `loadMinuteKlineOnce` 单次拉取：每周期只调 1 次 `getStockMinuteKline`，折线 items 与蜡烛 ohlcv 由同一响应派生；同代码 in-flight 请求去重，进入分时的 toggle handler 与 effect 双路并发合并为 1 次 IPC。
+- 分时蜡烛数据写入均为无条件覆盖 `setIntradayOHLCV`，退出分时同步清空；渲染三分叉以 `intradayOHLCV.length > 0` 优先，清空/读空即正确回落折线或空态，避免旧标的蜡烛残留。
+- 分时三级降级（指数与个股对齐）：① 分钟链路（DB + 东财 `klt=1`）有数据 → 专业蜡烛（或用户偏好折线）；② 分钟链路空 → 东财 5 分钟折线（`getIntradayData`，不持久化）；③ 皆空 → 空态文案「当日暂无分时数据」。首拉 await 后再判空态，不出现一直转圈。
+- 分时样式切换按钮（`data-testid=intraday-style-toggle-btn`）对指数同样显示；`intradayStyle` 为 localStorage 全局单键，是用户展示偏好而非数据属性，指数与个股共用、不按标的拆分。
+- `toTsCodeForMinute`（仅分钟链路使用）对已含 `.` 的指数代码原样透传；chips/factor 链路的 `toTsCodeWithSuffix` 保持「含点返回空串跳过」不变。
 - `stock_price_cache.amount` 单位为千元, 前端展示时通过 `formatAmount` 转为千万/亿。
 - 换手率不在 `stock_price_cache`, 由后端 `datasource:getStockPrices` 按 `tradeDate` 和 6 位代码从 `daily_close_cache.turnover_rate` 合并返回。
 - 日 K 涨跌幅优先使用 `daily_close_cache.pct_chg`; 若缺失, 前端按前一交易日收盘价兜底估算。

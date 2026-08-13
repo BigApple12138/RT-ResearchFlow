@@ -36,6 +36,7 @@ import {
   fetchStockMinute,
   forceFetchSingleStock,
   getBoardSecid,
+  INDEX_SECID,
   resolveStockIdentityPublic,
   validateTushareToken,
   validateTushareApiUrlInput,
@@ -2231,14 +2232,54 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   }
 
   // DB-first + 今日用 Tushare 补拉 / Tushare 缺失时回退东财 push2his OHLCV 补拉并落库
+  // 指数短路（2026-08-13 指数分时专业版）：命中 INDEX_SECID 即指数——跳过 Tushare rt_min（不支持指数），
+  // 缓存键用带后缀 tsCode（如 000001.SH，规避与平安银行裸键 000001 撞键）；当日重拉东财 klt=1 供盘中轮询刷新
+  // （前端每 60s 轮询周期只发 1 次本 IPC，INSERT OR REPLACE 幂等，1 次/60s 不触发反爬），历史日缓存命中直接返回。
   ipcMain.handle('datasource:getStockMinuteKline', async (_e, data: { tsCode?: string; tradeDate?: string }) => {
     if (!data?.tsCode) return { ok: false, code: 'INVALID_PARAM', message: '缺少 tsCode' }
-    const stockCode = data.tsCode.split('.')[0]
+    const isIndex = Boolean(INDEX_SECID[data.tsCode])
+    // 指数缓存键强制带后缀；个股维持裸 6 位键
+    const stockCode = isIndex ? data.tsCode : data.tsCode.split('.')[0]
     const todayStr = bjTodayYYYYMMDD()
     const tradeDate = data.tradeDate || todayStr
 
     // 先查 DB
     let rows = getStockMinuteByDate(getDb(), stockCode, tradeDate)
+
+    if (isIndex) {
+      // 历史日缓存命中：直接返回，不打任何行情源
+      if (rows.length > 0 && tradeDate !== todayStr) return { ok: true, data: rows }
+      // 当日（或缓存为空）：直走东财 klt=1（secid 映射已支持指数）并以带后缀键落库
+      try {
+        const bars = await fetchEastmoneyMinuteOHLCV(data.tsCode, tradeDate)
+        if (bars.length > 0) {
+          const now = Date.now()
+          const cacheRows = bars.map(b => ({
+            stockCode,
+            tradeDate: b.tradeDate || tradeDate,
+            tsMinute: b.tsMinute,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            vol: b.vol,
+            amount: b.amount,
+            fetchedAt: now
+          }))
+          upsertStockMinute(getDb(), cacheRows)
+          rows = getStockMinuteByDate(getDb(), stockCode, tradeDate)
+        } else {
+          // 三维复审修复：东财返回空时留痕（fetchEastmoneyMinuteOHLCV 内部恒返回 []，catch 捕不到空结果）
+          console.warn(`[datasource:getStockMinuteKline] index Eastmoney klt=1 empty: tsCode=${data.tsCode} tradeDate=${tradeDate}`)
+        }
+      } catch (err) {
+        // 东财失败静默：当日返回既有缓存（可能为空），不抛异常；补 warn 便于排查
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn(`[datasource:getStockMinuteKline] index Eastmoney klt=1 failed: tsCode=${data.tsCode} tradeDate=${tradeDate} ${msg}`)
+      }
+      return { ok: true, data: rows }
+    }
+
     if (rows.length > 0) return { ok: true, data: rows }
 
     if (tradeDate === todayStr) {

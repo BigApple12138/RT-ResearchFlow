@@ -103,6 +103,10 @@ interface TableFreshnessSpec {
   title: string
   table: string
   dateColumn?: string
+  /** 新鲜度 MAX(dateColumn) 的附加 WHERE（不带 WHERE 关键字），用于排除非目标键 */
+  whereClause?: string
+  /** whereClause 引用的列，列不存在时放弃过滤（兼容旧库/简化夹具） */
+  whereColumn?: string
   detail: string
   staleDays?: number
 }
@@ -110,7 +114,8 @@ interface TableFreshnessSpec {
 const FRESHNESS_TABLES: TableFreshnessSpec[] = [
   { key: 'stockBasic', title: '股票基础数据', table: 'stock_basic_cache', dateColumn: 'updated_at', detail: '用于股票名称搜索和冷启动候选列表。', staleDays: 14 },
   { key: 'dailyClose', title: '日线缓存', table: 'daily_close_cache', dateColumn: 'trade_date', detail: '用于走势图、趋势评分、策略回测和条件积木全市场候选。', staleDays: 7 },
-  { key: 'minute', title: '分钟缓存', table: 'stock_minute_cache', dateColumn: 'trade_date', detail: '用于分时图、预测回测和盘中走势展示。', staleDays: 3 },
+  // 三维复审修复：分钟新鲜度排除指数带后缀键（如 000001.SH），避免指数轮询落库掩盖个股分钟数据缺失
+  { key: 'minute', title: '分钟缓存', table: 'stock_minute_cache', dateColumn: 'trade_date', whereClause: "stock_code NOT LIKE '%.%'", whereColumn: 'stock_code', detail: '用于分时图、预测回测和盘中走势展示。', staleDays: 3 },
   { key: 'limitList', title: '涨跌停缓存', table: 'limit_list_daily', dateColumn: 'trade_date', detail: '用于短线策略、打板助手和今日看板补种。', staleDays: 7 },
   { key: 'kplConcept', title: 'KPL 题材成分', table: 'kpl_concept_members', detail: '用于题材归因、板块联动和短线策略题材标签。' },
   { key: 'thsConcept', title: 'THS 题材成分', table: 'ths_concept_members', detail: '题材源切换到同花顺时使用。' },
@@ -153,8 +158,11 @@ function countRows(db: Database.Database, table: string): number {
   return row.count
 }
 
-function getMaxValue(db: Database.Database, table: string, column: string): unknown {
-  const row = db.prepare(`SELECT MAX(${column}) AS value FROM ${table}`).get() as { value: unknown }
+function getMaxValue(db: Database.Database, table: string, column: string, whereClause?: string): unknown {
+  const sql = whereClause
+    ? `SELECT MAX(${column}) AS value FROM ${table} WHERE ${whereClause}`
+    : `SELECT MAX(${column}) AS value FROM ${table}`
+  const row = db.prepare(sql).get() as { value: unknown }
   return row.value
 }
 
@@ -250,7 +258,11 @@ function buildFreshnessItem(db: Database.Database, spec: TableFreshnessSpec, che
   const recordCount = countRows(db, spec.table)
   let latestDate: string | null = null
   if (spec.dateColumn && columnExists(db, spec.table, spec.dateColumn)) {
-    latestDate = toDateLike(getMaxValue(db, spec.table, spec.dateColumn))
+    // whereClause 引用的列不存在时放弃过滤（兼容简化表结构），避免诊断自身报错
+    const where = spec.whereClause && (!spec.whereColumn || columnExists(db, spec.table, spec.whereColumn))
+      ? spec.whereClause
+      : undefined
+    latestDate = toDateLike(getMaxValue(db, spec.table, spec.dateColumn, where))
   }
 
   let status: DiagnosticStatus = 'ok'

@@ -1700,7 +1700,7 @@ export interface IntradayCacheRow {
 
 // FR-123: 个股分钟级 K 线缓存（Tushare 374 rt_min）
 export interface StockMinuteCacheRow {
-  stockCode: string // 6 位纯数字，如 '600036'
+  stockCode: string // 个股为 6 位纯数字（如 '600036'）；预置指数为带后缀 tsCode（如 '000001.SH'，2026-08-13 指数分时专业版）
   tradeDate: string // YYYYMMDD（北京时间交易日）
   tsMinute: string // HH:mm（北京时间）
   open: number | null
