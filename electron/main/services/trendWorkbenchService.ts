@@ -180,10 +180,20 @@ export function buildEodTrendReviewFactsForItem(
     : computation.score.maAbove60 > 0
   const bars = stockBars.length
 
+  const dimensions = computation?.dimensions ?? {
+    maArrangement: null, maAbove60: null, relativeStrength: null,
+    drawdownQuality: null, turnoverQuality: null, macd: null, boll: null,
+  }
+  const score = computation?.score
+  const trendState = classifyTrendState(totalScore, maAbove60, scoreDelta5d)
+
   return {
     tsCode: normalizeTrendTsCode(item.tsCode),
     stockName: item.stockName,
-    trendState: classifyTrendState(totalScore, maAbove60, scoreDelta5d),
+    scoreDate,
+    scoreSource: 'eod',
+    scoreVersion: 'v2',
+    trendState,
     totalScore,
     scoreDelta5d,
     scoreDelta20d,
@@ -195,8 +205,19 @@ export function buildEodTrendReviewFactsForItem(
       latestTradeDate,
       state: bars >= 60 ? 'ready' : bars >= 20 ? 'partial' : 'missing',
     },
+    dimensions,
+    maScore: score?.maScore ?? null,
+    alphaScore: score?.alphaScore ?? null,
+    drawdown: score?.drawdown ?? null,
+    turnoverRatio: score?.turnoverRatio ?? null,
+    macdAboveZero: score?.macdAboveZero != null ? score.macdAboveZero === 1 : null,
+    bollAboveMid: score?.bollAboveMid != null ? score.bollAboveMid === 1 : null,
     facts: computation?.facts ?? null,
-    scoreDate,
+    scoreHistory,
+    benchmarkHealth: {
+      state: item.benchmarkHealth.state,
+      message: item.benchmarkHealth.message,
+    },
   }
 }
 
@@ -269,6 +290,8 @@ function buildWorkbenchItem(
       latestTradeDate,
       state: bars >= 60 ? 'ready' : bars >= 20 ? 'partial' : 'missing',
     },
+    scoreSource: primary.scoreSource,
+    scoreVersion: primary.scoreVersion,
     dimensions: currentComputation?.dimensions ?? null,
     facts: currentComputation?.facts ?? null,
     benchmarkHealth,

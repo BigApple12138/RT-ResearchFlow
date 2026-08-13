@@ -103,7 +103,9 @@ describe('趋势结构复核服务', () => {
     expect(facts).not.toHaveProperty('change')
     expect(facts).not.toHaveProperty('quoteTime')
     expect(facts).not.toHaveProperty('benchmark')
-    expect(facts).not.toHaveProperty('dimensions')
+    expect(serialized).not.toContain('costPrice')
+    expect(serialized).not.toContain('profitPct')
+    expect(serialized).not.toContain('positionAdvice')
   })
 
   it('ready 事实调用模型、审计并按 factsHash 幂等保存', async () => {
