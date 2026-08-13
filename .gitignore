@@ -66,3 +66,6 @@ scripts/*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local agent harness artifacts
+.qoder/
