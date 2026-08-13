@@ -22,6 +22,7 @@ import {
 import { inspectTrendBenchmarkHealth, type TrendBenchmarkHealth } from './trendBenchmarkFreshness'
 import {
   buildTrendReviewFactsFromItem,
+  deriveImpliedScore,
   deriveTrendReviewSource,
   hashTrendReviewFacts,
   normalizeTrendTsCode,
@@ -146,6 +147,15 @@ function attachStructureReviews(
         factsHash: review.factsHash,
         createdAt: review.createdAt,
         source: deriveTrendReviewSource(review.provider, review.model),
+        aiScoreStatus: review.aiScoreStatus,
+        aiScoreDelta: review.aiScoreDelta,
+        aiScoreRationale: review.aiScoreRationale,
+        localScore: review.localTotalScore,
+        impliedScore: review.aiScoreStatus === 'scored'
+          && review.localTotalScore != null
+          && review.aiScoreDelta != null
+          ? deriveImpliedScore(review.localTotalScore, review.aiScoreDelta)
+          : null,
       },
     }
   })

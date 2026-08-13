@@ -24,6 +24,11 @@ export interface TrendStructureReviewSummary {
   factsHash: string
   createdAt: number
   source: TrendReviewSource
+  aiScoreStatus: AiScoreAssessmentStatus
+  aiScoreDelta: number | null
+  aiScoreRationale: string | null
+  impliedScore: number | null
+  localScore: number | null
 }
 
 export function deriveTrendReviewSource(

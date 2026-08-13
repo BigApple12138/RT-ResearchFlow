@@ -37,6 +37,17 @@ function displayRationale(review: TrendReview): string | null {
   return `${rationalePrefix(review)}${trimmed}`
 }
 
+function formatSignedDelta(delta: number): string {
+  return delta > 0 ? `+${delta}` : String(delta)
+}
+
+function scoreDeltaLabel(review: TrendReview): string | null {
+  if (review.aiScoreStatus !== 'scored' || review.localScore == null || review.impliedScore == null || review.aiScoreDelta == null) {
+    return null
+  }
+  return `本地 ${review.localScore} · AI ${review.impliedScore}（${formatSignedDelta(review.aiScoreDelta)}）`
+}
+
 export function AiTrendReviewBadge({ review, stockCode }: { review: TrendReview; stockCode: string }) {
   const meta = VERDICT_META[review.verdict]
   const label = review.stale ? '需重核' : meta.label
@@ -45,24 +56,41 @@ export function AiTrendReviewBadge({ review, stockCode }: { review: TrendReview;
     : meta.className
   const rationaleText = displayRationale(review)
   const focusPoints = review.focusPoints.filter((point) => point.trim().length > 0).slice(0, 3)
+  const scoreLabel = scoreDeltaLabel(review)
+  const scoreRationale = review.aiScoreStatus === 'scored' ? review.aiScoreRationale?.trim() || null : null
+  const showUnscoredHint = review.aiScoreStatus === 'skipped' || review.aiScoreStatus === 'invalid'
   const title = review.stale
     ? '当前行情或评分事实已变化，请重新复核。'
-    : (rationaleText ?? undefined)
-  const hasExplain = Boolean(rationaleText) || focusPoints.length > 0 || review.stale
+    : (scoreLabel ?? rationaleText ?? undefined)
+  const hasExplain = Boolean(rationaleText)
+    || focusPoints.length > 0
+    || review.stale
+    || Boolean(scoreLabel)
+    || showUnscoredHint
 
   return (
-    <span className="inline-flex max-w-[14rem] flex-col gap-0.5 align-top">
+    <span className="inline-flex max-w-[16rem] flex-col gap-0.5 align-top">
       <span
         data-testid={`trend-ai-review-badge-${stockCode}`}
         data-state={review.verdict}
         data-stale={review.stale ? 'true' : 'false'}
         data-source={review.source}
+        data-ai-score-status={review.aiScoreStatus}
         title={title}
-        aria-label={`AI复核：${label}${rationaleText ? `；${rationaleText}` : ''}`}
+        aria-label={`AI复核：${label}${scoreLabel ? `；模型意见 ${scoreLabel}` : ''}${rationaleText ? `；${rationaleText}` : ''}`}
         className={`inline-flex w-fit rounded border px-2 py-0.5 text-[11px] font-medium ${className}`}
       >
         AI · {label}
       </span>
+      {scoreLabel && (
+        <span
+          data-testid={`trend-ai-score-delta-${stockCode}`}
+          title={scoreRationale ?? '模型锚定偏差意见，非投资建议'}
+          className="inline-flex w-fit rounded border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
+        >
+          模型意见 · {scoreLabel}
+        </span>
+      )}
       {hasExplain && (
         <span
           data-testid={`trend-ai-review-explain-${stockCode}`}
@@ -71,6 +99,20 @@ export function AiTrendReviewBadge({ review, stockCode }: { review: TrendReview;
           {review.stale && (
             <span data-testid={`trend-ai-review-stale-hint-${stockCode}`}>
               事实已变化，请重新复核
+            </span>
+          )}
+          {showUnscoredHint && !scoreLabel && (
+            <span data-testid={`trend-ai-score-unscored-${stockCode}`}>
+              偏差未评
+            </span>
+          )}
+          {scoreRationale && (
+            <span
+              data-testid={`trend-ai-score-rationale-${stockCode}`}
+              title={scoreRationale}
+              className="line-clamp-1"
+            >
+              {scoreRationale}
             </span>
           )}
           {rationaleText && (

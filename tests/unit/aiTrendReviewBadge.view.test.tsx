@@ -14,6 +14,11 @@ function review(partial: Partial<TrendReview> & Pick<TrendReview, 'verdict' | 's
     scoreDate: '20260808',
     factsHash: 'a'.repeat(64),
     createdAt: 1,
+    aiScoreStatus: 'skipped',
+    aiScoreDelta: null,
+    aiScoreRationale: null,
+    impliedScore: null,
+    localScore: null,
     ...partial,
   }
 }
@@ -40,15 +45,17 @@ describe('AiTrendReviewBadge 可见解释', () => {
     expect(output).not.toContain('data-testid="trend-ai-review-focus-600001-3"')
   })
 
-  it('无 rationale 与 focusPoints 时仅保留徽章', () => {
+  it('无 rationale 与 focusPoints 时若偏差 skipped 仍提示偏差未评', () => {
     const output = renderToStaticMarkup(createElement(AiTrendReviewBadge, {
       stockCode: '600002',
       review: review({ verdict: 'agree', source: 'model', rationale: '  ', focusPoints: [] }),
     }))
 
     expect(output).toContain('data-testid="trend-ai-review-badge-600002"')
-    expect(output).not.toContain('data-testid="trend-ai-review-explain-600002"')
+    expect(output).toContain('data-testid="trend-ai-score-unscored-600002"')
+    expect(output).toContain('偏差未评')
     expect(output).not.toContain('data-testid="trend-ai-review-rationale-600002"')
+    expect(output).not.toContain('data-testid="trend-ai-score-delta-600002"')
   })
 
   it('need_more_data 本地门槛与 AI 第二意见前缀可区分', () => {
@@ -96,5 +103,40 @@ describe('AiTrendReviewBadge 可见解释', () => {
     expect(output).toContain('事实已变化，请重新复核')
     expect(output).toContain('旧意见。')
     expect(output).toContain('旧关注点')
+  })
+
+  it('scored 时并排展示本地分与 AI 隐含分，skipped 不展示假分数', () => {
+    const scored = renderToStaticMarkup(createElement(AiTrendReviewBadge, {
+      stockCode: '600006',
+      review: review({
+        verdict: 'agree',
+        source: 'model',
+        rationale: '结构仍完整。',
+        aiScoreStatus: 'scored',
+        localScore: 59,
+        aiScoreDelta: -5,
+        impliedScore: 54,
+        aiScoreRationale: '量价背离证据偏弱。',
+      }),
+    }))
+    expect(scored).toContain('data-testid="trend-ai-score-delta-600006"')
+    expect(scored).toContain('本地 59 · AI 54（-5）')
+    expect(scored).toContain('模型意见')
+    expect(scored).toContain('量价背离证据偏弱。')
+    expect(scored).not.toContain('偏差未评')
+
+    const skipped = renderToStaticMarkup(createElement(AiTrendReviewBadge, {
+      stockCode: '600007',
+      review: review({
+        verdict: 'need_more_data',
+        source: 'gate',
+        rationale: '有效评分权重不足70%。',
+        aiScoreStatus: 'skipped',
+      }),
+    }))
+    expect(skipped).toContain('data-testid="trend-ai-score-unscored-600007"')
+    expect(skipped).toContain('偏差未评')
+    expect(skipped).not.toContain('data-testid="trend-ai-score-delta-600007"')
+    expect(skipped).not.toContain('本地 ')
   })
 })

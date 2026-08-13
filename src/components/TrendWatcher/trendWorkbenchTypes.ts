@@ -87,6 +87,11 @@ export interface TrendWorkbenchItem {
     factsHash: string
     createdAt: number
     source: 'gate' | 'model'
+    aiScoreStatus: 'scored' | 'skipped' | 'invalid'
+    aiScoreDelta: number | null
+    aiScoreRationale: string | null
+    impliedScore: number | null
+    localScore: number | null
   } | null
 }
 
