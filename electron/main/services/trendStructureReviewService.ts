@@ -17,13 +17,14 @@ import {
 import {
   hashTrendReviewFacts,
   normalizeTrendTsCode,
-  parseAiTrendReviewPayload,
+  parseAiTrendReviewBundle,
   stableStringify,
+  type AiScoreAssessment,
   type AiTrendReviewPayload,
   type TrendReviewFacts,
 } from './trendStructureReviewTypes'
 
-export { hashTrendReviewFacts, parseAiTrendReviewPayload }
+export { hashTrendReviewFacts, parseAiTrendReviewPayload } from './trendStructureReviewTypes'
 
 const MIN_VALID_WEIGHT = 0.7
 
@@ -97,20 +98,28 @@ export async function reviewStructure(
     || facts.validWeight < MIN_VALID_WEIGHT
     || facts.dataCoverage.state !== 'ready'
 
-  let payload: AiTrendReviewPayload
+  let structurePayload: AiTrendReviewPayload
+  let scoreAssessment: AiScoreAssessment
   let provider: string | null = null
   let model: string | null = null
   if (insufficient) {
-    payload = buildNeedMoreDataPayload(facts)
+    structurePayload = buildNeedMoreDataPayload(facts)
+    scoreAssessment = { status: 'skipped', localScore: facts.totalScore, scoreDelta: null, scoreRationale: null, impliedScore: null }
   } else {
     const callAI = dependencies.callAI ?? callWithFallback
     const aiResult = await callAI(db, { prompt: buildTrendReviewPrompt(facts) })
-    payload = parseAiTrendReviewPayload(aiResult.text)
+    const bundle = parseAiTrendReviewBundle(aiResult.text, facts.totalScore)
+    structurePayload = bundle.structure
+    scoreAssessment = bundle.scoreAssessment
     provider = aiResult.provider
     model = aiResult.model
   }
 
-  const rendered = renderTrendReview(payload, facts)
+  if (structurePayload.verdict === 'need_more_data') {
+    scoreAssessment = { status: 'skipped', localScore: facts.totalScore, scoreDelta: null, scoreRationale: null, impliedScore: null }
+  }
+
+  const rendered = renderTrendReview(structurePayload, scoreAssessment, facts)
   const audit = (dependencies.auditText ?? auditResearchText)({
     text: rendered,
     documentKind: 'discussion',
@@ -127,12 +136,15 @@ export async function reviewStructure(
     requestId: input.requestId,
     localTrendState: facts.trendState,
     localTotalScore: facts.totalScore,
-    verdict: payload.verdict,
-    rationale: payload.rationale,
-    focusPoints: payload.focusPoints,
+    verdict: structurePayload.verdict,
+    rationale: structurePayload.rationale,
+    focusPoints: structurePayload.focusPoints,
     provider,
     model,
     audit,
+    aiScoreStatus: scoreAssessment.status,
+    aiScoreDelta: scoreAssessment.status === 'scored' ? scoreAssessment.scoreDelta : null,
+    aiScoreRationale: scoreAssessment.status === 'scored' ? scoreAssessment.scoreRationale : null,
     now,
     forceNewRevision: Boolean(input.forceModelRefresh) && !insufficient,
   })
@@ -142,10 +154,13 @@ export async function reviewStructure(
 export function buildTrendReviewPrompt(facts: TrendReviewFacts): string {
   return [
     '你是本地投研应用中的趋势结构复核助手。',
-    '只能基于下列白名单事实判断趋势结构，不得补造事实。',
-    '只返回 JSON：{"verdict":"agree|possible_false_break|possible_false_hold|evidence_weak|need_more_data","rationale":"...","focusPoints":["..."]}。',
-    'rationale 不超过120字；focusPoints最多3条且每条不超过80字。',
-    '不得给出买入、卖出、目标价、止盈、止损、仓位或收益承诺。',
+    '只能基于下列白名单事实判断趋势结构并评估本地综合分的相对偏差，不得补造事实。',
+    '必须只返回一个 JSON bundle，不要 markdown 代码块以外的解释：',
+    '{"structure":{"verdict":"agree|possible_false_break|possible_false_hold|evidence_weak|need_more_data","rationale":"...","focusPoints":["..."]},"scoreAssessment":{"scoreDelta":<整数>,"scoreRationale":"..."}}。',
+    'structure.rationale 不超过120字；focusPoints 最多3条且每条不超过80字。',
+    `scoreAssessment.scoreDelta 是相对于本地综合分 ${facts.totalScore} 的整数偏差，必须在 [-15, +15] 闭区间内；不要输出绝对分。`,
+    'scoreAssessment.scoreRationale 不超过120字。',
+    '整体不得给出买入、卖出、目标价、止盈、止损、仓位、成本、收益承诺或交易指令。',
     `白名单事实：${stableStringify(facts)}`,
   ].join('\n')
 }
@@ -162,13 +177,17 @@ function buildNeedMoreDataPayload(facts: TrendReviewFacts): AiTrendReviewPayload
   }
 }
 
-function renderTrendReview(payload: AiTrendReviewPayload, facts: TrendReviewFacts): string {
+function renderTrendReview(payload: AiTrendReviewPayload, scoreAssessment: AiScoreAssessment, facts: TrendReviewFacts): string {
+  const scoreSummary = scoreAssessment.status === 'scored'
+    ? `AI 趋势分偏差：${scoreAssessment.scoreDelta}（本地 ${scoreAssessment.localScore} → AI ${scoreAssessment.impliedScore}）；理由：${scoreAssessment.scoreRationale}`
+    : `AI 趋势分偏差：${scoreAssessment.status}`
   return [
     `趋势结构复核：${payload.verdict}`,
     `证券：${facts.stockName}（${facts.tsCode}）`,
     `事实日：${facts.scoreDate}`,
     `理由：${payload.rationale}`,
     `关注点：${payload.focusPoints.join('；') || '无'}`,
+    scoreSummary,
   ].join('\n')
 }
 

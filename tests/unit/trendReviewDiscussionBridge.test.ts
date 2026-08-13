@@ -81,6 +81,12 @@ interface StoredTrendReviewSnapshot {
     verdict: string
     rationale: string
     focusPoints: string[]
+    scoreAssessment?: {
+      status: string
+      scoreDelta: number | null
+      scoreRationale: string | null
+      impliedScore: number | null
+    }
   }
 }
 
@@ -124,6 +130,12 @@ describe('趋势复核讨论桥接', () => {
         verdict: 'agree',
         rationale: '结构仍完整。',
         focusPoints: ['观察量价背离'],
+        scoreAssessment: {
+          status: 'skipped',
+          scoreDelta: null,
+          scoreRationale: null,
+          impliedScore: null,
+        },
       },
     })
     expect(storedSnapshot.trendReview.facts).not.toHaveProperty('costPrice')

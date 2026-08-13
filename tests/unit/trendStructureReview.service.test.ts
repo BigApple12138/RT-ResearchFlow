@@ -11,6 +11,7 @@ import {
   parseAiTrendReviewPayload,
   reviewStructure,
 } from '../../electron/main/services/trendStructureReviewService'
+import type { AiTrendReviewBundle } from '../../electron/main/services/trendStructureReviewTypes'
 
 function createAudit(status: ResearchTextAudit['status'] = 'passed'): ResearchTextAudit {
   return {
@@ -302,5 +303,124 @@ describe('趋势结构复核服务', () => {
     const replay = await reviewStructure(db, { requestId, tsCode: '600000.SH', forceModelRefresh: true }, dependencies)
     expect(replay.review.revisionId).toBe(first.review.revisionId)
     expect(callAI).toHaveBeenCalledTimes(1)
+  })
+
+  function bundleText(bundle: Partial<AiTrendReviewBundle> & { structure: AiTrendReviewBundle['structure'] }): string {
+    const score = bundle.scoreAssessment ?? null
+    return JSON.stringify({
+      structure: bundle.structure,
+      scoreAssessment: score,
+    })
+  }
+
+  it('AI 返回合法 bundle 时，结构成功且落库含 scored 偏差分与理由', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: bundleText({
+        structure: { verdict: 'agree', rationale: '结构仍完整。', focusPoints: ['关注量价背离'] },
+        scoreAssessment: { scoreDelta: -5, scoreRationale: '量价背离证据偏弱。' },
+      }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot({ totalScore: 78 }),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('agree')
+    expect(result.review.aiScoreStatus).toBe('scored')
+    expect(result.review.aiScoreDelta).toBe(-5)
+    expect(result.review.aiScoreRationale).toBe('量价背离证据偏弱。')
+  })
+
+  it('AI 返回旧扁平 JSON 时结构成功、偏差 skipped', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构仍完整。', focusPoints: [] }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('agree')
+    expect(result.review.aiScoreStatus).toBe('skipped')
+    expect(result.review.aiScoreDelta).toBeNull()
+    expect(result.review.aiScoreRationale).toBeNull()
+  })
+
+  it('数据不足路径：未调 AI，结构 need_more_data，偏差 skipped', async () => {
+    const callAI = vi.fn()
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot({
+        totalScore: null,
+        validWeight: 0.5,
+        dataCoverage: { bars: 20, requiredBars: 60, latestTradeDate: '20260808', state: 'partial' },
+      }),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('need_more_data')
+    expect(result.review.aiScoreStatus).toBe('skipped')
+    expect(callAI).not.toHaveBeenCalled()
+  })
+
+  it('模型返回 need_more_data 时偏差 skipped', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: bundleText({
+        structure: { verdict: 'need_more_data', rationale: '部分维度缺失。', focusPoints: ['补齐日线'] },
+        scoreAssessment: { scoreDelta: 3, scoreRationale: '不应被采用。' },
+      }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('need_more_data')
+    expect(result.review.aiScoreStatus).toBe('skipped')
+  })
+
+  it('delta 越界时 aiScoreStatus 为 invalid 且不把假分当 scored', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: bundleText({
+        structure: { verdict: 'agree', rationale: '结构仍完整。', focusPoints: [] },
+        scoreAssessment: { scoreDelta: 16, scoreRationale: '偏高。' },
+      }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('agree')
+    expect(result.review.aiScoreStatus).toBe('invalid')
+    expect(result.review.aiScoreDelta).toBeNull()
+    expect(result.review.aiScoreRationale).toBeNull()
   })
 })

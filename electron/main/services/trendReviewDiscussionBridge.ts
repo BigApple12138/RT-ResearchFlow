@@ -13,7 +13,7 @@ import {
   buildTrendReviewFacts,
   hashTrendReviewFacts,
 } from './trendStructureReviewService'
-import { normalizeTrendTsCode } from './trendStructureReviewTypes'
+import { deriveImpliedScore, normalizeTrendTsCode } from './trendStructureReviewTypes'
 import type { TrendWorkbenchSnapshot } from './trendWorkbenchService'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -90,6 +90,16 @@ export function startTrendReviewDiscussion(
       rationale: review.rationale,
       focusPoints: [...review.focusPoints],
       factsHash: currentFactsHash,
+      scoreAssessment: {
+        status: review.aiScoreStatus,
+        scoreDelta: review.aiScoreDelta,
+        scoreRationale: review.aiScoreRationale,
+        impliedScore: review.aiScoreStatus === 'scored'
+          && review.localTotalScore != null
+          && review.aiScoreDelta != null
+          ? deriveImpliedScore(review.localTotalScore, review.aiScoreDelta)
+          : null,
+      },
     },
   }
   const startDiscussion = dependencies.startDiscussion ?? startResearchDiscussionFromResolvedOrigin
