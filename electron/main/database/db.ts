@@ -5178,6 +5178,27 @@ const MIGRATIONS: DatabaseMigration[] = [
       CREATE INDEX idx_ai_discussion_research_flushes_session
         ON ai_discussion_research_flushes(session_id, created_at DESC);
     `
+  },
+  {
+    // 趋势结构复核增加 AI 锚定偏差分（spec 2026-08-13）
+    version: 155,
+    sql: `
+      ALTER TABLE trend_structure_review_revisions
+        ADD COLUMN ai_score_status TEXT NOT NULL DEFAULT 'skipped'
+        CHECK (ai_score_status IN ('scored', 'skipped', 'invalid'));
+      ALTER TABLE trend_structure_review_revisions
+        ADD COLUMN ai_score_delta INTEGER DEFAULT NULL;
+      ALTER TABLE trend_structure_review_revisions
+        ADD COLUMN ai_score_rationale TEXT DEFAULT NULL;
+
+      ALTER TABLE trend_structure_reviews
+        ADD COLUMN ai_score_status TEXT NOT NULL DEFAULT 'skipped'
+        CHECK (ai_score_status IN ('scored', 'skipped', 'invalid'));
+      ALTER TABLE trend_structure_reviews
+        ADD COLUMN ai_score_delta INTEGER DEFAULT NULL;
+      ALTER TABLE trend_structure_reviews
+        ADD COLUMN ai_score_rationale TEXT DEFAULT NULL;
+    `
   }
 ]
 

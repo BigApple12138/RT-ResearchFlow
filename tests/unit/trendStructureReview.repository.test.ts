@@ -244,6 +244,132 @@ describe('趋势结构复核 Repository', () => {
     }))
   })
 
+  it('保存 scored 结果带 AI 偏差分与理由，读回字段一致', () => {
+    const saved = saveTrendStructureReview(db, {
+      tsCode: '600000.SH',
+      scoreDate: '20260808',
+      factsHash: 'a'.repeat(64),
+      requestId: randomUUID(),
+      localTrendState: 'strong' as const,
+      localTotalScore: 78,
+      verdict: 'agree' as const,
+      rationale: '结构完整。',
+      focusPoints: [],
+      provider: 'qwen',
+      model: 'test-model',
+      audit: { status: 'passed' },
+      aiScoreStatus: 'scored' as const,
+      aiScoreDelta: -5,
+      aiScoreRationale: 'AI 评分 73，较本地 78 低 5 分，因量价背离证据偏弱。',
+      now: 1_000,
+    })
+
+    expect(saved).toMatchObject({
+      aiScoreStatus: 'scored',
+      aiScoreDelta: -5,
+      aiScoreRationale: 'AI 评分 73，较本地 78 低 5 分，因量价背离证据偏弱。',
+    })
+    expect(getTrendStructureReviewByCodeDate(db, '600000.SH', '20260808')).toMatchObject({
+      aiScoreStatus: 'scored',
+      aiScoreDelta: -5,
+      aiScoreRationale: 'AI 评分 73，较本地 78 低 5 分，因量价背离证据偏弱。',
+    })
+    expect(db.prepare(`
+      SELECT ai_score_status, ai_score_delta, ai_score_rationale
+      FROM trend_structure_review_revisions WHERE id = ?
+    `).get(saved.revisionId)).toEqual({
+      ai_score_status: 'scored',
+      ai_score_delta: -5,
+      ai_score_rationale: 'AI 评分 73，较本地 78 低 5 分，因量价背离证据偏弱。',
+    })
+    expect(db.prepare(`
+      SELECT ai_score_status, ai_score_delta, ai_score_rationale
+      FROM trend_structure_reviews WHERE ts_code = '600000.SH' AND score_trade_date = '20260808'
+    `).get()).toEqual({
+      ai_score_status: 'scored',
+      ai_score_delta: -5,
+      ai_score_rationale: 'AI 评分 73，较本地 78 低 5 分，因量价背离证据偏弱。',
+    })
+  })
+
+  it('默认 skipped 时偏差分与理由落库为空，读回为 null', () => {
+    const saved = saveTrendStructureReview(db, {
+      tsCode: '600000.SH',
+      scoreDate: '20260808',
+      factsHash: 'a'.repeat(64),
+      requestId: randomUUID(),
+      localTrendState: 'strong' as const,
+      localTotalScore: 78,
+      verdict: 'agree' as const,
+      rationale: '结构完整。',
+      focusPoints: [],
+      provider: 'qwen',
+      model: 'test-model',
+      audit: { status: 'passed' },
+      aiScoreStatus: 'skipped' as const,
+      aiScoreDelta: -5,
+      aiScoreRationale: 'skipped 时即使误传也必须清空。',
+      now: 1_000,
+    })
+
+    expect(saved).toMatchObject({
+      aiScoreStatus: 'skipped',
+      aiScoreDelta: null,
+      aiScoreRationale: null,
+    })
+    expect(getTrendStructureReviewByCodeDate(db, '600000.SH', '20260808')).toMatchObject({
+      aiScoreStatus: 'skipped',
+      aiScoreDelta: null,
+      aiScoreRationale: null,
+    })
+    expect(db.prepare(`
+      SELECT ai_score_status, ai_score_delta, ai_score_rationale
+      FROM trend_structure_review_revisions WHERE id = ?
+    `).get(saved.revisionId)).toEqual({
+      ai_score_status: 'skipped',
+      ai_score_delta: null,
+      ai_score_rationale: null,
+    })
+  })
+
+  it('migration 155 为 revisions 与 projection 追加 AI 偏差列并保留既有数据', () => {
+    const upgradeDb = new Database(':memory:')
+    try {
+      runMigrations(upgradeDb, DATABASE_MIGRATIONS.filter((migration) => migration.version <= 154))
+      const revisionId = randomUUID()
+      upgradeDb.prepare(`
+        INSERT INTO trend_structure_review_revisions (
+          id, ts_code, score_trade_date, facts_hash, request_id, local_trend_state,
+          local_total_score, ai_verdict, rationale, focus_points_json, provider,
+          model, audit_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        revisionId, '600000.SH', '20260808', 'f'.repeat(64), randomUUID(), 'strong',
+        78, 'agree', '迁移前。', '[]', 'qwen', 'm', '{}', 1_000,
+      )
+
+      runMigrations(upgradeDb)
+
+      expect(upgradeDb.prepare(`
+        SELECT ai_score_status, ai_score_delta, ai_score_rationale
+        FROM trend_structure_review_revisions WHERE id = ?
+      `).get(revisionId)).toEqual({
+        ai_score_status: 'skipped',
+        ai_score_delta: null,
+        ai_score_rationale: null,
+      })
+      const projectionColumns = (upgradeDb.prepare(`PRAGMA table_info(trend_structure_reviews)`).all() as { name: string }[])
+        .map((column) => column.name)
+      expect(projectionColumns).toEqual(expect.arrayContaining([
+        'ai_score_status',
+        'ai_score_delta',
+        'ai_score_rationale',
+      ]))
+    } finally {
+      upgradeDb.close()
+    }
+  })
+
   it('migration 147 去掉 code-date-hash UNIQUE 且保留既有 revision', () => {
     const upgradeDb = new Database(':memory:')
     try {

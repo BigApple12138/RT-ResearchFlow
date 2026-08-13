@@ -8,6 +8,8 @@ import type {
 
 export type TrendStructureReviewVerdict = TrendStructureReviewRevisionRow['ai_verdict']
 
+export type AiScoreAssessmentStatus = 'scored' | 'skipped' | 'invalid'
+
 export interface SaveTrendStructureReviewInput {
   tsCode: string
   scoreDate: string
@@ -24,6 +26,9 @@ export interface SaveTrendStructureReviewInput {
   now?: number
   /** When true, skip same-facts bind and INSERT a new revision (force model refresh path). */
   forceNewRevision?: boolean
+  aiScoreStatus?: AiScoreAssessmentStatus
+  aiScoreDelta?: number | null
+  aiScoreRationale?: string | null
 }
 
 export type UpsertTrendStructureReviewInput = SaveTrendStructureReviewInput
@@ -44,14 +49,33 @@ export interface TrendStructureReview {
   audit: unknown
   createdAt: number
   updatedAt: number
+  aiScoreStatus: AiScoreAssessmentStatus
+  aiScoreDelta: number | null
+  aiScoreRationale: string | null
 }
 
 function parseJson<T>(value: string): T {
   return JSON.parse(value) as T
 }
 
+function normalizeAiScoreStatus(status: string | undefined): AiScoreAssessmentStatus {
+  if (status === 'scored' || status === 'invalid') return status
+  return 'skipped'
+}
+
+function normalizeAiScoreDelta(status: AiScoreAssessmentStatus, delta: number | null | undefined): number | null {
+  if (status !== 'scored') return null
+  return delta ?? null
+}
+
+function normalizeAiScoreRationale(status: AiScoreAssessmentStatus, rationale: string | null | undefined): string | null {
+  if (status !== 'scored') return null
+  return rationale ?? null
+}
+
 function mapRevision(row: TrendStructureReviewRevisionRow | undefined, updatedAt = row?.created_at): TrendStructureReview | null {
   if (!row) return null
+  const status = normalizeAiScoreStatus(row.ai_score_status)
   return {
     revisionId: row.id,
     tsCode: row.ts_code,
@@ -68,11 +92,15 @@ function mapRevision(row: TrendStructureReviewRevisionRow | undefined, updatedAt
     audit: parseJson<unknown>(row.audit_json),
     createdAt: row.created_at,
     updatedAt: updatedAt ?? row.created_at,
+    aiScoreStatus: status,
+    aiScoreDelta: normalizeAiScoreDelta(status, row.ai_score_delta),
+    aiScoreRationale: normalizeAiScoreRationale(status, row.ai_score_rationale),
   }
 }
 
 function mapProjection(row: TrendStructureReviewRow | undefined): TrendStructureReview | null {
   if (!row) return null
+  const status = normalizeAiScoreStatus(row.ai_score_status)
   return {
     revisionId: row.revision_id,
     tsCode: row.ts_code,
@@ -89,6 +117,9 @@ function mapProjection(row: TrendStructureReviewRow | undefined): TrendStructure
     audit: parseJson<unknown>(row.audit_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    aiScoreStatus: status,
+    aiScoreDelta: normalizeAiScoreDelta(status, row.ai_score_delta),
+    aiScoreRationale: normalizeAiScoreRationale(status, row.ai_score_rationale),
   }
 }
 
@@ -270,12 +301,15 @@ export function saveTrendStructureReview(
 
   const now = input.now ?? Date.now()
   const revisionId = randomUUID()
+  const aiScoreStatus = normalizeAiScoreStatus(input.aiScoreStatus)
+  const aiScoreDelta = normalizeAiScoreDelta(aiScoreStatus, input.aiScoreDelta)
+  const aiScoreRationale = normalizeAiScoreRationale(aiScoreStatus, input.aiScoreRationale)
   const insertRevision = db.prepare(`
     INSERT INTO trend_structure_review_revisions (
       id, ts_code, score_trade_date, facts_hash, request_id, local_trend_state,
       local_total_score, ai_verdict, rationale, focus_points_json, provider,
-      model, audit_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      model, audit_json, created_at, ai_score_status, ai_score_delta, ai_score_rationale
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const insertRequest = db.prepare(`
     INSERT INTO trend_structure_review_requests (
@@ -286,8 +320,9 @@ export function saveTrendStructureReview(
     INSERT INTO trend_structure_reviews (
       ts_code, score_trade_date, revision_id, facts_hash, request_id,
       local_trend_state, local_total_score, ai_verdict, rationale,
-      focus_points_json, provider, model, audit_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      focus_points_json, provider, model, audit_json, created_at, updated_at,
+      ai_score_status, ai_score_delta, ai_score_rationale
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(ts_code, score_trade_date) DO UPDATE SET
       revision_id = excluded.revision_id,
       facts_hash = excluded.facts_hash,
@@ -301,7 +336,10 @@ export function saveTrendStructureReview(
       model = excluded.model,
       audit_json = excluded.audit_json,
       created_at = excluded.created_at,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      ai_score_status = excluded.ai_score_status,
+      ai_score_delta = excluded.ai_score_delta,
+      ai_score_rationale = excluded.ai_score_rationale
   `)
   const write = db.transaction(() => {
     insertRevision.run(
@@ -319,6 +357,9 @@ export function saveTrendStructureReview(
       input.model,
       JSON.stringify(input.audit),
       now,
+      aiScoreStatus,
+      aiScoreDelta,
+      aiScoreRationale,
     )
     insertRequest.run(
       input.requestId,
@@ -344,6 +385,9 @@ export function saveTrendStructureReview(
       JSON.stringify(input.audit),
       now,
       now,
+      aiScoreStatus,
+      aiScoreDelta,
+      aiScoreRationale,
     )
   })
   try {

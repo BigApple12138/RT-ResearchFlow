@@ -1292,6 +1292,9 @@ export interface TrendStructureReviewRow {
   audit_json: string
   created_at: number
   updated_at: number
+  ai_score_status: 'scored' | 'skipped' | 'invalid'
+  ai_score_delta: number | null
+  ai_score_rationale: string | null
 }
 
 export interface TrendStructureReviewRevisionRow {
@@ -1309,6 +1312,9 @@ export interface TrendStructureReviewRevisionRow {
   model: string | null
   audit_json: string
   created_at: number
+  ai_score_status: 'scored' | 'skipped' | 'invalid'
+  ai_score_delta: number | null
+  ai_score_rationale: string | null
 }
 
 export interface TrendStructureReviewRequestRow {
