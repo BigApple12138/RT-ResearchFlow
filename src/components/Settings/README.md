@@ -6,7 +6,7 @@
 
 
 
-`Settings` 组件负责应用级偏好设置展示与修改, 包括扫描频率、数据保留、启动补漏、资讯分组、扫描后 AI 分析、行业动量窗口、今日看板系统通知、详情缓存管理、盘前采集与产业链等。**允许 Agent 联网**、**本机研究访问**、**外部 MCP 客户端**已迁至配置中心 **Agent** 页签（`AgentSettings.tsx`）。
+`Settings` 组件负责应用级偏好设置展示与修改, 包括扫描频率、数据保留、启动补漏、资讯分组、扫描后 AI 分析、行业动量窗口、今日看板系统通知、详情缓存管理、盘前采集、数据存储（自定义数据目录）与产业链等。**允许 Agent 联网**、**本机研究访问**、**外部 MCP 客户端**已迁至配置中心 **Agent** 页签（`AgentSettings.tsx`）。
 
 
 
@@ -38,6 +38,17 @@
 
 
 
+### 数据存储（`DataRootSettings.tsx`，FR-265）
+
+展示当前数据目录与来源（默认 / 自定义 / 环境变量），支持更改目录与恢复默认，重启生效。设计见 `docs/superpowers/specs/2026-08-13-custom-data-directory-design.md`：
+
+1. **引导配置**：数据目录位置存于固定位置的 `data-root.json`（平台默认 userData），先于数据库存在；优先级 `RT_DATA_ROOT` 环境变量 > 引导文件 > 模式默认。
+2. **智能切换**：目标已有应用数据直接复用；空目录带 SHA 校验复制迁移（复制源优先取引导文件记录的上一数据根，支持连续切换）；含未知文件拒绝（`DATA_DIRECTORY_CONFLICT`）。
+3. **两段化启动**：无需复制时模块顶层直接生效；需复制时 `app.whenReady()` 后先显示迁移进度小窗再同步复制，复制成功后自动重启使新根生效（迁移进程的 userData 指向临时 profile，避免 Chromium 污染目标目录），失败弹致命错误窗且原数据不动。
+4. **窄 IPC**：`dataRoot:getStatus` / `dataRoot:selectDirectory` / `dataRoot:setCustomRoot` / `dataRoot:clearOverride`，渲染层不接触任何文件系统操作。env 来源时设置页只读提示且拒绝恢复默认（`DATA_ROOT_ENV_LOCKED`）。
+
+
+
 ## 主要 props/state/事件流
 
 
@@ -58,7 +69,9 @@
 
   - `ResearchAccessSettings` 自主管理端点状态、配置创建权限、一次性凭据、操作确认和审计反馈。
 
-- 事件流：用户点击按钮或输入框失焦 -> `updateSettings` / `cache.clear` / `externalMcp.*` / `researchAccess.*` -> 主进程更新 SQLite -> 前端刷新展示。
+  - `DataRootSettings` 自主管理数据目录状态、待确认目标、写入中/重启提示与错误文案。
+
+- 事件流：用户点击按钮或输入框失焦 -> `updateSettings` / `cache.clear` / `externalMcp.*` / `researchAccess.*` / `dataRoot.*` -> 主进程更新 SQLite 或引导配置 -> 前端刷新展示。
 
 
 
@@ -73,5 +86,7 @@
 - Electron 开发模式下是否展示 Windows 通知受系统通知权限、专注助手和 AppUserModelId 影响；打包后更稳定。
 
 - 外部 MCP stdio 禁止 shell 拼接；args 以字符串数组传给 `spawn`。M1 起 enabled 服务器的 tools 投影进 Agent ToolRegistry（命名见上）；M2 起深度研究可通过 `mcp.invoke` 调用已启用服务器工具，结果可追溯且不过证据门禁 complete。
+
+- 数据目录更改仅写引导文件，重启时执行；迁移复制排除瞬态文件（`Singleton*`、`LOCK`），凭据（`session/Local State`）随数据根整体复制。引导文件损坏时启动退回默认目录并 warn，不崩溃。
 
 

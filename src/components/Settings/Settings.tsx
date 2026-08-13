@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/appStore'
 import type { AppSettingsRow } from '../../../electron/main/database/types'
 import { SupplyChainSettingsPanel } from '../SupplyChain/SupplyChainSettingsPanel'
 import { PremarketCaptureSettings } from './PremarketCaptureSettings'
+import { DataRootSettings } from './DataRootSettings'
 
 const INTERVALS: { value: AppSettingsRow['scanIntervalMinutes']; label: string }[] = [
   { value: 5, label: '5 分钟' },
@@ -276,6 +277,8 @@ export function Settings() {
       </section>
 
       <PremarketCaptureSettings />
+
+      <DataRootSettings />
 
       {/* Cache management */}
       <section className="mb-6 border-t border-gray-100 dark:border-gray-700 pt-6">

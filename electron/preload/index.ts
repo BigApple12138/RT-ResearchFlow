@@ -53,6 +53,11 @@ import type {
   ExternalMcpTestResponse,
 } from '../main/ipc/externalMcpHandlers'
 import type {
+  DataRootActionResponse,
+  DataRootSelectResponse,
+  DataRootStatusResponse,
+} from '../main/ipc/dataRootHandlers'
+import type {
   ResearchAgentDetailResponse,
   ResearchAgentDeleteResponse,
   ResearchAgentListResponse,
@@ -1613,6 +1618,17 @@ const api = {
   },
   app: {
     relaunch: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),
+  },
+
+  // ── Data root (自定义数据目录) ─────────────────────
+  dataRoot: {
+    getStatus: () => ipcRenderer.invoke('dataRoot:getStatus') as Promise<DataRootStatusResponse>,
+    selectDirectory: () =>
+      ipcRenderer.invoke('dataRoot:selectDirectory') as Promise<DataRootSelectResponse>,
+    setCustomRoot: (path: string) =>
+      ipcRenderer.invoke('dataRoot:setCustomRoot', path) as Promise<DataRootActionResponse>,
+    clearOverride: () =>
+      ipcRenderer.invoke('dataRoot:clearOverride') as Promise<DataRootActionResponse>,
   },
 
   // ── Briefings ──────────────────────────────────────────

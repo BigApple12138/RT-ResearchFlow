@@ -39,6 +39,7 @@ import { registerResearchAccessHandlers } from './ipc/researchAccessHandlers'
 import { registerExternalMcpHandlers } from './ipc/externalMcpHandlers'
 import { registerResearchAgentHandlers } from './ipc/researchAgentHandlers'
 import { registerPremarketHandlers } from './ipc/premarketHandlers'
+import { registerDataRootHandlers } from './ipc/dataRootHandlers'
 import {
   startResearchAccessTransport,
   stopResearchAccessTransport,
@@ -62,9 +63,12 @@ import {
 } from './services/catchUpService'
 import {
   applicationDataPathErrorMessage,
+  applyDeferredDataRootMigration,
   configureApplicationDataPaths,
+  hasPendingDataRootMigration,
 } from './services/applicationDataPathService'
 import { showFatalErrorWindow } from './fatalErrorWindow'
+import { showDataMigrationProgressWindow } from './dataMigrationWindow'
 import {
   isAllowedApplicationNavigation,
   normalizeExternalHttpUrl,
@@ -221,6 +225,35 @@ function createWindow(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  // 0a. 自定义数据目录的延迟迁移：先展示进度小窗再同步复制，失败不破坏原数据。
+  if (hasPendingDataRootMigration()) {
+    const progressWindow = showDataMigrationProgressWindow()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    try {
+      const migration = applyDeferredDataRootMigration()
+      console.log(
+        `[AppData] Custom data root migration finished: migrated=${migration.migrated} reused=${migration.reusedExisting}`,
+      )
+    } catch (error) {
+      progressWindow.destroy()
+      console.error('[AppData] Data root migration failed:', error)
+      showFatalErrorWindow({
+        title: '数据目录迁移失败',
+        message: '复制数据到新目录时失败，原目录数据保持不变。请检查目标磁盘空间与写入权限后重新启动。',
+        details: applicationDataPathErrorMessage(error),
+      })
+      return
+    }
+    progressWindow.destroy()
+    // Chromium profile 已初始化在旧根（临时 profile），无法在进程内切换 userData：
+    // 复制成功后自动重启使新数据根生效。
+    // 测试模式下只退出不自动拉起新进程，避免 E2E 失去对重启后进程的控制。
+    console.log('[AppData] Restarting to activate the new data root...')
+    if (process.env['NODE_ENV'] !== 'test') app.relaunch()
+    app.exit(0)
+    return
+  }
+
   // 0. Hide the native menu bar. Global notices live in the in-app message center.
   Menu.setApplicationMenu(null)
 
@@ -301,6 +334,7 @@ async function bootstrap(): Promise<void> {
   registerExternalMcpHandlers()
   registerResearchAgentHandlers(() => mainWindow)
   registerPremarketHandlers()
+  registerDataRootHandlers(() => mainWindow)
 
   // 3. Wire scan engine events to renderer push events
   setEventHandlers({
