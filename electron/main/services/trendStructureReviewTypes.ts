@@ -102,7 +102,7 @@ export function buildTrendReviewFactsFromItem(item: TrendWorkbenchItem, now = Da
     stockName: item.stockName,
     scoreDate,
     scoreSource: item.scoreSource ?? 'eod',
-    scoreVersion: item.scoreVersion ?? 'legacy',
+    scoreVersion: item.scoreVersion ?? 'v2',
     trendState: item.trendState,
     totalScore: item.totalScore,
     scoreDelta5d: item.scoreDelta5d,

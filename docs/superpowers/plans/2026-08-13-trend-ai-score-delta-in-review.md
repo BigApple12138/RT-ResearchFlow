@@ -8,7 +8,7 @@
 
 **Tech Stack:** Electron 主进程、better-sqlite3 向前 Migration、既有 `callWithFallback` / 研究文本审计、React TrendWatcher、Vitest。
 
-**状态：** 起草（待用户批准 design + 本 plan 后执行）  
+**状态：** 已完成（实现已落地，检核如下；待用户确认）  
 **Spec（设计初衷）：** [`../specs/2026-08-13-trend-ai-score-delta-in-review-design.md`](../specs/2026-08-13-trend-ai-score-delta-in-review-design.md)  
 **归档：** 本 plan 必须保留在 `docs/superpowers/plans/`；执行完毕后填写文末「设计初衷检核」。约定见 [`../README.md`](../README.md)。
 
@@ -148,12 +148,12 @@
 
 | Spec 验收项 | 结果 | 说明 |
 |---|---|---|
-| 一次显式复核产出结构 + 偏差（或 skipped） | 未做 | |
-| 事实包带全 §5 并进 factsHash | 未做 | |
-| 不覆盖本地分/状态 | 未做 | |
-| delta 越界/违规不展示为 scored | 未做 | |
-| 事实变更 stale | 未做 | |
-| 单测 + README | 未做 | |
+| 一次显式复核产出结构 + 偏差（或 skipped） | 符合 | `reviewStructure` 落库 verdict + aiScore*；不足/need_more_data/越界分流 |
+| 事实包带全 §5 并进 factsHash | 符合 | `TrendReviewFacts` 扩包；EOD builder + FromItem 同步 |
+| 不覆盖本地分/状态 | 符合 | 仅读写本地 totalScore/trendState，不写 trend_scores |
+| delta 越界/违规不展示为 scored | 符合 | status=invalid；徽章不显示假分数 |
+| 事实变更 stale | 符合 | 既有 scoreDate/factsHash stale 逻辑保留；扩包会自然过期旧复核 |
+| 单测 + README | 符合 | repository/scoreDelta/service/bridge/badge 47 测通过；TrendWatcher README 已更新 |
 
-**检核结论：** 待执行  
-**检核日期：**
+**检核结论：** 符合设计初衷；未做 e2e 增量（既有 trend-ai-review e2e 未扩徽章断言，可作后续加固）。  
+**检核日期：** 2026-08-13

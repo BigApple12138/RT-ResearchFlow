@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 2,
+  "summary": {
+    "evidenceMode": "session-limited",
+    "evidenceBoundary": {
+      "manifest": {
+        "schemaVersion": 2,
+        "sourceFingerprint": "2dc64829c1ca1f6c",
+        "adapterVersion": "qoder-task-loop-source-v2",
+        "platform": "qoder",
+        "selection": {
+          "strategy": "all-eligible",
+          "eligibleCount": 0,
+          "analyzedCount": 0,
+          "confidence": "Low"
+        }
+      },
+      "episodeCoverage": {
+        "episodeCount": 0,
+        "editedEpisodeCount": 0,
+        "closedEpisodeCount": 0,
+        "recoveredEpisodeCount": 0
+      },
+      "deliveryEvidenceLevels": [],
+      "sourceGaps": []
+    },
+    "semanticFacets": {
+      "schemaVersion": 1,
+      "status": "supplementary",
+      "entries": [
+        {
+          "id": "session-insight:source-coverage",
+          "kind": "redacted-summary",
+          "episodeRef": null,
+          "status": "candidate",
+          "labels": [
+            "source-coverage",
+            "Low"
+          ],
+          "summary": "Analyzed 0 of 0 sessions; 0/6 enabled source roots exist. Use this as the current workspace evidence boundary for final insight cards.",
+          "evidenceRefs": [],
+          "modelVersion": "session-insights-v1"
+        },
+        {
+          "id": "session-insight:validation-behavior",
+          "kind": "redacted-summary",
+          "episodeRef": null,
+          "status": "candidate",
+          "labels": [
+            "validation-behavior",
+            "Low"
+          ],
+          "summary": "No validation command category was observed in the analyzed session sample. Inspect more sessions or add explicit validation guidance before claiming validation-after-edit behavior.",
+          "evidenceRefs": [],
+          "modelVersion": "session-insights-v1"
+        },
+        {
+          "id": "session-insight:post-edit-validation",
+          "kind": "rework-correction",
+          "episodeRef": null,
+          "status": "candidate",
+          "labels": [
+            "post-edit-validation",
+            "Low"
+          ],
+          "summary": "No edit event was observed in the analyzed sample. Inspect more sessions before making claims about edit or validation habits.",
+          "evidenceRefs": [],
+          "modelVersion": "session-insights-v1"
+        },
+        {
+          "id": "session-insight:execution-friction",
+          "kind": "friction-taxonomy",
+          "episodeRef": null,
+          "status": "candidate",
+          "labels": [
+            "execution-friction",
+            "Low"
+          ],
+          "summary": "No strong execution friction signal in the analyzed sample. Keep friction claims narrow unless additional failed commands, rejected actions, or warnings are inspected.",
+          "evidenceRefs": [],
+          "modelVersion": "session-insights-v1"
+        }
+      ]
+    },
+    "learningCapture": {
+      "schemaVersion": 1,
+      "state": "N/A",
+      "summary": "暂不适用——需要两个可比的观察窗口和一次改进对比。",
+      "interventions": []
+    },
+    "aiAgentPractice": {
+      "inspectedSurfaces": [
+        "Rules"
+      ],
+      "coverageRows": [
+        {
+          "surface": "Rules",
+          "scopes": [
+            "Project"
+          ],
+          "count": 1,
+          "paths": [
+            "AGENTS.md"
+          ]
+        },
+        {
+          "surface": "Skills",
+          "scopes": [
+            "Global"
+          ],
+          "count": 54,
+          "paths": [
+            "~/.agents/skills/1password-1.0.1/SKILL.md",
+            "~/.agents/skills/a-stock-analysis-1.0.0/SKILL.md",
+            "~/.agents/skills/agent-self-reflection-1.0.0/SKILL.md",
+            "~/.agents/skills/aminer-open-academic-1.0.5/SKILL.md",
+            "~/.agents/skills/architecture-designer-0.1.0/SKILL.md",
+            "~/.agents/skills/autoglm-browser-agent/SKILL.md",
+            "~/.agents/skills/autoglm-deepresearch/SKILL.md",
+            "~/.agents/skills/autoglm-generate-image/SKILL.md",
+            "~/.agents/skills/autoglm-open-link/SKILL.md",
+            "~/.agents/skills/autoglm-search-image/SKILL.md",
+            "~/.agents/skills/autoglm-websearch/SKILL.md",
+            "~/.agents/skills/automation-workflows-0.1.0/SKILL.md"
+          ]
+        },
+        {
+          "surface": "Workflows",
+          "scopes": [
+            "Project"
+          ],
+          "count": 2,
+          "paths": [
+            ".github/workflows/release.yml",
+            ".github/workflows/verify.yml"
+          ]
+        },
+        {
+          "surface": "Hooks",
+          "scopes": [
+            "Project"
+          ],
+          "count": 0
+        },
+        {
+          "surface": "Commands",
+          "scopes": [
+            "Project"
+          ],
+          "count": 0
+        },
+        {
+          "surface": "Custom Agents",
+          "scopes": [
+            "Project"
+          ],
+          "count": 0
+        },
+        {
+          "surface": "MCP",
+          "scopes": [
+            "Project"
+          ],
+          "count": 0
+        },
+        {
+          "surface": "Memories",
+          "scopes": [
+            "Project"
+          ],
+          "count": 0
+        },
+        {
+          "surface": "Plugins",
+          "scopes": [
+            "Plugin"
+          ],
+          "count": 0
+        }
+      ],
+      "repositorySourceRows": [
+        {
+          "surface": "Rules",
+          "provider": "cursor",
+          "owner": ".cursor",
+          "count": 1,
+          "paths": [
+            ".cursor/rules/superpowers-workflow.mdc"
+          ]
+        }
+      ],
+      "memoryDetails": {
+        "contentPolicy": "metadata-only",
+        "scanState": "scanned-empty",
+        "scopeCounts": [],
+        "integrity": {
+          "status": "reviewed",
+          "titleCount": 0,
+          "reviewedTitleCount": 0,
+          "truncated": false,
+          "exactCollisionGroups": 0,
+          "similarityCandidates": 0
+        }
+      }
+    },
+    "projectName": "RT-ResearchFlow",
+    "locale": "zh-CN",
+    "modelId": "agent-work-loop-v4",
+    "reportContractVersion": 26,
+    "overview": "项目具备完整的验证流水线和结构化 SDD 流程，但 Agent 指令覆盖对于 589 个源文件的规模严重不足，大型模块缺少嵌套指引，增加了 Agent 偏离模块约定进行修改的风险。",
+    "dimensions": [
+      {
+        "id": "task-understanding",
+        "label": "任务理解",
+        "score": 60,
+        "summary": "根级 AGENTS.md 和组件 README 提供了基础上下文，但 589 个源文件仅有 1 份指令文件，大型模块缺少嵌套指引。",
+        "findingRefs": [
+          "thin-agent-instruction-coverage"
+        ]
+      },
+      {
+        "id": "controlled-execution",
+        "label": "可控执行",
+        "score": 60,
+        "summary": "pnpm dev / verify 等启动和验证命令可见，但指令覆盖不足以引导 Agent 在模块级别做出正确决策。",
+        "findingRefs": [
+          "thin-agent-instruction-coverage"
+        ]
+      },
+      {
+        "id": "change-validation",
+        "label": "改动验证",
+        "score": 70,
+        "summary": "verify 脚本涵盖 typecheck、lint、单测和构建，CI 工作流覆盖验证和发布，342 个测试文件提供较好覆盖。",
+        "findingRefs": []
+      },
+      {
+        "id": "reliable-delivery",
+        "label": "可靠交付",
+        "score": 48,
+        "summary": "CI 工作流存在但无会话证据支持交付验收判断，发布流程仅从静态配置可见。",
+        "findingRefs": []
+      },
+      {
+        "id": "learning-capture",
+        "label": "经验沉淀",
+        "score": 35,
+        "summary": "无会话数据可供观察，无法评估学习闭环或重复工作检测。",
+        "findingRefs": []
+      }
+    ],
+    "assignmentSummaries": []
+  },
+  "findings": [
+    {
+      "id": "thin-agent-instruction-coverage",
+      "title": "Agent 指令覆盖不足以匹配项目源码规模",
+      "severity": "Medium",
+      "reason": "项目有 589 个源文件分布在 electron/main（344 文件）和 src/components（216 文件）等大型模块中，但仅有 1 份根级 AGENTS.md。每个源文件对应 589 份指令的比率远低于建议的最低 3 份。Agent 修改 electron/main 下的 IPC、数据库迁移或 AI 服务时，缺少模块级架构上下文、约定和边界指引，增加了偏离项目 SDD 流程或模块约定的风险。原因链：项目规模增长 → 根级指令无法覆盖模块特异性 → Agent 缺乏局部上下文 → 修改可能违反架构约定。证据边界：projectHarness.agentInstructions.status=thin，sourceFilesPerInstruction=589，nestedSourceFileCoveragePercent=0。置信度：中等（基于静态项目结构，无会话行为证据）。",
+      "dimensionRefs": [
+        "task-understanding",
+        "controlled-execution"
+      ],
+      "aiFixPrompt": "/better-harness fix this issue\n\n为 electron/main 和 src/components 两个最大模块新增嵌套 AGENTS.md，提供模块级架构上下文和修改约定。\n\n## 验证\n\n- 确认新增的 AGENTS.md 文件覆盖了项目建议的最小指令数量\n- 确认根级 AGENTS.md 中引用的模块约定在嵌套文件中有具体说明",
+      "expectedArtifact": "Document",
+      "expectedOutput": [
+        "Update the existing Document owner identified by the reviewed evidence and retain a focused validation result."
+      ]
+    }
+  ]
+}
