@@ -64,8 +64,21 @@ Agent 不得以「改动很小」「先写代码再补文档」「用户催得�
 | Plan / Tasks | **Plan** 写入 [`docs/superpowers/plans/YYYY-MM-DD-<feature>.md`](docs/superpowers/plans/)（任务勾选、路径、测试、提交节奏）。**必须进 git** | writing-plans 等 skill |
 | Implement | 用户明确说执行后，按 task 改业务代码；改行为同步更新 `src/components/*/README.md` / FR | executing-plans / subagent-driven-development |
 | Validate | 相关单测/typecheck/`verify` + 在同一份 plan 末尾填「设计初衷检核」，更新文首 `状态` | verification-before-completion |
+| Review → Merge | 向 `develop`/`main` 的 **Pull Request 必须先经过 Review，再合并**（见下节）。Validate 通过 ≠ 可直接 merge | Bugbot / 人工 / `requesting-code-review` 等 |
 
 偏差不得靠改写旧 design 正文掩盖；决策变更应追加修订说明或新日期文档。
+
+### Pull Request Review（合并硬门禁）
+
+**所有合入受保护开发线（默认 `develop`，以及 `main`）的 PR，合并前必须完成 Review。** Agent 与人类贡献者均不得以「CI 绿」「MERGEABLE」「赶工」「已口头说过」为由跳过。
+
+最低要求（同时满足）：
+
+1. **有可核查的 Review 记录**：至少一次针对该 PR 的代码审查结论落在 GitHub 上（Approve，或带结论的 Review Comment / Bugbot 等自动审查报告）。仅 Copilot「看过但无结论」、或 check 为 `NEUTRAL`/跳过，**不算**已审过。  
+2. **阻塞项已处理**：Review 提出的必须修复项已改完或书面驳回理由；未解决的安全 / 数据 / 迁移 / 并发类意见不得强行合并。  
+3. **合并权**：Agent **默认不得**自行 `gh pr merge`；仅当用户**明确书面授权**「审查通过后合并 / 合并该 PR」时才可合并。用户授权合并时，Agent 仍须先确认第 1–2 条已满足，否则应拒绝合并并说明缺什么。
+
+不豁免：热修、port、文档-only（若仍走 PR）、依赖升级。若仓库日后启用 GitHub「必填 Reviewer」规则，以平台设置为准，且不得低于本节。
 
 过程稿**只**放 [`docs/superpowers/`](docs/superpowers/)（索引见 [`docs/superpowers/README.md`](docs/superpowers/README.md)）。禁止写入 `docs/community/`、`docs/releases/`。总目录见 [`docs/README.md`](docs/README.md)。  
 Cursor alwaysApply 规则 [`.cursor/rules/superpowers-workflow.mdc`](.cursor/rules/superpowers-workflow.mdc) 与本节一致；**若有歧义，以本文件为准。**
