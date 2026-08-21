@@ -63,7 +63,6 @@ export interface MorningAuctionPriceHistoryLoadDependencies {
     startDate: string,
     endDate: string,
   ) => Promise<MorningAuctionPriceCloseRow[]>
-  persistRemote?: (rows: MorningAuctionPriceCloseRow[]) => void
 }
 
 function uniqueCodes(tsCodes: string[]): string[] {
@@ -218,7 +217,6 @@ export async function loadMorningAuctionPriceHistoryEntries(
     const local = localByCode.get(code) ?? []
     try {
       const remote = await dependencies.fetchRemote!(code, startDate, tradeDate)
-      if (remote.length > 0) dependencies.persistRemote?.(remote)
       result.set(code, calculateMorningAuctionPriceHistoryEntry(
         code,
         [...local, ...remote],

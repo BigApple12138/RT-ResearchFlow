@@ -240,10 +240,6 @@ export function runPublicStockUniverseSync(
   return promise
 }
 
-export function isPublicStockUniverseSyncRunning(): boolean {
-  return publicStockUniverseSyncPromise !== null
-}
-
 export function getRecentSinaMarketRows(
   now = Date.now(),
   maxAgeMs = 20 * 60_000,

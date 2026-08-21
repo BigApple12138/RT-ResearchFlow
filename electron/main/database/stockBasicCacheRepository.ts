@@ -108,21 +108,14 @@ export function queryAllActive(db: Database.Database): StockBasicCacheRow[] {
 }
 
 /**
- * 按关键词模糊搜索股票（名称或代码），最多返回 20 条
+ * 按关键词模糊搜索股票（名称或代码），最多返回 20 条。
+ * 委托 searchByNameOrCode，与 AI/产业搜索共用后缀剥离匹配逻辑。
  */
 export function searchStockBasicByKeyword(
   db: Database.Database,
   keyword: string
 ): Array<{ tsCode: string; name: string }> {
-  const kw = `%${keyword}%`
-  const rows = db
-    .prepare(
-      `SELECT ts_code, name FROM stock_basic_cache
-       WHERE list_status = 'L' AND (name LIKE ? OR ts_code LIKE ?)
-       ORDER BY ts_code ASC LIMIT 20`
-    )
-    .all(kw, kw) as Array<{ ts_code: string; name: string | null }>
-  return rows.map((r) => ({ tsCode: r.ts_code, name: r.name ?? r.ts_code }))
+  return searchByNameOrCode(db, keyword, 20).map(({ tsCode, name }) => ({ tsCode, name }))
 }
 
 /**

@@ -390,11 +390,6 @@ export async function archiveCurrentSnapshot(db: Database.Database): Promise<voi
   await computeSectorFlowSnapshot(db, true)
 }
 
-/** FR-243 不再用当前概念成分和日线回算历史资金流。 */
-export async function ensureSectorFlowBackfill(_db: Database.Database): Promise<void> {
-  return Promise.resolve()
-}
-
 async function fetchCandidateMembers(boardCodes: string[]): Promise<Map<string, SectorFlowStock[]>> {
   const result = new Map<string, SectorFlowStock[]>()
   const batchSize = 4

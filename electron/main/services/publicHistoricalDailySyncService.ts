@@ -416,10 +416,6 @@ export function runPublicHistoricalDailySync(
   return promise
 }
 
-export function isPublicHistoricalDailySyncRunning(): boolean {
-  return publicHistoricalDailyPromise !== null
-}
-
 export function runStartupPublicHistoricalDailySyncIfNeeded(
   db: Database.Database,
   targetEndDate: string,

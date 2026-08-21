@@ -5267,6 +5267,14 @@ const MIGRATIONS: DatabaseMigration[] = [
       CREATE INDEX idx_public_daily_checkpoint_status
         ON public_daily_sync_checkpoints(status, updated_at);
     `
+  },
+  {
+    // FR-274 起板块资金只走 sector_flow_observations；废弃无人写入的 sector_flow_daily
+    version: 157,
+    sql: `
+      DROP INDEX IF EXISTS idx_sector_flow_daily_date_source;
+      DROP TABLE IF EXISTS sector_flow_daily;
+    `
   }
 ]
 

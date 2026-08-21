@@ -1217,20 +1217,6 @@ export interface FreeMinuteCacheRow {
   fetchedAt: number
 }
 
-export interface SectorFlowDailyRow {
-  trade_date: string
-  source: string
-  concept_code: string
-  concept_name: string
-  total_amount: number
-  net_inflow: number
-  net_inflow_rate: number
-  weighted_change: number
-  member_count: number
-  up_count: number
-  down_count: number
-}
-
 export interface SectorFlowObservationRow {
   trade_date: string
   provider: 'eastmoney' | 'local_estimate'
