@@ -17,10 +17,11 @@ Canonical process: root [`AGENTS.md`](AGENTS.md) §「功能开发流程 — Spe
 
 - **Default:** Behavior/UI/IPC/data-model/research/copy changes MUST: write spec → **user approves** → write plan → **user says execute** → then edit `src/` / `electron/` (etc.).
 - **Archive:** Spec and plan committed under `docs/superpowers/` (not chat-only). After ship, fill plan 「设计初衷检核」.
-- **Forbidden:** Code-first then backfill docs; skip because "small"/"urgent"/"no skill available"; rewrite old design to hide drift.
+- **PR Review before merge:** Every PR into `develop`/`main` must have a verifiable review (Approve or conclusive review report) before merge. Agent must not `gh pr merge` unless the user explicitly authorizes merge **and** review gates in `AGENTS.md` §「Pull Request Review」are satisfied. CI green / MERGEABLE alone is not enough.
+- **Forbidden:** Code-first then backfill docs; skip because "small"/"urgent"/"no skill available"; rewrite old design to hide drift; merge without review.
 - Never put process docs in `docs/community/` or `docs/releases/`.
 - Before editing a module, read `src/components/*/README.md` (FR); update when behavior changes.
-- Narrow exemptions only as listed in `AGENTS.md`.
+- Narrow exemptions only as listed in `AGENTS.md` (exemptions do **not** waive PR review when a PR is used).
 
 ## Product invariants (summary)
 
