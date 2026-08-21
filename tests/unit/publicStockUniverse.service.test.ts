@@ -71,6 +71,49 @@ describe('public stock universe production sync', () => {
     })
   })
 
+  it('does not resurrect delisted status or overwrite tushare names', () => {
+    const db = createDb()
+    databases.push(db)
+    db.prepare(`
+      INSERT INTO stock_basic_cache
+        (ts_code, name, industry, market, list_status, circ_float, updated_at)
+      VALUES
+        ('600001.SH', '退市样本', '银行', '主板', 'D', NULL, 1),
+        ('600002.SH', 'Tushare名', '银行', '主板', 'L', NULL, 1)
+    `).run()
+    db.prepare(`
+      INSERT INTO stock_basic_identity_provenance (ts_code, data_source, observed_at)
+      VALUES ('600002.SH', 'tushare', 1)
+    `).run()
+
+    mergePublicStockIdentities(db, [
+      {
+        tsCode: '600001.SH',
+        name: '公共翻活名',
+        market: '主板',
+        listStatus: 'L',
+        observedAt: 2,
+      },
+      {
+        tsCode: '600002.SH',
+        name: '新浪名',
+        market: '主板',
+        listStatus: 'L',
+        observedAt: 2,
+      },
+    ])
+
+    expect(db.prepare(`
+      SELECT name, list_status FROM stock_basic_cache WHERE ts_code = '600001.SH'
+    `).get()).toEqual({ name: '公共翻活名', list_status: 'D' })
+    expect(db.prepare(`
+      SELECT name, list_status FROM stock_basic_cache WHERE ts_code = '600002.SH'
+    `).get()).toEqual({ name: 'Tushare名', list_status: 'L' })
+    expect(db.prepare(`
+      SELECT data_source FROM stock_basic_identity_provenance WHERE ts_code = '600002.SH'
+    `).get()).toEqual({ data_source: 'tushare' })
+  })
+
   it('merges only after a complete low-frequency paginated universe passes its gates', async () => {
     const db = createDb()
     databases.push(db)

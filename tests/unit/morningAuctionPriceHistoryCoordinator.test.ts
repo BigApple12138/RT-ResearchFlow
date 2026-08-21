@@ -125,6 +125,32 @@ describe('早盘历史涨跌增量协调器', () => {
     expect(refreshed.get('000001.SZ')?.p5d).toBe(1)
     expect(refreshed.get('000002.SZ')?.p5d).toBe(2)
   })
+
+  it('failed 状态在下次 ensure 自动重试无需显式 refresh', async () => {
+    const batches: string[][] = []
+    let attempt = 0
+    const coordinator = new MorningAuctionPriceHistoryCoordinator(async (_tradeDate, codes) => {
+      attempt += 1
+      batches.push([...codes])
+      if (attempt === 1) {
+        return new Map(codes.map(code => [code, {
+          p3d: null,
+          p5d: null,
+          state: 'failed' as const,
+          availableDays: 0,
+          reason: 'REMOTE_BACKFILL_FAILED' as const,
+          remoteAttempted: true,
+        }]))
+      }
+      return new Map(codes.map(code => [code, ready(attempt)]))
+    })
+
+    await coordinator.ensure('20260812', ['000001.SZ'])
+    const second = await coordinator.ensure('20260812', ['000001.SZ'])
+
+    expect(batches).toEqual([['000001.SZ'], ['000001.SZ']])
+    expect(second.get('000001.SZ')?.state).toBe('ready')
+  })
 })
 
 describe('早盘历史涨跌本地优先加载', () => {
@@ -144,6 +170,44 @@ describe('早盘历史涨跌本地优先加载', () => {
     })
     expect(result.get('000001.SZ')?.p3d).toBeCloseTo(25)
     expect(result.get('000001.SZ')?.p5d).toBeCloseTo(50)
+  })
+
+  it('本地行数≥6但有效收盘未 ready 时仍尝试远端补拉', async () => {
+    const fetchRemote = vi.fn(async () => rows('000001.SZ', 6))
+    const dirty = Array.from({ length: 6 }, (_, i) => ({
+      tsCode: '000001.SZ',
+      tradeDate: `2026080${i + 1}`,
+      close: 0,
+    }))
+    const result = await loadMorningAuctionPriceHistoryEntries('20260812', ['000001.SZ'], {
+      queryLocal: () => new Map([['000001.SZ', dirty]]),
+      fetchRemote,
+    })
+
+    expect(fetchRemote).toHaveBeenCalledOnce()
+    expect(result.get('000001.SZ')).toMatchObject({
+      state: 'ready',
+      reason: 'REMOTE_BACKFILLED',
+      remoteAttempted: true,
+    })
+  })
+
+  it('多只待补拉股票有界并行而非严格串行', async () => {
+    let active = 0
+    let maxActive = 0
+    const codes = Array.from({ length: 8 }, (_, i) => `00000${i + 1}.SZ`)
+    await loadMorningAuctionPriceHistoryEntries('20260812', codes, {
+      queryLocal: () => new Map(),
+      fetchRemote: async (code) => {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        await new Promise(resolve => setTimeout(resolve, 40))
+        active -= 1
+        return rows(code, 6)
+      },
+    })
+    expect(maxActive).toBeGreaterThan(1)
+    expect(maxActive).toBeLessThanOrEqual(4)
   })
 
   it('四至五个样本保留3日结果并明确5日样本不足', () => {
