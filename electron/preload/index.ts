@@ -231,6 +231,31 @@ interface MorningAuctionMarketThemeSummary {
   summary: string
   themes: MorningAuctionMarketTheme[]
 }
+type MorningAuctionPriceHistoryState = 'ready' | 'partial' | 'insufficient' | 'unavailable' | 'failed'
+type MorningAuctionPriceHistoryReason =
+  | 'LOCAL_READY'
+  | 'REMOTE_BACKFILLED'
+  | 'SAMPLE_INSUFFICIENT'
+  | 'NO_HISTORY_DATA'
+  | 'REMOTE_BACKFILL_FAILED'
+  | 'LOCAL_READ_FAILED'
+interface MorningAuctionPriceHistoryStatus {
+  state: MorningAuctionPriceHistoryState
+  availableDays: number
+  reason: MorningAuctionPriceHistoryReason
+  remoteAttempted: boolean
+}
+interface MorningAuctionPriceHistoryCoverage {
+  requestedCount: number
+  covered3dCount: number
+  covered5dCount: number
+  readyCount: number
+  partialCount: number
+  insufficientCount: number
+  unavailableCount: number
+  failedCount: number
+  updatedAt: number
+}
 interface MorningAuctionStock {
   tsCode: string
   stockCode: string
@@ -246,6 +271,7 @@ interface MorningAuctionStock {
   currentAmount: number | null
   pctChg3d: number | null
   pctChg5d: number | null
+  priceHistory?: MorningAuctionPriceHistoryStatus
   conceptNames: string[]
   themeAttribution?: MorningAuctionThemeAttribution | null
 }
@@ -282,6 +308,7 @@ interface MorningAuctionSnapshot {
     n: BoardCategoryStock[]
   }
   marketThemes?: MorningAuctionMarketThemeSummary
+  priceHistoryCoverage?: MorningAuctionPriceHistoryCoverage
 }
 
 type MorningAuctionVerificationStatus = 'pending' | 'checked' | 'blocked' | 'not_applicable'
@@ -3325,8 +3352,8 @@ const api = {
 
   // ── Sector Flow ────────────────────────────────────────
   sectorFlow: {
-    getSnapshot: (forceRefresh?: boolean) =>
-      ipcRenderer.invoke('sectorFlow:getSnapshot', { forceRefresh }) as Promise<
+    getSnapshot: (request: { forceRefresh?: boolean; tradeDate?: string | null } = {}) =>
+      ipcRenderer.invoke('sectorFlow:getSnapshot', request) as Promise<
         | {
             ok: true
             snapshot: {
@@ -3408,6 +3435,12 @@ const api = {
                 partialScopes: Array<'concept' | 'industry'>
                 archived: boolean
                 message: string
+              }
+              navigation: {
+                selectedTradeDate: string | null
+                previousTradeDate: string | null
+                nextTradeDate: string | null
+                latestTradeDate: string | null
               }
             }
           }
