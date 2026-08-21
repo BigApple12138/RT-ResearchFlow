@@ -7,7 +7,6 @@
 
 import type Database from 'better-sqlite3'
 import type { DailyBasicRow, DailyRow } from '../services/tushareService'
-import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 export const DAILY_CLOSE_RETENTION_TRADE_DAYS = 520
 
@@ -61,9 +60,57 @@ interface CacheRow {
   pct_chg: number | null
   vol: number | null
   turnover_rate: number | null
+  amount?: number | null
+  data_source?: string
+  amount_source?: string | null
+  turnover_source?: string | null
+  fetched_at?: number | null
 }
 
-function toDbRow(r: DailyRow): CacheRow {
+export type DailyCloseWriteSource = 'legacy' | 'tushare' | 'sina' | 'tencent' | 'sina_snapshot' | 'eastmoney'
+
+export interface DailyCloseWriteMetadata {
+  dataSource: DailyCloseWriteSource
+  fetchedAt?: number
+  amountSource?: DailyCloseWriteSource | null
+  turnoverSource?: DailyCloseWriteSource | null
+}
+
+const provenanceColumnNames = [
+  'amount',
+  'data_source',
+  'amount_source',
+  'turnover_source',
+  'fetched_at',
+] as const
+
+const provenanceCapabilityByDb = new WeakMap<Database.Database, boolean>()
+
+function hasDailyCloseProvenanceColumns(db: Database.Database): boolean {
+  const cached = provenanceCapabilityByDb.get(db)
+  if (cached !== undefined) return cached
+
+  const statement = db.prepare('PRAGMA table_info(daily_close_cache)') as unknown as {
+    all?: () => Array<{ name?: unknown }>
+  }
+  if (typeof statement.all !== 'function') {
+    provenanceCapabilityByDb.set(db, false)
+    return false
+  }
+
+  const columns = statement.all()
+  const columnNames = new Set(
+    columns
+      .map((column) => column.name)
+      .filter((name): name is string => typeof name === 'string'),
+  )
+  const supported = provenanceColumnNames.every((name) => columnNames.has(name))
+  provenanceCapabilityByDb.set(db, supported)
+  return supported
+}
+
+function toDbRow(r: DailyRow, metadata?: DailyCloseWriteMetadata): CacheRow {
+  const dataSource = metadata?.dataSource ?? 'legacy'
   return {
     ts_code: r.tsCode,
     trade_date: r.tradeDate,
@@ -73,7 +120,12 @@ function toDbRow(r: DailyRow): CacheRow {
     close: r.close,
     pct_chg: r.pctChg,
     vol: r.vol ?? null,
-    turnover_rate: r.turnoverRate ?? null
+    turnover_rate: r.turnoverRate ?? null,
+    amount: r.amount ?? null,
+    data_source: dataSource,
+    amount_source: r.amount == null ? null : (metadata?.amountSource ?? dataSource),
+    turnover_source: r.turnoverRate == null ? null : (metadata?.turnoverSource ?? dataSource),
+    fetched_at: metadata?.fetchedAt ?? Date.now(),
   }
 }
 
@@ -103,8 +155,16 @@ function mergeDailyRows(
 }
 
 /** 批量写入日线缓存，增量响应缺失的字段保留已有非空值。 */
-export function upsertDailyClose(db: Database.Database, rows: DailyRow[]): void {
+export function upsertDailyClose(
+  db: Database.Database,
+  rows: DailyRow[],
+  metadata?: DailyCloseWriteMetadata,
+): void {
   if (rows.length === 0) return
+  if (hasDailyCloseProvenanceColumns(db)) {
+    upsertDailyCloseWithProvenance(db, rows, metadata)
+    return
+  }
   const stmt = db.prepare(
     `INSERT INTO daily_close_cache (ts_code, trade_date, open, high, low, close, pct_chg, vol, turnover_rate)
      VALUES (@ts_code, @trade_date, @open, @high, @low, @close, @pct_chg, @vol, @turnover_rate)
@@ -122,7 +182,83 @@ export function upsertDailyClose(db: Database.Database, rows: DailyRow[]): void 
       stmt.run(item)
     }
   })
-  runAll(rows.map(toDbRow))
+  runAll(rows.map((row) => toDbRow(row, metadata)))
+}
+
+function sourceRank(alias: string, column = 'data_source'): string {
+  return `CASE ${alias}.${column}
+    WHEN 'tushare' THEN 6
+    WHEN 'legacy' THEN 5
+    WHEN 'sina_snapshot' THEN 4
+    WHEN 'eastmoney' THEN 3
+    WHEN 'sina' THEN 2
+    WHEN 'tencent' THEN 1
+    ELSE 0 END`
+}
+
+function preferredValue(field: string): string {
+  const incomingRank = sourceRank('excluded')
+  const existingRank = sourceRank('daily_close_cache')
+  return `CASE WHEN ${incomingRank} >= ${existingRank}
+    THEN COALESCE(excluded.${field}, daily_close_cache.${field})
+    ELSE COALESCE(daily_close_cache.${field}, excluded.${field}) END`
+}
+
+function preferredSupplement(field: 'amount' | 'turnover_rate', sourceColumn: 'amount_source' | 'turnover_source'): string {
+  const incomingRank = sourceRank('excluded', sourceColumn)
+  const existingRank = sourceRank('daily_close_cache', sourceColumn)
+  return `CASE
+    WHEN excluded.${field} IS NULL THEN daily_close_cache.${field}
+    WHEN daily_close_cache.${field} IS NULL THEN excluded.${field}
+    WHEN ${incomingRank} >= ${existingRank} THEN excluded.${field}
+    ELSE daily_close_cache.${field} END`
+}
+
+function preferredSupplementSource(field: 'amount' | 'turnover_rate', sourceColumn: 'amount_source' | 'turnover_source'): string {
+  const incomingRank = sourceRank('excluded', sourceColumn)
+  const existingRank = sourceRank('daily_close_cache', sourceColumn)
+  return `CASE
+    WHEN excluded.${field} IS NULL THEN daily_close_cache.${sourceColumn}
+    WHEN daily_close_cache.${field} IS NULL THEN excluded.${sourceColumn}
+    WHEN ${incomingRank} >= ${existingRank} THEN excluded.${sourceColumn}
+    ELSE daily_close_cache.${sourceColumn} END`
+}
+
+function upsertDailyCloseWithProvenance(
+  db: Database.Database,
+  rows: DailyRow[],
+  metadata?: DailyCloseWriteMetadata,
+): void {
+  const incomingRank = sourceRank('excluded')
+  const existingRank = sourceRank('daily_close_cache')
+  const stmt = db.prepare(`
+    INSERT INTO daily_close_cache (
+      ts_code, trade_date, open, high, low, close, pct_chg, vol,
+      turnover_rate, amount, data_source, amount_source, turnover_source, fetched_at
+    ) VALUES (
+      @ts_code, @trade_date, @open, @high, @low, @close, @pct_chg, @vol,
+      @turnover_rate, @amount, @data_source, @amount_source, @turnover_source, @fetched_at
+    )
+    ON CONFLICT(ts_code, trade_date) DO UPDATE SET
+      open = ${preferredValue('open')},
+      high = ${preferredValue('high')},
+      low = ${preferredValue('low')},
+      close = ${preferredValue('close')},
+      pct_chg = ${preferredValue('pct_chg')},
+      vol = ${preferredValue('vol')},
+      turnover_rate = ${preferredSupplement('turnover_rate', 'turnover_source')},
+      amount = ${preferredSupplement('amount', 'amount_source')},
+      data_source = CASE WHEN ${incomingRank} >= ${existingRank}
+        THEN excluded.data_source ELSE daily_close_cache.data_source END,
+      amount_source = ${preferredSupplementSource('amount', 'amount_source')},
+      turnover_source = ${preferredSupplementSource('turnover_rate', 'turnover_source')},
+      fetched_at = CASE WHEN ${incomingRank} >= ${existingRank}
+        THEN excluded.fetched_at ELSE daily_close_cache.fetched_at END
+  `)
+  const write = db.transaction((items: CacheRow[]) => {
+    for (const item of items) stmt.run(item)
+  })
+  write(rows.map((row) => toDbRow(row, metadata)))
 }
 
 /**
@@ -137,8 +273,18 @@ export function queryDailyClose(
   const result = new Map<string, DailyRow[]>()
   if (tsCodes.length === 0) return result
 
-  const queryCodes = [...new Set(tsCodes.flatMap((code) => tsCodeLookupCandidates(code)))]
-  if (queryCodes.length === 0) return result
+  const aliasToRequested = new Map<string, string[]>()
+  for (const tsCode of tsCodes) {
+    const aliases = new Set<string>([tsCode])
+    const bareCode = tsCode.split('.')[0]
+    if (bareCode) aliases.add(bareCode)
+    for (const alias of aliases) {
+      const requested = aliasToRequested.get(alias) ?? []
+      requested.push(tsCode)
+      aliasToRequested.set(alias, requested)
+    }
+  }
+  const queryCodes = [...aliasToRequested.keys()]
   const placeholders = queryCodes.map(() => '?').join(', ')
   const rows = db
     .prepare(
@@ -156,11 +302,10 @@ export function queryDailyClose(
   }
 
   for (const requestedCode of tsCodes) {
-    // 候选顺序为 canonical → raw → bare；从后往前折叠，使带后缀行覆盖裸六位
-    let mergedRows: DailyRow[] = []
-    for (const code of [...tsCodeLookupCandidates(requestedCode)].reverse()) {
-      mergedRows = mergeDailyRows(requestedCode, rowsByCode.get(code) ?? [], mergedRows)
-    }
+    const bareCode = requestedCode.split('.')[0]
+    const exactRows = rowsByCode.get(requestedCode) ?? []
+    const fallbackRows = bareCode && bareCode !== requestedCode ? (rowsByCode.get(bareCode) ?? []) : []
+    const mergedRows = mergeDailyRows(requestedCode, exactRows, fallbackRows)
     if (mergedRows.length > 0) result.set(requestedCode, mergedRows)
   }
   return result
@@ -175,8 +320,7 @@ export function queryDailyCloseExact(
   const result = new Map<string, DailyRow[]>()
   if (tsCodes.length === 0) return result
 
-  const aliases = [...new Set(tsCodes.flatMap((tsCode) => tsCodeLookupCandidates(tsCode)))]
-  if (aliases.length === 0) return result
+  const aliases = [...new Set(tsCodes.flatMap((tsCode) => [tsCode, tsCode.split('.')[0]]))]
   const placeholders = aliases.map(() => '?').join(', ')
   const rows = db.prepare(
     `SELECT ts_code, trade_date, open, high, low, close, pct_chg, vol, turnover_rate
@@ -191,10 +335,12 @@ export function queryDailyCloseExact(
     rowsByCode.set(row.ts_code, mapped)
   }
   for (const tsCode of tsCodes) {
-    let mergedRows: DailyRow[] = []
-    for (const code of [...tsCodeLookupCandidates(tsCode)].reverse()) {
-      mergedRows = mergeDailyRows(tsCode, rowsByCode.get(code) ?? [], mergedRows)
-    }
+    const bareCode = tsCode.split('.')[0]
+    const mergedRows = mergeDailyRows(
+      tsCode,
+      rowsByCode.get(tsCode) ?? [],
+      bareCode === tsCode ? [] : rowsByCode.get(bareCode) ?? [],
+    )
     if (mergedRows.length > 0) result.set(tsCode, mergedRows)
   }
   return result
@@ -203,37 +349,21 @@ export function queryDailyCloseExact(
 /**
  * FR-139: 查单只股票近 60 日全量 OHLCV，按 trade_date 升序。
  * 供 shortTerm:getStockMiniKline IPC 使用。
- * 兼容裸六位与带后缀 tsCode（持仓常存 601016，缓存多为 601016.SH）。
  */
 export function queryStockOHLCV(
   db: Database.Database,
   tsCode: string,
   startDate: string
 ): DailyRow[] {
-  const candidates = tsCodeLookupCandidates(tsCode)
-  if (candidates.length === 0) return []
-  const placeholders = candidates.map(() => '?').join(',')
   const rows = db
     .prepare(
       `SELECT ts_code, trade_date, open, high, low, close, pct_chg, vol, turnover_rate
        FROM daily_close_cache
-       WHERE ts_code IN (${placeholders}) AND trade_date >= ?
-       ORDER BY trade_date ASC,
-         CASE
-           WHEN ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ' OR ts_code LIKE '%.BJ' THEN 0
-           ELSE 1
-         END ASC`
+       WHERE ts_code = ? AND trade_date >= ?
+       ORDER BY trade_date ASC`
     )
-    .all(...candidates, startDate) as CacheRow[]
-
-  // 同一交易日优先保留带后缀行
-  const byDate = new Map<string, CacheRow>()
-  for (const row of rows) {
-    if (!byDate.has(row.trade_date)) byDate.set(row.trade_date, row)
-  }
-  return [...byDate.values()]
-    .sort((a, b) => a.trade_date.localeCompare(b.trade_date))
-    .map(fromDbRow)
+    .all(tsCode, startDate) as CacheRow[]
+  return rows.map(fromDbRow)
 }
 
 /**
@@ -273,15 +403,12 @@ export function countByTsCode(
   tsCode: string,
   startDate: string
 ): number {
-  const candidates = tsCodeLookupCandidates(tsCode)
-  if (candidates.length === 0) return 0
-  const placeholders = candidates.map(() => '?').join(',')
   const row = db
     .prepare(
-      `SELECT COUNT(DISTINCT trade_date) AS cnt FROM daily_close_cache
-       WHERE ts_code IN (${placeholders}) AND trade_date >= ?`
+      `SELECT COUNT(*) AS cnt FROM daily_close_cache
+       WHERE ts_code = ? AND trade_date >= ?`
     )
-    .get(...candidates, startDate) as { cnt: number }
+    .get(tsCode, startDate) as { cnt: number }
   return row?.cnt ?? 0
 }
 
