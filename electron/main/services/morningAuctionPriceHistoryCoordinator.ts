@@ -74,6 +74,28 @@ function isComplete(entry: MorningAuctionPriceHistoryEntry | undefined): boolean
   return entry?.state === 'ready'
 }
 
+/** 同批有界并发，避免逐票串行拖长 snapshot IPC。 */
+const REMOTE_FETCH_CONCURRENCY = 4
+
+async function mapWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return
+  let next = 0
+  const run = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      await worker(items[index]!)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => run()),
+  )
+}
+
 function subtractCalendarDays(ymd: string, days: number): string {
   const date = new Date(Date.UTC(
     Number(ymd.slice(0, 4)),
@@ -178,14 +200,24 @@ export async function loadMorningAuctionPriceHistoryEntries(
     return result
   }
 
+  const localByCode = new Map<string, MorningAuctionPriceCloseRow[]>()
+  const needRemote: string[] = []
   for (const code of codes) {
     const local = normalizeCloseRows(code, localRows.get(code) ?? [], tradeDate)
-    if (local.length >= 6 || !dependencies.fetchRemote) {
-      result.set(code, calculateMorningAuctionPriceHistoryEntry(code, local, tradeDate))
-      continue
+    localByCode.set(code, local)
+    const localEntry = calculateMorningAuctionPriceHistoryEntry(code, local, tradeDate)
+    // 仅本地已 ready 才跳过远端；行数≥6但未 ready（脏样本）仍尝试补拉
+    if (localEntry.state === 'ready' || !dependencies.fetchRemote) {
+      result.set(code, localEntry)
+    } else {
+      needRemote.push(code)
     }
+  }
+
+  await mapWithConcurrency(needRemote, REMOTE_FETCH_CONCURRENCY, async (code) => {
+    const local = localByCode.get(code) ?? []
     try {
-      const remote = await dependencies.fetchRemote(code, startDate, tradeDate)
+      const remote = await dependencies.fetchRemote!(code, startDate, tradeDate)
       if (remote.length > 0) dependencies.persistRemote?.(remote)
       result.set(code, calculateMorningAuctionPriceHistoryEntry(
         code,
@@ -201,7 +233,7 @@ export async function loadMorningAuctionPriceHistoryEntries(
         { remoteAttempted: true, remoteFailed: true },
       ))
     }
-  }
+  })
   return result
 }
 
@@ -252,6 +284,11 @@ export class MorningAuctionPriceHistoryCoordinator {
     const requested = uniqueCodes(tsCodes)
     if (requested.length === 0) return new Map()
     const state = this.getOrCreateState(tradeDate)
+
+    // failed 不视为终态：每次 ensure 自动清缓存重试（无需显式 refresh）
+    for (const code of requested) {
+      if (state.entries.get(code)?.state === 'failed') state.entries.delete(code)
+    }
 
     if (options.retryUnresolved) {
       if (state.inFlight) await state.inFlight

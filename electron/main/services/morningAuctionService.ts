@@ -722,7 +722,9 @@ const priceHistoryCoordinator = new MorningAuctionPriceHistoryCoordinator(async 
     fetchRemote: token
       ? async (tsCode, startDate, endDate) => {
           const rows = await fetchDailyForCandidates(token, [tsCode], startDate, endDate)
-          if (rows.length > 0) upsertDailyClose(db, rows)
+          if (rows.length > 0) {
+            upsertDailyClose(db, rows, { dataSource: 'tushare', fetchedAt: Date.now() })
+          }
           return rows
         }
       : undefined,
