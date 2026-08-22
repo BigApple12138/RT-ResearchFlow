@@ -27,4 +27,4 @@
 |---|---|---|
 | PR-A 竞价投影 | ✅ | mergeTradeDateClose + 历史日跳过 rt_k；契约单测 |
 | PR-B 云图 UI | ✅ | upstream IndustryHeatmap + industryHeatmapInteraction 契约 3 绿 |
-| PR-C 发版/Low | ✅ | beta.4 release + sectorFlow 停轮询契约；PR #13 合入 `d68c17e` |
+| PR-C 发版/Low | ✅ | beta.4 release + sectorFlow 停轮询契约 + **E2E IPC 计数断言**；PR #13 + 后续补 E2E |
