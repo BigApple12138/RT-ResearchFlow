@@ -14,6 +14,7 @@ import { AppWebSearchSettings } from './AppWebSearchSettings'
 export function AgentSettings() {
   const { settings, updateSettings } = useAppStore()
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  if (!settings) return <div className="p-6 text-sm text-gray-400 dark:text-gray-500">加载中…</div>
   const agentNetworkOn = (settings.ai_agent_network_enabled ?? 0) === 1
 
   return (

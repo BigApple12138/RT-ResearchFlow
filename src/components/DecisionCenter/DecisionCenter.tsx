@@ -948,10 +948,11 @@ export function DecisionCenter({ initialization = null, initializationFlow, onOp
       let marketOverview: ReviewDayContextInput['marketOverview'] = null
       let marketOverviewError: string | null = null
       if (!overviewRes || !('ok' in overviewRes) || overviewRes.ok !== true) {
-        marketOverviewError = ('error' in (overviewRes ?? {}) && typeof (overviewRes as { error?: string }).error === 'string')
-          ? (overviewRes as { error: string }).error
-          : ('message' in (overviewRes ?? {}) && typeof (overviewRes as { message?: string }).message === 'string')
-            ? (overviewRes as { message: string }).message
+        const failed = overviewRes ?? {}
+        marketOverviewError = (typeof failed === 'object' && failed !== null && 'error' in failed && typeof failed.error === 'string')
+          ? failed.error
+          : (typeof failed === 'object' && failed !== null && 'message' in failed && typeof failed.message === 'string')
+            ? failed.message
             : '市场概览不可用'
       } else {
         marketOverview = overviewRes.snapshot as ReviewDayContextInput['marketOverview']
