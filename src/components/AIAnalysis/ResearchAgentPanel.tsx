@@ -185,7 +185,7 @@ export function ResearchAgentPanel({
         return
       }
       const result = await window.api.researchAgent.preflight(sessionId)
-      if (!result.ok || !result.data) {
+      if (!result.ok) {
         const message = result.message || '预检失败，深度研究未能启动'
         setError(message)
         publishAppToast(message, 'error')
