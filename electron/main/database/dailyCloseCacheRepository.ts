@@ -7,6 +7,7 @@
 
 import type Database from 'better-sqlite3'
 import type { DailyBasicRow, DailyRow } from '../services/tushareService'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 export const DAILY_CLOSE_RETENTION_TRADE_DAYS = 520
 
@@ -355,15 +356,18 @@ export function queryStockOHLCV(
   tsCode: string,
   startDate: string
 ): DailyRow[] {
-  const rows = db
-    .prepare(
-      `SELECT ts_code, trade_date, open, high, low, close, pct_chg, vol, turnover_rate
-       FROM daily_close_cache
-       WHERE ts_code = ? AND trade_date >= ?
-       ORDER BY trade_date ASC`
-    )
-    .all(tsCode, startDate) as CacheRow[]
-  return rows.map(fromDbRow)
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const rows = db
+      .prepare(
+        `SELECT ts_code, trade_date, open, high, low, close, pct_chg, vol, turnover_rate
+         FROM daily_close_cache
+         WHERE ts_code = ? AND trade_date >= ?
+         ORDER BY trade_date ASC`
+      )
+      .all(code, startDate) as CacheRow[]
+    if (rows.length > 0) return rows.map(fromDbRow)
+  }
+  return []
 }
 
 /**

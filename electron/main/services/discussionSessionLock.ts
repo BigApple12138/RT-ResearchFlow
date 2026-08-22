@@ -27,3 +27,8 @@ export async function withDiscussionSessionLock<T>(
     if (sessionTails.get(sessionId) === tail) sessionTails.delete(sessionId)
   }
 }
+
+/** @internal 仅供单测隔离 session lock 状态 */
+export function resetDiscussionSessionLocksForTests(): void {
+  sessionTails.clear()
+}

@@ -478,6 +478,7 @@ export function AIAnalysis() {
   const [updatingContext, setUpdatingContext] = useState(false)
   const [compactingContext, setCompactingContext] = useState(false)
   const [restoringCompaction, setRestoringCompaction] = useState(false)
+  const [restoreCompactionDialogOpen, setRestoreCompactionDialogOpen] = useState(false)
   const [compactionCheckpoints, setCompactionCheckpoints] = useState<CompactionCheckpointItem[]>([])
   const [trackedTsCodes, setTrackedTsCodes] = useState<Set<string>>(() => new Set())
   const [watchlistAddingCode, setWatchlistAddingCode] = useState<string | null>(null)
@@ -929,13 +930,14 @@ export function AIAnalysis() {
     }
   }
 
-  async function handleRestoreLatestCompaction() {
+  function handleRestoreLatestCompaction() {
     if (!detail?.discussion || restoringCompaction || compactingContext || sendingFollowUp || sessionAgentBusy) return
     if (compactionCheckpoints.length === 0) return
-    const confirmed = window.confirm(
-      '将恢复最近一次整理：把该次归档消息拼回当前对话，并删除该检查点。是否继续？',
-    )
-    if (!confirmed) return
+    setRestoreCompactionDialogOpen(true)
+  }
+
+  async function confirmRestoreLatestCompaction() {
+    if (!detail?.discussion) return
     setRestoringCompaction(true)
     try {
       const response = await window.api.ai.restoreDiscussionCompaction({
@@ -957,6 +959,7 @@ export function AIAnalysis() {
       showToast(error instanceof Error ? error.message : '恢复检查点失败')
     } finally {
       setRestoringCompaction(false)
+      setRestoreCompactionDialogOpen(false)
     }
   }
 
@@ -1777,7 +1780,7 @@ export function AIAnalysis() {
                             <button
                               type="button"
                               data-testid="ai-restore-discussion-compaction"
-                              onClick={() => { void handleRestoreLatestCompaction() }}
+                              onClick={handleRestoreLatestCompaction}
                               disabled={restoringCompaction || compactingContext || sendingFollowUp || sessionAgentBusy}
                               className="rounded-md border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
                             >
@@ -2304,6 +2307,17 @@ export function AIAnalysis() {
           </dl>
         )}
       </AppConfirmDialog>
+      <AppConfirmDialog
+        open={restoreCompactionDialogOpen}
+        title="恢复最近整理"
+        message="将恢复最近一次整理：把该次归档消息拼回当前对话，并删除该检查点。是否继续？"
+        tone="warning"
+        confirmLabel="恢复"
+        busy={restoringCompaction}
+        testId="ai-restore-compaction-dialog"
+        onCancel={() => setRestoreCompactionDialogOpen(false)}
+        onConfirm={() => { void confirmRestoreLatestCompaction() }}
+      />
     </div>
   )
 }

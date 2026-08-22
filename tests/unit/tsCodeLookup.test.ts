@@ -56,7 +56,7 @@ describe('tsCodeLookup', () => {
 
     const rows = queryStockOHLCV(db as never, '601016', '20260101')
 
-    expect(all).toHaveBeenCalledWith('601016.SH', '601016', '20260101')
+    expect(all).toHaveBeenCalledWith('601016.SH', '20260101')
     expect(rows).toHaveLength(2)
     expect(rows[0].tsCode).toBe('601016.SH')
   })
