@@ -101,6 +101,22 @@ test('板块资金按真实存档日期回看并保持同日隔离', async () =>
     await expect(window.getByText('真实资金 · 历史复盘', { exact: true })).toBeVisible()
     await expect(window.getByRole('heading', { name: '板块资金与次日竞价', exact: true })).toBeVisible()
     await expect(window.getByRole('heading', { name: '次日竞价观察', exact: true })).toBeVisible()
+
+    // 补审 Low：历史回看模式不得注册 60s 实时轮询（用 IPC 调用计数代理验证）
+    const snapshotCallsDuringHistoricalView = await window.evaluate(async () => {
+      const api = window.api?.sectorFlow
+      if (!api?.getSnapshot) return { error: 'SECTOR_FLOW_API_UNAVAILABLE' as const }
+      let calls = 0
+      const original = api.getSnapshot.bind(api)
+      api.getSnapshot = async (request) => {
+        calls += 1
+        return original(request)
+      }
+      await new Promise((resolve) => setTimeout(resolve, 4_000))
+      return { calls }
+    })
+    expect(snapshotCallsDuringHistoricalView).toEqual({ calls: 0 })
+
     await expect(window.getByText('八月十日算力概念', { exact: true }).first()).toBeVisible()
     await expect(window.getByText('八月十一日算力概念', { exact: true })).toHaveCount(0)
     await expect(window.getByRole('button', { name: '重新读取', exact: true })).toBeEnabled()

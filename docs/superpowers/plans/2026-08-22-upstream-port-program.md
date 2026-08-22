@@ -11,7 +11,7 @@
 - [x] 竞价历史日收盘投影（`mergeTradeDateClose`、历史日跳过 rt_k）
 - [x] 云图 `HeatmapToolbarSelect`、hover 修复、动量文案
 - [x] `package.json` beta.4 + `docs/releases/v0.1.0-beta.4.md`
-- [x] SectorFlow 历史停轮询契约单测
+- [x] SectorFlow 历史停轮询契约单测 + **E2E IPC 计数断言**（补审 Low）
 - [x] 诊断公共任务（DB job 展示，不恢复 `is*Running`）
 
 ## Wave 2 — 剩余 upstream diff 决策 ✅（文档结案，不合入）
