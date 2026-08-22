@@ -1,10 +1,11 @@
 import Database from 'better-sqlite3'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSession, getSession, getSessionMessages } from '../../electron/main/database/aiAnalysisSessionRepository'
 import { getDiscussionTurnRequest } from '../../electron/main/database/discussionTurnRequestRepository'
 import { runMigrations } from '../../electron/main/database/db'
 import { createResearchDiscussionContext } from '../../electron/main/database/researchDiscussionRepository'
 import { runDiscussionFollowUp } from '../../electron/main/services/discussionFollowUpService'
+import { resetDiscussionSessionLocksForTests } from '../../electron/main/services/discussionSessionLock'
 import { deleteResearchDiscussionWithSessionLock } from '../../electron/main/services/researchDiscussionContextService'
 
 describe('讨论 follow-up 并发与幂等', () => {
@@ -13,6 +14,10 @@ describe('讨论 follow-up 并发与幂等', () => {
   beforeEach(() => {
     db = new Database(':memory:')
     runMigrations(db)
+  })
+
+  afterEach(() => {
+    resetDiscussionSessionLocksForTests()
   })
 
   function createDiscussion(messageCount = 0): number {
@@ -82,11 +87,14 @@ describe('讨论 follow-up 并发与幂等', () => {
     const second = runDiscussionFollowUp(db, {
       requestId: '00000000-0000-4000-8000-000000000102', sessionId, message: '并发问题',
     }, { callAI })
-    await Promise.resolve()
-    expect(calls).toBe(1)
-    release()
-
-    await Promise.all([first, second])
+    try {
+      await vi.waitFor(() => expect(calls).toBe(1))
+      release()
+      await Promise.all([first, second])
+    } catch (error) {
+      release()
+      throw error
+    }
     expect(getSessionMessages(db, sessionId)).toHaveLength(2)
   })
 
@@ -157,15 +165,18 @@ describe('讨论 follow-up 并发与幂等', () => {
         return { provider: 'qwen' as const, model: 'test-model', text: '完成' }
       },
     })
-    await Promise.resolve()
-
     const deletion = deleteResearchDiscussionWithSessionLock(db, sessionId)
-    await Promise.resolve()
-    expect(getSession(db, sessionId)).not.toBeNull()
-
-    release()
-    await followUp
-    await deletion
+    await vi.waitFor(() => {
+      expect(getSession(db, sessionId)).not.toBeNull()
+    })
+    try {
+      release()
+      await followUp
+      await deletion
+    } catch (error) {
+      release()
+      throw error
+    }
     expect(getSessionMessages(db, sessionId)).toEqual([])
   })
 })
