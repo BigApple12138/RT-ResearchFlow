@@ -5,7 +5,7 @@
 `MarketOverview` 是“大盘云图”一级模块的容器, 承载行业云图、市场共振和板块资金流向。FR-224 后, 顶部标题栏已经常驻展示三大指数摘要, 大盘云图内部不再额外渲染市场环境悬浮球。
 
 FR-243 后，板块资金页优先读取东方财富概念/行业真实主力资金并保存每日观察；外部失败时先回退最近真实存档，再降级为本地“成交方向强度”。降级口径不得称为净流入，也不得生成资金决策信号。
-FR-274（本仓合入上游 d562051；避免与 Settings 数据目录 FR-265 撞号）起，板块资金支持按已存档交易日回看：日期导航、历史模式停止 60 秒轮询、本地完整观察优先；缺失存档时稳定失败，不把当日实时接口冒充历史。Migration 157 起废弃无人使用的 `sector_flow_daily` 表与仓库，唯一存档真相为 `sector_flow_observations`。
+FR-274（本仓合入上游 d562051；避免与 Settings 数据目录 FR-265 撞号）起，板块资金支持按已存档交易日回看：日期导航、历史模式停止 60 秒轮询、本地完整观察优先；缺失存档时稳定失败，不把当日实时接口冒充历史。Migration 157 起废弃无人使用的 `sector_flow_daily` 表与仓库，唯一存档真相为 `sector_flow_observations`。历史模式下 `useEffect` 在注册 `setInterval(60_000)` 前 `return`，契约单测覆盖。
 
 ## 实现思路
 
@@ -15,7 +15,7 @@ FR-274（本仓合入上游 d562051；避免与 Settings 数据目录 FR-265 撞
 
 - `activeSubTab`: 当前子页签, 可为 `industry`、`heatmap` 或 `sectorFlow`; 作为 prop 传入时由外部控制。
 - `onSubTabChange`: 历史兼容回调；FR-244 页面本身不再触发，切换统一由 App 壳层 Flyout 完成。
-- `IndustryHeatmap`：行业云图。
+- `IndustryHeatmap`：行业云图。工具栏下拉在窗口 DOM 内渲染（`HeatmapToolbarSelect`），避免双悬浮详情与录屏捕获失败；动量区区分盘中滚动与历史回放语义。
 - `MarketHeatmapPanel`：市场共振工作台，比较上证、沪深300、创业板与31个申万一级行业的一分钟收益关系。
 - `SectorFlow`：板块真实资金与次日竞价观察。
 
