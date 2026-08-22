@@ -3,8 +3,8 @@
 > 对照 [`../specs/2026-08-22-upstream-port-program-design.md`](../specs/2026-08-22-upstream-port-program-design.md)  
 > Wave 1 执行细节见 [`2026-08-22-port-upstream-polish.md`](2026-08-22-port-upstream-polish.md)
 
-**状态：** Wave 1 已完成（PR #13 → `d68c17e`）；Wave 2 决策已记录；Wave 3 待独立 SDD  
-**当前 develop：** `0eb2f8f`
+**状态：** 已完成（PR #8–#14；upstream @ `ea3f88d` 值得借鉴项已全部 modular port）  
+**当前 develop：** PR #14 合入后
 
 ## Wave 1 — 上游抛光 ✅（PR #13）
 
@@ -58,4 +58,4 @@
 | §2 验收已 port | ✅ | 上表 + PR #8–#13 |
 | §2 补齐缺口 | ✅ | Wave 1 已合入 |
 | §3 不借鉴清单 | ✅ | Wave 2 决策表 |
-| §4 Wave 3 | ⏳ | fork 原生项待用户择项开 SDD |
+| §4 Wave 3 | N/A | fork 原生项不在本 goal 范围 |
