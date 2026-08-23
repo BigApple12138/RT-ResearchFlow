@@ -5,7 +5,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/v/release/BigApple12138/RT-ResearchFlow?include_prereleases" alt="Release 版本（含预发布）">
   <img src="https://img.shields.io/github/license/BigApple12138/RT-ResearchFlow" alt="开源许可证">
-  <img src="https://github.com/BigApple12138/RT-ResearchFlow/actions/workflows/verify.yml/badge.svg" alt="Verify CI 状态">
+  <img src="https://img.shields.io/github/actions/workflow/status/BigApple12138/RT-ResearchFlow/verify.yml?branch=main&label=verify" alt="Verify CI 状态">
   <img src="https://img.shields.io/github/downloads/BigApple12138/RT-ResearchFlow/total" alt="累计下载量">
   <img src="https://img.shields.io/badge/Electron-41-47848F?logo=electron&logoColor=white" alt="Electron 41">
   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white" alt="React 18">
