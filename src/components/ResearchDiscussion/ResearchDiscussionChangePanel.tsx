@@ -12,11 +12,11 @@ import { loadAllResearchChangeCandidates } from './researchChangeCandidateLoader
 
 interface Props {
   discussion: ResearchDiscussionSummary
-  messageCount: number
+  throughMessageSequence: number | null
   onChanged?: () => void
 }
 
-export function ResearchDiscussionChangePanel({ discussion, messageCount, onChanged }: Props) {
+export function ResearchDiscussionChangePanel({ discussion, throughMessageSequence, onChanged }: Props) {
   const [batch, setBatch] = useState<ResearchCandidateBatchSummary | null>(null)
   const [items, setItems] = useState<ResearchChangeSetSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -44,14 +44,14 @@ export function ResearchDiscussionChangePanel({ discussion, messageCount, onChan
   useEffect(() => { void load() }, [load])
 
   const prepare = async () => {
-    if (messageCount <= 0) return
+    if (throughMessageSequence == null) return
     setPreparing(true)
     setError(null)
     setNotice(null)
     const response = await window.api.industryResearch.prepareDiscussionChanges({
       requestId: crypto.randomUUID(),
       sessionId: discussion.sessionId,
-      throughMessageIndex: messageCount - 1,
+      throughMessageSequence,
       projectId: discussion.projectId,
       baseSnapshotId: discussion.baseSnapshotId,
     }) as ResearchApiResponse<{
@@ -138,7 +138,7 @@ export function ResearchDiscussionChangePanel({ discussion, messageCount, onChan
           type="button"
           data-testid="prepare-discussion-changes"
           onClick={() => { void prepare() }}
-          disabled={messageCount <= 0 || preparing}
+          disabled={throughMessageSequence == null || preparing}
           className="rounded-md bg-cyan-700 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-800 disabled:opacity-40"
         >{preparing ? '整理中…' : '整理本次讨论'}</button>
       </div>

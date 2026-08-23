@@ -19,7 +19,7 @@ async function launchApp(userDataDir: string): Promise<ElectronApplication> {
 
 async function openResearchAccessSettings(window: Page): Promise<void> {
   await window.getByTestId('open-config-drawer-btn').click()
-  await window.getByTestId('config-tab-settings').click()
+  await window.getByTestId('config-tab-agent').click()
   await window.getByTestId('research-access-settings').scrollIntoViewIfNeeded()
   await expect(window.getByTestId('research-access-settings')).toBeVisible()
 }
@@ -122,7 +122,7 @@ test('受控本机研究访问可配置、可跨重启、可审计且撤销即�
     await window.getByTestId('open-config-drawer-btn').click()
     await window.getByTestId('config-tab-appearance').click()
     await window.getByRole('button', { name: '暗色模式' }).click()
-    await window.getByTestId('config-tab-settings').click()
+    await window.getByTestId('config-tab-agent').click()
     await window.getByTestId('research-access-settings').scrollIntoViewIfNeeded()
     await expect(window.getByTestId('research-access-profile')).toHaveCount(1)
     await expect(window.getByTestId('research-access-credential-delivery')).toHaveCount(0)

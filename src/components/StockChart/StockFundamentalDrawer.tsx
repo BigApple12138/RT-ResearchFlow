@@ -277,8 +277,10 @@ export function StockFundamentalDrawer({
       const result = await api.get(stockCode)
       if (!result.ok) throw new Error(result.message)
       setSnapshot(result.snapshot)
+      return result.snapshot
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '基本面资料读取失败')
+      return null
     } finally {
       setLoading(false)
     }
@@ -286,12 +288,35 @@ export function StockFundamentalDrawer({
 
   useEffect(() => {
     if (!open) return
+    let cancelled = false
     setSnapshot(null)
     setMessage(null)
     setError(null)
     setActiveView('overview')
-    void loadLocal()
-  }, [loadLocal, open, stockCode])
+    void (async () => {
+      const local = await loadLocal()
+      if (cancelled || !api || !local || local.status !== 'missing') return
+      setRefreshing(true)
+      setMessage(null)
+      setError(null)
+      try {
+        const result = await api.refresh(stockCode)
+        if (cancelled) return
+        if (result.snapshot) setSnapshot(result.snapshot)
+        if (!result.ok) throw new Error(result.message)
+        setMessage(result.message)
+      } catch (caught) {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : '公开基本面资料获取失败')
+        }
+      } finally {
+        if (!cancelled) setRefreshing(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [api, loadLocal, open, stockCode])
 
   const handleRefresh = async () => {
     if (!api || refreshing) return

@@ -4,9 +4,36 @@
 
 `AIAnalysis` 承载 AI 分析会话的投研研判工作台, 支持查看第一轮分析、来源与提示词、第二轮行情复核、追问记录、结构化研判结果、股票代码跳转和产业分析抽屉入口。FR-239 起同一工作台也承载从复盘、信号、判断和产业研究进入的持续研究讨论，不创建第二套聊天记录。
 
+本地投研 Agent Phase 1 起，研判记录默认常驻「新对话」composer（不再空态弹窗门槛，也不盲选历史第一条会话）；首条消息 create-and-send；快捷芯片「分析我的持仓 / 我有哪些持仓 / 检查 AI 配置」经 `ai:runPortfolioBrief` 写入讨论，持仓事实默认不含成本价。主工作区对气泡与研判正文启用文本选中（`select-text`），便于复制；应用壳层导航仍保持 `select-none`。
+
+Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片；点「启动深度研究」后按 **自动化 skill / 多 agent** 直接 `startRun`（从会话抽取股票代码、短问题自动扩写），**不再弹预检表单**；失败仅 toast。会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。
+
+**One-page（2026-08-12）：** 深度研究不是底部常驻账本窗，而是聊天时间线中的回合块（`DeepResearchTurnView`：可折叠过程 + 结论 + 来源提示；详情复用 `ResearchAgentRunDetail`）。`ResearchAgentPanel` 仅作启动/进度控制器（预检 modal / 确认框），经 `onTimelineContextChange` 把 runs 投影给父级。
+
+**Cursor 式会话面（2026-08-12）：** 讨论路径主表面 = 会话线程 + composer。左右栏为可折叠抽屉（`ai-drawer-toggle-*-expand|collapse`），偏好写入 localStorage（`rt-researchflow.ai-analysis.drawer.*`）；只持久化被改动的一侧，避免文章默认右开被误写。无存储时讨论默认左开右收、文章默认左右都开。研究增量：`xl+` 在右抽屉，`<xl` 在主区内联面板（`ai-research-increment-inline`）。Agent 过程在上、正文草稿在下（`ai-agent-turn-live`）；`stream=final` 后清空草稿防双显；首轮乐观 user + 抛错回滚；`onAgentEvent` 用 requestId ref 避免多轮丢早期事件。
+
+### FR：Agent 工作台（Agent Hub）
+
+- **主发送路径**：若 preload 暴露 `window.api.ai.agentTurn`，composer 走 `ai:agentTurn`（目标驱动 Planner–Executor）；否则回退 `ai:followUp`（兼容旧构建）。
+- **会话记忆（2026-08-12）**：Agent 与讨论 followUp **共用**压缩装配——`promptSent` 硬事实 + 累计摘要 + 热尾 + 当前句；turn 前按同一阈值自动 compact。编排器禁止只见当前短句。会话账本只存 user + assistant 最终回复；plan/tool 仅时间线投影，不把 tool 原文写入 `messages`。
+- **Context Engine（2026-08-12）**：发模前统一 `prepareDiscussionTurnContext`：soft（未归档 ≥12 对）+ hard（装配字符 > `CONTEXT_WINDOW_CHARS − CONTEXT_RESERVE_CHARS`，对照 OpenClaw `shouldCompact`）。硬事实仍为 `promptSent`；不引入 `openclaw` 运行时。参考本地源码 `E:\代码库\git\openclaw` @ `46bdbe585f9`。
+- **子编排 isolated（P1）**：`research.deep_start` 默认 `contextMode=isolated`，优先硬事实/累计摘要 + 短热尾快照（不共享父热 `messages` 可变引用）；显式 `fork` 才带更长热尾。无 discussion 时仍注入 `promptSent`。回合落账后 `afterDiscussionTurnCompact` 再评估压缩；compaction 记录含 `tokens_before`/`tokens_after`。关闭「自动整理讨论」时 soft 可关，**hard 仍生效**；hard 无法归档时截断更早热消息。
+- **Context Engine P2**：压缩前写入 `ai_discussion_research_flushes` 研究笔记（对照 OpenClaw memory flush，无额外 AI）；`ai:listDiscussionCompactionCheckpoints` / `ai:restoreDiscussionCompaction` 支持列出与恢复**最新**检查点。讨论区「上下文检查点」列表可见账本，并提供「恢复最近整理」（仅 peel 最新一层；更早条目只读提示）。
+- 结构化候选股行提供「+观察池」（`ai-candidate-add-to-watchlist-*`），写入 `trend_watchlist`；已在池灰态。不自动入池。
+- 统一消费 `ai:agentEvent`（plan / status / tool_call / tool_result / message / hitl / done|error|cancelled）；不展示隐藏推理。投影见 `agentTimelineModel.ts`。
+- **自主取数**：本地只读 Tool（持仓/行情快照/基本面）免确认；`research.deep_start` 与外部 MCP 投影 Tool（`mcp__<serverId>__<toolName>`）为 network Tool，须在配置中心 → Agent 开启「允许 Agent 联网」。观察池「联网补充分类」走「本应用联网搜索」通道，**不依赖**该开关。
+- **官方披露 / 财务多方取数（2026-08-12）**：`official.disclosure_search` 先探测本应用联网搜索与 Tushare；网页侧用短 `site:`（巨潮+沪/深/北交所）并可降级过滤；已启用 Tushare 且有股票主体时并行拉预告/快报等结构化事实（**不是** URL 候选，不可作正文 `candidateId`）。任一侧成功则工具不整单失败。`company.fundamentals_refresh` 有 Tushare 优先，否则降级东财。MCP `isError` 透出 content 摘要。
+
+- **外部 MCP（第二期 B+C）**：每轮 `ai:agentTurn` 开始时，主进程将 **enabled** 服务器的 tools 投影进 ToolRegistry（可用 `last_tools_json` 缓存，过期刷新）；disabled 不注册；执行走主进程 `callTool`，结果截断，时间线审计带 `serverId`/`toolName`。深度研究经受控工具 `mcp.invoke`（仅 serverId/toolName/arguments/subjectRef/asOf）补证，结果落账为 secondary 外源样本，证据门禁不因 MCP 原文自动 complete。
+- **深挖**：Agent 自主调用 `research.deep_start` 为主路径；既有 suggest→「启动深度研究」降为**手动兜底**（Agent 路径开启时发送不再拦截深挖意图）。
+- **写闸门**：`sideEffect=write` 推 HITL 条，经 `ai:agentConfirm` 确认/拒绝后继续；未确认不执行。
+- **联网关闭提示**：时间线展示「去设置开启」文案（非逐次确认）。
+- 结束后仍以 `getSession` 权威刷新消息；流式/工具回合不并发整表覆盖 `messages`。
+- 本会话深度研究 `queued|running|paused` 时拒绝新的 agentTurn（忙碌文案）；Agent 已启动 run 的 progress/delta 仍桥接进 `ai:agentEvent`，避免自锁。
+
 ## 实现思路
 
-组件继续复用 `window.api.ai` 会话接口, 并优先读取 P2 新增的 `structuredResult`。页面保持左侧分析记录、中间研判工作区、右侧研判侧栏三栏结构; 右侧的候选股票、可信度、主线、验证清单和状态优先来自结构化 JSON, 当结构化结果缺失或解析失败时回退到 P1 的文本派生逻辑。顶部标题不直接使用模型正文首行, 而是优先用结构化主线与摘要生成可读研判标题, 避免展示模型过程句或长段原文。
+组件继续复用 `window.api.ai` 会话接口, 并优先读取 P2 新增的 `structuredResult`。页面保持左侧分析记录、中间研判工作区、右侧研判/研究侧栏三栏结构，但左右栏可小按钮收起（Cursor 式）；右侧的候选股票、可信度、主线、验证清单和状态优先来自结构化 JSON（文章会话），讨论会话右侧优先研究增量；当结构化结果缺失或解析失败时回退到 P1 的文本派生逻辑。顶部标题不直接使用模型正文首行, 而是优先用结构化主线与摘要生成可读研判标题, 避免展示模型过程句或长段原文。
 
 ## 主要 props/state/事件流
 
@@ -15,13 +42,21 @@
 - `activeTab`: 中央工作区页签, 包含本次研判、来源与提示词、行情复核和追问记录。
 - `prepareRound2MarketMarkdown/Round2InlineMarketVisual`: 按候选代码或名称定位第二轮Markdown中的股票章节，在该股原支撑/压力参考位置读取既有 `shortTerm:getStockMiniKline` 并嵌入单股K线。纯模型按会话北京时间发生日过滤未来数据，复算30日以内的MA5/MA20、近5/20日收益和高低区间；图表可用时移除重复价位行，少于10个有效交易日或读取失败时恢复该股原始文字参考。
 - `normalizeAIResponseMarkdown`: 在ReactMarkdown解析前修复模型常见的 `**标签：**正文`/`__标签：__正文` 闭合歧义。只调整展示投影，跳过代码围栏、行内代码和转义内容；首轮、第二轮和assistant追问共用，数据库原文不变。
-- `followUpInput/sendingFollowUp`: 控制追问输入与发送状态。
+- `followUpInput/sendingFollowUp`: 控制追问/新对话输入与发送状态；无选中会话时走 create-and-send。
+- 讨论消息由主进程分配稳定 `sequence`；Renderer 不计算或用数组下标定位消息。`ai:followUp` / `ai:agentTurn` 必须携带 UUID `requestId`，同一请求重放返回已有 turn，不重复追加 user/assistant。
+- FR（流式）：`ai:followUp` 期间主进程通过 `ai:followUpDelta`（`start` / `delta` / `reset` / `error`）推送累计正文；Renderer 展示 `ai-followup-streaming` 草稿气泡，**结束再**以 `getSession` 权威消息替换。流式过程不写 `messages` JSON。含网页搜索的 turn 可降级为整段返回并明示。深度研究保留 `researchAgent:progress`，写作步另推 `researchAgent:delta`；同时桥接进 `ai:agentEvent`。时间线 `deep-research-timeline` / `DeepResearchTurnView` 展示过程与结论投影。
+- FR（抽屉）：`sessionDrawerPrefs` 按会话 kind 回退默认；讨论默认右收、文章默认右开；研究增量 `xl` 右抽屉 + `<xl` 内联（`ai-research-increment-inline`）。
+- FR（Agent 正文流式）：`ai:agentTurn` 对用户可见 final 推送 `ai:agentEvent` `message`（`stream: 'delta'|'final'`）；UI `ai-agent-turn-live`（过程→草稿）；无正文时明示整段返回，不独占空「思考中…」。
+- 研究讨论的消息热区只保留未归档原文；历史原文进入归档账本，累计摘要独立保存并在模型调用时与 `promptSent` 硬事实、热消息一起组装。摘要不是一条伪造的 chat message，也不进入 FR-239 变更游标。
+- 讨论达到未归档的 12 个完整问答后，下一次追问前默认自动调用上下文整理；AI 配置可关闭。讨论页的“整理聊天上下文”是显式手动入口，与“整理本次讨论”研究变更动作严格区分，最近 6 条原文作为热尾部保留。
+- 快捷芯片：`chip-analyze-portfolio` / `chip-list-portfolio` / `chip-check-ai-config`；`new-conversation` 回到新对话；`research-composer` 为底部输入区。
 - `generatingStructured`: 控制手动重建结构化研判结果的按钮状态。
 - `showIndustryAnalysis/industryAnalysisText/industryChainId`: 控制产业分析抽屉及自动匹配的产业链。
-- 选择记录时调用 `ai:getSession`; 触发行情复核时调用 `ai:triggerRound2`; 发送追问时调用 `ai:followUp`, 成功后重新读取当前会话, 以接收后台刷新后的结构化结果。
+- 选择记录时调用 `ai:getSession`; 触发行情复核时调用 `ai:triggerRound2`; 发送追问时调用 `ai:agentTurn`（可用时）或 `ai:followUp`, 成功后重新读取当前会话, 以接收后台刷新后的结构化结果。
+- 追问、自动/手动上下文整理、持仓简报、上下文化深度研究启动和研究报告写回由主进程按 session 串行；深度研究处于 `queued/running/paused` 时，主进程通过全量活动状态查询拒绝追问和上下文整理，Renderer 的 busy 状态只负责展示/禁用。
 - 点击“生成/重建结构化研判”时调用 `ai:generateStructuredResult`, 完成后刷新详情与左侧会话状态。
 - 研究讨论由 `ai:startResearchDiscussion` 创建或恢复，顶部 `ResearchDiscussionContextBar` 展示受限来源上下文、关联项目、基线和“返回来源”。首条真实消息发送前可移除可选上下文，隐藏上下文只在模型调用时注入，不写入 `messages`。
-- 绑定产业研究项目的讨论在每轮 `ai:followUp` 中强制使用 ChatGPT 原生网页搜索；普通文章追问和未绑定项目的讨论保持既有 Provider 行为。
+- 绑定产业研究项目的讨论在每轮 `ai:followUp` 中强制使用 ChatGPT 原生网页搜索；普通文章追问和未绑定项目的讨论保持既有 Provider 行为。Agent 回合默认不走网页搜索，外源经 network Tool + 联网开关。
 - assistant 消息可携带 `webSearchTrace`，保存 response ID、搜索/打开页面/页内查找动作、来源和 URL 引用。回复正文仍是主内容，引用和工具轨迹在消息下方默认折叠，可按需打开原文。
 - 新研究助手消息可通过既有会话读取结果获得只读`researchTrace`：默认折叠展示审计状态、事实截点、稳定证据编号、三类证据、来源与正文/证据双SHA-256。历史审计明确标记legacy，快照不匹配时不关联具体证据。
 - 可回放审计提供显式“对比当前事实”，仅提交当前会话ID与消息序号；主进程校验并只读重建当前证据。结果只在组件状态中展示，不保存、不刷新外部数据，也不自动评价原结论是否失效。

@@ -1,6 +1,7 @@
 import type { ChipConclusionData } from '../../utils/chipColors'
 
 export type TrendState = 'strengthening' | 'strong' | 'stable' | 'weakening' | 'broken' | 'insufficient'
+export type AiTrendVerdict = 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
 export type PositionAdvice = 'HOLD' | 'WATCH' | 'TAKE_PROFIT' | 'STOP_LOSS'
 
 export interface TrendBenchmarkHealth {
@@ -77,6 +78,21 @@ export interface TrendWorkbenchItem {
     turnoverRatio: number | null
   } | null
   benchmarkHealth?: TrendBenchmarkHealth
+  structureReview: {
+    verdict: AiTrendVerdict
+    rationale: string
+    focusPoints: string[]
+    stale: boolean
+    scoreDate: string
+    factsHash: string
+    createdAt: number
+    source: 'gate' | 'model'
+    aiScoreStatus: 'scored' | 'skipped' | 'invalid'
+    aiScoreDelta: number | null
+    aiScoreRationale: string | null
+    impliedScore: number | null
+    localScore: number | null
+  } | null
 }
 
 export interface TrendWorkbenchEvent {

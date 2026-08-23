@@ -14,6 +14,7 @@ import {
 } from '../database/researchAgentRunRepository'
 import { ResearchAgentRunnerError } from '../services/researchAgentRunner'
 import { ResearchAgentToolServiceError } from '../services/researchAgentToolService'
+import { getAgentToolRegistry, setResearchDeepStartRunner } from '../agent/agentRuntime'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -66,11 +67,35 @@ export interface ResearchAgentStartReviewRequest {
 
 let manager: ResearchAgentRunManager | null = null
 
+export function getResearchAgentRunManager(): ResearchAgentRunManager | null {
+  return manager
+}
+
 export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | null): void {
   manager = new ResearchAgentRunManager(getDb(), { getWindow })
   const recovery = manager.initialize()
   if (recovery.count > 0) {
     console.info(`[ResearchAgent] paused ${recovery.count} expired run(s) at startup`)
+  }
+
+  // 绑定 Agent Hub research.deep_start → 既有 start（不改租约语义）
+  // Agent turn 已持 discussionSessionLock，必须用 startAssumingSessionLockHeld，禁止再抢锁死锁。
+  try {
+    getAgentToolRegistry()
+    setResearchDeepStartRunner(async (input) => {
+      const started = requireManager().startAssumingSessionLockHeld({
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        question: input.question,
+        subjects: input.subjects,
+        includePortfolio: input.includePortfolio,
+        confirmedBudgetVersion: input.confirmedBudgetVersion,
+        parentRunId: input.parentRunId ?? null,
+      })
+      return { runId: started.run.id, replayed: started.replayed }
+    })
+  } catch (error) {
+    console.warn('[ResearchAgent] Agent Hub deep_start 绑定失败:', error instanceof Error ? error.message : error)
   }
 
   ipcMain.handle('researchAgent:preflight', (event, payload: unknown) => safe(event, getWindow, () => {
@@ -81,7 +106,7 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
     const value = exactRecord(payload ?? {}, ['projectId'])
     return requireManager().preflightDirect(nullableBoundedId(value.projectId, 'projectId'))
   }))
-  ipcMain.handle('researchAgent:startRun', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:startRun', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'sessionId', 'question', 'subjects', 'includePortfolio', 'confirmedBudgetVersion', 'parentRunId'])
     if (value.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前固定研究预算版本')
@@ -96,7 +121,7 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
       parentRunId: nullableUuid(value.parentRunId, 'parentRunId'),
     })
   }))
-  ipcMain.handle('researchAgent:startDirect', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:startDirect', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'question', 'subjects', 'includePortfolio', 'projectId', 'confirmedBudgetVersion'])
     if (value.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前固定研究预算版本')
@@ -110,7 +135,7 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
       confirmedBudgetVersion: value.confirmedBudgetVersion,
     })
   }))
-  ipcMain.handle('researchAgent:startReview', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:startReview', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'sourceRunId', 'confirmedBudgetVersion'])
     if (value.confirmedBudgetVersion !== RESEARCH_AGENT_MULTI_PERSPECTIVE_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前多视角固定预算版本')
@@ -139,7 +164,7 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
     uuid(value.requestId, 'requestId')
     return requireManager().resume(uuid(value.runId, 'runId'))
   }))
-  ipcMain.handle('researchAgent:retryRun', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:retryRun', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'sourceRunId', 'confirmedBudgetVersion'])
     if (value.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前连续研究预算版本')
@@ -150,10 +175,10 @@ export function registerResearchAgentHandlers(getWindow: () => BrowserWindow | n
       confirmedBudgetVersion: value.confirmedBudgetVersion,
     })
   }))
-  ipcMain.handle('researchAgent:deleteRun', (event, payload: unknown) => safe(event, getWindow, () => {
+  ipcMain.handle('researchAgent:deleteRun', (event, payload: unknown) => safeAsync(event, getWindow, async () => {
     const value = exactRecord(payload, ['requestId', 'runId'])
     uuid(value.requestId, 'requestId')
-    return requireManager().delete(uuid(value.runId, 'runId'))
+    return requireManager().deleteWithSessionLock(uuid(value.runId, 'runId'))
   }))
 }
 
@@ -182,6 +207,31 @@ function safe<T>(
   }
   try {
     return { ok: true, data: action() }
+  } catch (error) {
+    if (
+      error instanceof ResearchAgentRunManagerError
+      || error instanceof ResearchAgentRunRepositoryError
+      || error instanceof ResearchAgentRunnerError
+      || error instanceof ResearchAgentToolServiceError
+    ) {
+      return { ok: false, code: error.code, message: error.message }
+    }
+    console.error('[researchAgent IPC]', error instanceof Error ? error.message : String(error))
+    return { ok: false, code: 'INTERNAL_ERROR', message: '研究运行请求失败' }
+  }
+}
+
+async function safeAsync<T>(
+  event: IpcMainInvokeEvent,
+  getWindow: () => BrowserWindow | null,
+  action: () => T | Promise<T>,
+): Promise<ResearchAgentApiResult<T>> {
+  const window = getWindow()
+  if (!window || event.sender !== window.webContents) {
+    return { ok: false, code: 'UNAUTHORIZED', message: '研究运行请求来源无权访问' }
+  }
+  try {
+    return { ok: true, data: await action() }
   } catch (error) {
     if (
       error instanceof ResearchAgentRunManagerError

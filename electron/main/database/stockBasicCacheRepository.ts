@@ -23,6 +23,22 @@ export interface StockBasicCacheFreshness {
   maxUpdatedAt: number | null
 }
 
+export interface PublicStockIdentityRow {
+  tsCode: string
+  name: string
+  market: '主板' | '创业板' | '科创板' | '北交所'
+  listStatus: 'L'
+  observedAt: number
+}
+
+export interface PublicStockIdentityMergeResult {
+  totalRows: number
+  insertedRows: number
+  updatedRows: number
+  preservedIndustryRows: number
+  preservedCircFloatRows: number
+}
+
 function fromDbRow(r: DbRow): StockBasicCacheRow {
   return {
     tsCode: r.ts_code,
@@ -92,21 +108,14 @@ export function queryAllActive(db: Database.Database): StockBasicCacheRow[] {
 }
 
 /**
- * 按关键词模糊搜索股票（名称或代码），最多返回 20 条
+ * 按关键词模糊搜索股票（名称或代码），最多返回 20 条。
+ * 委托 searchByNameOrCode，与 AI/产业搜索共用后缀剥离匹配逻辑。
  */
 export function searchStockBasicByKeyword(
   db: Database.Database,
   keyword: string
 ): Array<{ tsCode: string; name: string }> {
-  const kw = `%${keyword}%`
-  const rows = db
-    .prepare(
-      `SELECT ts_code, name FROM stock_basic_cache
-       WHERE list_status = 'L' AND (name LIKE ? OR ts_code LIKE ?)
-       ORDER BY ts_code ASC LIMIT 20`
-    )
-    .all(kw, kw) as Array<{ ts_code: string; name: string | null }>
-  return rows.map((r) => ({ tsCode: r.ts_code, name: r.name ?? r.ts_code }))
+  return searchByNameOrCode(db, keyword, 20).map(({ tsCode, name }) => ({ tsCode, name }))
 }
 
 /**
@@ -115,6 +124,97 @@ export function searchStockBasicByKeyword(
 export function countAll(db: Database.Database): number {
   const row = db.prepare('SELECT COUNT(*) AS cnt FROM stock_basic_cache').get() as { cnt: number }
   return row?.cnt ?? 0
+}
+
+/**
+ * 合并公共证券身份。公共列表不具备行业、流通股本和可靠退市判定，
+ * 因此只更新明确存在的在市身份，不删除缺席代码，也不覆盖丰富字段；
+ * 已退市/`P` 不强制翻回 `L`；已有 tushare provenance 时不覆盖名称、不降级来源。
+ */
+export function mergePublicStockIdentities(
+  db: Database.Database,
+  rows: PublicStockIdentityRow[],
+): PublicStockIdentityMergeResult {
+  if (rows.length === 0) {
+    return { totalRows: 0, insertedRows: 0, updatedRows: 0, preservedIndustryRows: 0, preservedCircFloatRows: 0 }
+  }
+  const existingStmt = db.prepare(`
+    SELECT name, industry, market, list_status, circ_float FROM stock_basic_cache WHERE ts_code = ?
+  `)
+  const provenanceStmt = db.prepare(`
+    SELECT data_source FROM stock_basic_identity_provenance WHERE ts_code = ?
+  `)
+  const insertStmt = db.prepare(`
+    INSERT INTO stock_basic_cache (
+      ts_code, name, industry, market, list_status, circ_float, updated_at
+    ) VALUES (
+      @tsCode, @name, NULL, @market, 'L', NULL, @observedAt
+    )
+  `)
+  const updateStmt = db.prepare(`
+    UPDATE stock_basic_cache
+    SET name = @name,
+        market = @market,
+        list_status = @listStatus,
+        updated_at = @observedAt
+    WHERE ts_code = @tsCode
+  `)
+  const upsertProvenanceStmt = db.prepare(`
+    INSERT INTO stock_basic_identity_provenance (ts_code, data_source, observed_at)
+    VALUES (?, 'sina', ?)
+    ON CONFLICT(ts_code) DO UPDATE SET
+      data_source = 'sina',
+      observed_at = excluded.observed_at
+  `)
+  const write = db.transaction((items: PublicStockIdentityRow[]) => {
+    let insertedRows = 0
+    let updatedRows = 0
+    let preservedIndustryRows = 0
+    let preservedCircFloatRows = 0
+    for (const row of items) {
+      const existing = existingStmt.get(row.tsCode) as {
+        name: string | null
+        industry: string | null
+        market: string | null
+        list_status: string | null
+        circ_float: number | null
+      } | undefined
+      const provenance = provenanceStmt.get(row.tsCode) as { data_source: string } | undefined
+      const keepTushareName = provenance?.data_source === 'tushare' && existing?.name
+      const delisted = existing?.list_status === 'D' || existing?.list_status === 'P'
+      const nextName = keepTushareName ? existing!.name! : row.name
+      // 公共列表不可靠退市判定：已退市/暂停上市不强制翻回 L
+      const nextListStatus = delisted ? existing!.list_status! : 'L'
+
+      if (existing) {
+        updatedRows += 1
+        if (existing.industry != null) preservedIndustryRows += 1
+        if (existing.circ_float != null) preservedCircFloatRows += 1
+        updateStmt.run({
+          tsCode: row.tsCode,
+          name: nextName,
+          market: row.market,
+          listStatus: nextListStatus,
+          observedAt: row.observedAt,
+        })
+      } else {
+        insertedRows += 1
+        insertStmt.run({
+          tsCode: row.tsCode,
+          name: row.name,
+          market: row.market,
+          observedAt: row.observedAt,
+        })
+      }
+      // 已有更高质量 tushare 身份时，不把 provenance 降级为 sina
+      if (provenance?.data_source !== 'tushare') {
+        upsertProvenanceStmt.run(row.tsCode, row.observedAt)
+      }
+    }
+    return { insertedRows, updatedRows, preservedIndustryRows, preservedCircFloatRows }
+  })
+  const result = write(rows)
+  return { totalRows: rows.length, ...result }
 }
 
 export function getStockBasicCacheFreshness(db: Database.Database): StockBasicCacheFreshness {

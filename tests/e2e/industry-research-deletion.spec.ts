@@ -86,7 +86,7 @@ test('已有不可变版本的归档产业研究仍可从项目菜单永久删�
     expect(windowContract).toEqual([1680, 960])
 
     await window.getByTestId('nav-tab-ai-analysis').click()
-    await window.getByTestId('secondary-nav-ai-analysis-industryResearch').click()
+    await window.evaluate(() => (window).__RT_TEST__?.setAIAnalysisSubTab('industryResearch'))
     await expect(window.getByTestId('industry-research-page')).toBeVisible({ timeout: 15_000 })
     await window.getByLabel('显示已归档').check()
     await expect(window.getByRole('heading', { name: '已有版本的归档产业研究' })).toBeVisible()

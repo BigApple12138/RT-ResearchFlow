@@ -796,10 +796,26 @@ export function getTrendScoreSnapshot(db: Database.Database): TrendScoreDetail[]
 
     let detail: TrendScoreDetail
     if (rtScore) {
-      // 实时缓存
+      // 实时评分缓存：无 rt_k / 缓存未带价时回退本地最新价（与 EOD 分支一致）
       const s = rtScore.score
-      const price = rtEntry?.price ?? rtScore.price ?? null
-      const change = rtEntry?.change ?? rtScore.change ?? null
+      const scorePrice = rtScore.price ?? null
+      const scoreChange = rtScore.change ?? null
+      const needsEodQuote =
+        (rtEntry?.price ?? scorePrice) == null || (rtEntry?.change ?? scoreChange) == null
+      const eodSnapshot = needsEodQuote
+        ? getLatestPriceSnapshot(db, stock.tsCode)
+        : { price: null as number | null, change: null as number | null }
+      const quote = resolveDisplayQuote({
+        hasRealtimeEntry: rtEntry != null,
+        rtPrice: rtEntry?.price ?? null,
+        rtChange: rtEntry?.change ?? null,
+        scorePrice,
+        scoreChange,
+        eodPrice: eodSnapshot.price,
+        eodChange: eodSnapshot.change,
+      })
+      const price = quote.price
+      const change = quote.change
       const position = buildPositionAdvice({
         costPrice: stock.costPrice,
         price,
@@ -837,8 +853,8 @@ export function getTrendScoreSnapshot(db: Database.Database): TrendScoreDetail[]
           : rtScore.score.tradeDate,
         scoreSource: rtScore.source,
         scoreDate: rtScore.score.tradeDate,
-        quoteSource: rtEntry ? 'realtime' : 'eod',
-        quoteTime: rtEntry ? rtDataTime : rtScore.score.tradeDate,
+        quoteSource: quote.quoteSource,
+        quoteTime: quote.quoteSource === 'realtime' ? rtDataTime : rtScore.score.tradeDate,
         scoreVersion: 'v2',
         validWeight: rtScore.computation.validWeight,
       }
@@ -1077,6 +1093,23 @@ function getLatestPriceSnapshot(db: Database.Database, tsCode: string): PriceSna
   return {
     price: last.close ?? null,
     change: computeChangeFromRows(priceRows),
+  }
+}
+
+/** 行情展示优先级：rt_k → 评分缓存价 → 本地日线/价格缓存；有 rt_k 才标 realtime */
+export function resolveDisplayQuote(input: {
+  hasRealtimeEntry: boolean
+  rtPrice: number | null
+  rtChange: number | null
+  scorePrice: number | null
+  scoreChange: number | null
+  eodPrice: number | null
+  eodChange: number | null
+}): { price: number | null; change: number | null; quoteSource: 'realtime' | 'eod' } {
+  return {
+    price: input.rtPrice ?? input.scorePrice ?? input.eodPrice ?? null,
+    change: input.rtChange ?? input.scoreChange ?? input.eodChange ?? null,
+    quoteSource: input.hasRealtimeEntry ? 'realtime' : 'eod',
   }
 }
 

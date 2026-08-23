@@ -51,6 +51,7 @@ interface AIConfigData {
   customSkillPaths: string[]
   skillsForTrend: boolean
   maxSkillChars: number
+  autoCompactDiscussion: boolean
   providerModels: Record<AIProvider, string[]>
   providerLabels: Record<AIProvider, string>
   providerDefaultBaseUrls: Record<AIProvider, string>
@@ -86,7 +87,8 @@ export function AIConfig() {
     maxArticleAgeDays: '90' as string,
     autoCleanupDays: '' as string,
     maxForecastsPerStock: 50,
-    maxForecastComparison: 5
+    maxForecastComparison: 5,
+    autoCompactDiscussion: true,
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -129,7 +131,8 @@ export function AIConfig() {
       maxArticleAgeDays: data.maxArticleAgeDays != null ? String(data.maxArticleAgeDays) : '90',
       autoCleanupDays: data.autoCleanupDays != null ? String(data.autoCleanupDays) : '',
       maxForecastsPerStock: data.maxForecastsPerStock ?? 50,
-      maxForecastComparison: data.maxForecastComparison ?? 5
+      maxForecastComparison: data.maxForecastComparison ?? 5,
+      autoCompactDiscussion: data.autoCompactDiscussion !== false,
     })
     setPriority(data.providerPriority ?? [])
     setMultiModel(data.multiModelProviders ?? [])
@@ -245,7 +248,8 @@ export function AIConfig() {
         multiModelProviders: multiModel,
         selectedSkills,
         skillsForTrend,
-        maxSkillChars
+        maxSkillChars,
+        autoCompactDiscussion: form.autoCompactDiscussion,
       })
       await loadConfig()
       loadAIConfig()
@@ -266,120 +270,124 @@ export function AIConfig() {
       <div className="flex-1 overflow-y-auto p-6">
       <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-5">AI 配置</h2>
       <div className="mb-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-300">
-        {config.hasApiKey ? (
-          <div>已检测到至少一个已配置的 API Key。请先保存基础厂商设置，再执行 AI 分析功能。</div>
+        {(config.hasApiKey || Object.values(config.providerConfigs).some((pc) => pc.hasApiKey)) ? (
+          <div>已检测到至少一个已配置的 API Key。可在下方卡片中继续调整模型与 Base URL，或直接使用 AI 分析。</div>
         ) : (
-          <div className="text-amber-700 dark:text-amber-200">当前未检测到已配置的 API Key。AI 分析功能将无法启动，请先配置并保存厂商 API 密钥。</div>
+          <div className="text-amber-700 dark:text-amber-200">当前未检测到已配置的 API Key。请在对应厂商卡片填写密钥后点击「保存此厂商」。</div>
         )}
       </div>
 
-      {/* FR-079: Provider config table */}
+      {/* FR-079: Provider config cards — avoid wide tables that hide the per-provider save action */}
       <section className="mb-6">
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">AI 厂商配置</label>
         <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">
-          ChatGPT 行支持 OpenAI 兼容接口，可选择 gpt-5.6-sol 或 gpt-5.5，并填写自定义 Base URL。
+          ChatGPT 行支持 OpenAI 兼容接口：可填写自定义 Base URL，模型名可从建议列表选择或手动输入（三方/本地端点请填对方真实模型 ID）。
+          每个厂商请点卡片右下角「保存此厂商」；底部「保存全局设置」不会写入 API Key。
         </p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-400 dark:text-gray-500">
-                <th className="text-left px-3 py-2 font-medium border-b">厂商</th>
-                <th className="text-left px-3 py-2 font-medium border-b">模型</th>
-                <th className="text-left px-3 py-2 font-medium border-b">API Key</th>
-                <th className="text-left px-3 py-2 font-medium border-b">Base URL</th>
-                <th className="text-left px-3 py-2 font-medium border-b">最大输出</th>
-                <th className="text-left px-3 py-2 font-medium border-b">提示词</th>
-                <th className="text-left px-3 py-2 font-medium border-b">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {PROVIDERS.map((p) => {
-                const row = rowForms[p]
-                const pc = config.providerConfigs[p]
-                const models = config.providerModels[p] ?? []
-                if (!row) return null
-                return (
-                  <tr key={p} className="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 dark:bg-gray-800/50">
-                    <td className="px-3 py-2.5 font-medium text-gray-800 dark:text-gray-200 whitespace-nowrap">
-                      {config.providerLabels[p]}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <select
-                        value={row.model}
-                        onChange={(e) => updateRow(p, { model: e.target.value })}
-                        className="w-full min-w-[160px] border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-300"
-                      >
-                        <option value="">请选择模型</option>
-                        {models.map((m) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2">
-                        {pc?.hasApiKey ? (
-                          <span className="text-xs text-green-600 whitespace-nowrap">✓ 已配置</span>
-                        ) : (
-                          <span className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap">未配置</span>
-                        )}
-                        <div className="relative flex-1 min-w-[120px]">
-                          <input
-                            type={row.showApiKey ? 'text' : 'password'}
-                            value={row.apiKey}
-                            onChange={(e) => updateRow(p, { apiKey: e.target.value })}
-                            placeholder={pc?.hasApiKey ? '留空不修改' : '输入Key'}
-                            className="w-full border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-sm pr-10 focus:outline-none focus:border-blue-300"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => updateRow(p, { showApiKey: !row.showApiKey })}
-                            className="absolute right-1 top-1/2 -translate-y-1/2 text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 dark:text-gray-400 dark:text-gray-500"
-                          >
-                            {row.showApiKey ? '隐' : '显'}
-                          </button>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5">
+        <div className="space-y-3">
+          {PROVIDERS.map((p) => {
+            const row = rowForms[p]
+            const pc = config.providerConfigs[p]
+            const models = config.providerModels[p] ?? []
+            if (!row) return null
+            const hasPrompt = !!(pc?.presetPrompt || pc?.trendForecastPrompt || pc?.trendForecastMorrowPrompt)
+            return (
+              <div
+                key={p}
+                data-testid={`ai-provider-card-${p}`}
+                className="rounded-lg border border-gray-200 bg-gray-50/70 p-4 dark:border-gray-700 dark:bg-gray-800/40"
+              >
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    {config.providerLabels[p]}
+                  </div>
+                  <div className="text-xs">
+                    {pc?.hasApiKey ? (
+                      <span className="rounded bg-green-50 px-2 py-0.5 text-green-700 dark:bg-green-950/40 dark:text-green-300">API Key 已保存</span>
+                    ) : (
+                      <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-700 dark:bg-amber-950/40 dark:text-amber-200">API Key 未保存</span>
+                    )}
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="block text-xs text-gray-600 dark:text-gray-400">
+                    模型
+                    <input
+                      type="text"
+                      list={`ai-model-options-${p}`}
+                      value={row.model}
+                      onChange={(e) => updateRow(p, { model: e.target.value.trim() })}
+                      placeholder="选择或输入模型 ID"
+                      className="mt-1 w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-300 focus:outline-none dark:border-gray-700 dark:bg-gray-900"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <datalist id={`ai-model-options-${p}`}>
+                      {models.map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
+                  </label>
+                  <label className="block text-xs text-gray-600 dark:text-gray-400">
+                    API Key
+                    <div className="relative mt-1">
                       <input
-                        type="url"
-                        value={row.baseUrl}
-                        onChange={(e) => updateRow(p, { baseUrl: e.target.value })}
-                        placeholder="Base URL"
-                        className="w-full min-w-[150px] border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-300"
+                        type={row.showApiKey ? 'text' : 'password'}
+                        value={row.apiKey}
+                        onChange={(e) => updateRow(p, { apiKey: e.target.value })}
+                        placeholder={pc?.hasApiKey ? '留空不修改已保存密钥' : '输入 API Key'}
+                        className="w-full rounded border border-gray-200 px-2 py-1.5 pr-10 text-sm focus:border-blue-300 focus:outline-none dark:border-gray-700 dark:bg-gray-900"
                       />
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <input
-                        type="number"
-                        min={1}
-                        value={row.maxTokens}
-                        onChange={(e) => updateRow(p, { maxTokens: parseInt(e.target.value) || 4096 })}
-                        className="w-24 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-300"
-                      />
-                    </td>
-                    <td className="px-3 py-2.5">
                       <button
-                        onClick={() => openPromptModal(p)}
-                        className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap"
+                        type="button"
+                        onClick={() => updateRow(p, { showApiKey: !row.showApiKey })}
+                        className="absolute right-1 top-1/2 -translate-y-1/2 px-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                       >
-                        {(pc?.presetPrompt || pc?.trendForecastPrompt || pc?.trendForecastMorrowPrompt) ? '已配置 ✎' : '配置'}
+                        {row.showApiKey ? '隐' : '显'}
                       </button>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <button
-                        onClick={() => handleSaveRow(p)}
-                        disabled={saving}
-                        className="px-3 py-1 bg-blue-500 text-white text-xs rounded hover:bg-blue-600 transition-colors disabled:opacity-50 whitespace-nowrap"
-                      >
-                        保存
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                    </div>
+                  </label>
+                  <label className="block text-xs text-gray-600 dark:text-gray-400 md:col-span-2">
+                    Base URL
+                    <input
+                      type="url"
+                      value={row.baseUrl}
+                      onChange={(e) => updateRow(p, { baseUrl: e.target.value })}
+                      placeholder="Base URL"
+                      className="mt-1 w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-300 focus:outline-none dark:border-gray-700 dark:bg-gray-900"
+                    />
+                  </label>
+                  <label className="block text-xs text-gray-600 dark:text-gray-400">
+                    最大输出 Tokens
+                    <input
+                      type="number"
+                      min={1}
+                      value={row.maxTokens}
+                      onChange={(e) => updateRow(p, { maxTokens: parseInt(e.target.value) || 4096 })}
+                      className="mt-1 w-full max-w-[10rem] rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-300 focus:outline-none dark:border-gray-700 dark:bg-gray-900"
+                    />
+                  </label>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+                  <button
+                    type="button"
+                    onClick={() => openPromptModal(p)}
+                    className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-300"
+                  >
+                    {hasPrompt ? '提示词已配 ✎' : '配置提示词'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSaveRow(p)}
+                    disabled={saving}
+                    className="rounded bg-blue-500 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-600 disabled:opacity-50"
+                  >
+                    保存此厂商
+                  </button>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </section>
 
@@ -468,6 +476,22 @@ export function AIConfig() {
             </button>
           ))}
         </div>
+      </section>
+
+      {/* Discussion context compaction */}
+      <section className="mb-5 rounded-lg border border-violet-200 bg-violet-50/60 p-3 dark:border-violet-900 dark:bg-violet-950/20">
+        <label className="flex cursor-pointer items-start gap-2 text-sm text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={form.autoCompactDiscussion}
+            onChange={(e) => setForm((current) => ({ ...current, autoCompactDiscussion: e.target.checked }))}
+            className="mt-0.5 rounded border-gray-300"
+          />
+          <span>
+            <span className="font-medium">自动整理聊天上下文</span>
+            <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">讨论达到 12 个完整问答后，在下一次追问前保留累计摘要和最近对话；默认开启，可随时关闭。</span>
+          </span>
+        </label>
       </section>
 
       {/* Max articles per batch */}

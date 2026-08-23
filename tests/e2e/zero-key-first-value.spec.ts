@@ -417,7 +417,7 @@ test('无 Key 持仓缺口只在用户点击后逐股补齐，并跨重启复用
   }
 })
 
-test('公开基本面只在用户显式请求后补齐，并跨抽屉和重启复用SQLite', async () => {
+test('公开基本面在加股/打开抽屉自动补齐，并跨抽屉和重启复用SQLite', async () => {
   test.setTimeout(150_000)
   const userDataDir = mkdtempSync(join(tmpdir(), 'trade-watch-stock-fundamentals-'))
   let app: ElectronApplication | null = null
@@ -441,21 +441,18 @@ test('公开基本面只在用户显式请求后补齐，并跨抽屉和重启�
     await expect(fundamentalOpen).toBeVisible()
     await expect(fundamentalOpen).toHaveCSS('height', '28px')
     await window.screenshot({ path: 'test-results/stock-fundamental-trigger-1440x900-light.png' })
-    expect(await getStockFundamentalRequestCounts(app)).toEqual({ profile: 0, financial: 0, announcement: 0 })
+    await expect
+      .poll(async () => getStockFundamentalRequestCounts(app!), { timeout: 30_000 })
+      .toEqual({ profile: 1, financial: 1, announcement: 1 })
 
     await fundamentalOpen.click()
     const drawer = window.getByTestId('stock-fundamental-drawer')
     const content = window.getByTestId('stock-fundamental-content')
     await expect(drawer).toBeVisible()
-    await expect(content).toHaveAttribute('data-state', 'missing')
-    await expect(drawer).toContainText('本地尚无基本面事实')
+    await expect(content).toHaveAttribute('data-state', 'complete', { timeout: 30_000 })
     await expect(window.getByTestId('stock-fundamental-source-summary')).toBeVisible()
     await expect(window.getByTestId('stock-fundamental-refresh')).toHaveCSS('height', '44px')
     await expect(window.getByTestId('stock-fundamental-refresh-visual')).toHaveCSS('height', '32px')
-    expect(await getStockFundamentalRequestCounts(app)).toEqual({ profile: 0, financial: 0, announcement: 0 })
-
-    await window.getByTestId('stock-fundamental-refresh').click()
-    await expect(content).toHaveAttribute('data-state', 'complete', { timeout: 30_000 })
     await expect(drawer).toContainText('公司概况可用')
     await expect(drawer).toContainText('主要财务可用')
     await expect(drawer).toContainText('公告索引可用')

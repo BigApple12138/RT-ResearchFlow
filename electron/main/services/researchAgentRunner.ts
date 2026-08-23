@@ -174,7 +174,15 @@ export interface ResearchAgentRunnerOptions {
   priceSnapshot?: ResearchAgentPriceSnapshot | null
   persistReport?: (db: Database.Database, input: ResearchAgentPersistInput) => Promise<unknown> | unknown
   onProgress?: (event: ResearchAgentRunnerProgress) => void
+  onDelta?: (event: ResearchAgentRunnerDelta) => void
   executionStartedAt?: number
+}
+
+export interface ResearchAgentRunnerDelta {
+  runId: string
+  phase: ResearchAgentRunPhase
+  type: 'start' | 'delta' | 'reset' | 'done'
+  accumulated?: string
 }
 
 export class ResearchAgentRunnerError extends Error {
@@ -1570,6 +1578,29 @@ async function executePinnedModelCall(
       messages,
       signal: controller.signal,
       disableNativeSearch: true,
+      ...(shouldStreamResearchAgentPurpose(purpose)
+        ? {
+            onDelta: (accumulated: string) => {
+              try {
+                options.onDelta?.({
+                  runId: run.id,
+                  phase: requireRun(db, run.id).phase,
+                  type: 'delta',
+                  accumulated,
+                })
+              } catch { /* UI only */ }
+            },
+          }
+        : {}),
+    }
+    if (shouldStreamResearchAgentPurpose(purpose)) {
+      try {
+        options.onDelta?.({
+          runId: run.id,
+          phase: run.phase,
+          type: 'start',
+        })
+      } catch { /* UI only */ }
     }
     const modelCall = (options.callModel ?? callAIProvider)(request)
     const response = timeoutMs == null
@@ -2648,6 +2679,14 @@ function emitProgress(
   try {
     options.onProgress?.(buildResearchAgentRunnerProgress(db, run, message, options.executionStartedAt))
   } catch { /* UI acceleration only */ }
+}
+
+function shouldStreamResearchAgentPurpose(purpose: string): boolean {
+  if (purpose === 'synthesis' || purpose === 'planning' || purpose === 'moderator') return true
+  if (purpose.endsWith('_case')) return true
+  if (/^(bull|bear)_round_\d+$/.test(purpose)) return true
+  if (purpose.startsWith('convergence')) return true
+  return false
 }
 
 function runnerErrorCode(error: unknown, fallback: string): string {

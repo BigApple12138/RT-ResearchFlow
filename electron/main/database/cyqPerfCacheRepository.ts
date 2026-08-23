@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { CyqPerfCacheRow } from './types'
 import type { CyqPerfRow } from '../services/tushareService'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 interface CyqPerfDbRow {
   ts_code: string
@@ -64,24 +65,30 @@ export function getCyqPerf(
   tsCode: string,
   tradeDate: string,
 ): CyqPerfCacheRow | null {
-  const row = db.prepare(`
-    SELECT * FROM cyq_perf_cache
-    WHERE ts_code = ? AND trade_date = ?
-  `).get(tsCode, tradeDate) as CyqPerfDbRow | undefined
-  return row ? mapRow(row) : null
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const row = db.prepare(`
+      SELECT * FROM cyq_perf_cache
+      WHERE ts_code = ? AND trade_date = ?
+    `).get(code, tradeDate) as CyqPerfDbRow | undefined
+    if (row) return mapRow(row)
+  }
+  return null
 }
 
 export function getLatestCyqPerf(
   db: Database.Database,
   tsCode: string,
 ): CyqPerfCacheRow | null {
-  const row = db.prepare(`
-    SELECT * FROM cyq_perf_cache
-    WHERE ts_code = ?
-    ORDER BY trade_date DESC
-    LIMIT 1
-  `).get(tsCode) as CyqPerfDbRow | undefined
-  return row ? mapRow(row) : null
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const row = db.prepare(`
+      SELECT * FROM cyq_perf_cache
+      WHERE ts_code = ?
+      ORDER BY trade_date DESC
+      LIMIT 1
+    `).get(code) as CyqPerfDbRow | undefined
+    if (row) return mapRow(row)
+  }
+  return null
 }
 
 export function listCyqPerfHistory(
@@ -89,13 +96,16 @@ export function listCyqPerfHistory(
   tsCode: string,
   limit = 20,
 ): CyqPerfCacheRow[] {
-  const rows = db.prepare(`
-    SELECT * FROM cyq_perf_cache
-    WHERE ts_code = ?
-    ORDER BY trade_date DESC
-    LIMIT ?
-  `).all(tsCode, Math.max(1, limit)) as CyqPerfDbRow[]
-  return rows.map(mapRow)
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const rows = db.prepare(`
+      SELECT * FROM cyq_perf_cache
+      WHERE ts_code = ?
+      ORDER BY trade_date DESC
+      LIMIT ?
+    `).all(code, Math.max(1, limit)) as CyqPerfDbRow[]
+    if (rows.length > 0) return rows.map(mapRow)
+  }
+  return []
 }
 
 /** 批量查询多只股票最近若干个官方成本交易日，按日期升序返回。 */
@@ -108,7 +118,8 @@ export function listCyqPerfHistories(
   const result = new Map<string, CyqPerfCacheRow[]>()
   if (tsCodes.length === 0) return result
 
-  const aliases = [...new Set(tsCodes.flatMap((tsCode) => [tsCode, tsCode.split('.')[0]]))]
+  const aliases = [...new Set(tsCodes.flatMap((code) => tsCodeLookupCandidates(code)))]
+  if (aliases.length === 0) return result
   const placeholders = aliases.map(() => '?').join(', ')
   const rows = (tradeDate
     ? db.prepare(`
@@ -134,11 +145,12 @@ export function listCyqPerfHistories(
     byStoredCode.set(row.ts_code, history)
   }
   for (const tsCode of tsCodes) {
-    const exact = byStoredCode.get(tsCode)
-    const fallback = byStoredCode.get(tsCode.split('.')[0])
     const rowsByDate = new Map<string, CyqPerfCacheRow>()
-    for (const row of fallback ?? []) rowsByDate.set(row.tradeDate, row)
-    for (const row of exact ?? []) rowsByDate.set(row.tradeDate, row)
+    for (const code of [...tsCodeLookupCandidates(tsCode)].reverse()) {
+      for (const row of byStoredCode.get(code) ?? []) {
+        rowsByDate.set(row.tradeDate, row)
+      }
+    }
     result.set(tsCode, [...rowsByDate.values()].sort((a, b) => a.tradeDate.localeCompare(b.tradeDate)))
   }
   return result

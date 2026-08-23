@@ -170,7 +170,13 @@ const EXPOSURE_STATUSES = new Set(['candidate', 'confirmed', 'not_separable', 'e
 const EXPOSURE_CREATORS = new Set(['human', 'import'] as const)
 const MASTER_DATA_SOURCES = new Set(['manual', 'tushare'] as const)
 const EXPOSURE_SOURCES = new Set(['manual', 'fina_mainbz'] as const)
-const WEB_SEARCH_PROVIDERS = new Set<ResearchWebSearchProviderId>(['tavily', 'bing', 'custom_openai_compatible_search'])
+const WEB_SEARCH_PROVIDERS = new Set<ResearchWebSearchProviderId>([
+  'tavily',
+  'bing',
+  'custom_openai_compatible_search',
+  'external_mcp',
+  'builtin_web',
+])
 const GENERATION_STAGES = new Set<ResearchGenerationStage>([
   'retrieve', 'scope', 'map', 'evidence', 'hypothesis', 'companies', 'report',
 ])
@@ -1060,11 +1066,23 @@ export function registerIndustryResearchHandlers(getMainWindow?: () => Electron.
           ? null
           : text(payload.apiKey, 'apiKey', 500, false)
       const baseUrl = payload.baseUrl === undefined ? undefined : text(payload.baseUrl, 'baseUrl', 500, false)
+      const mcpServerId = payload.mcpServerId === undefined
+        ? undefined
+        : payload.mcpServerId === null
+          ? null
+          : text(payload.mcpServerId, 'mcpServerId', 64, false)
+      const mcpToolName = payload.mcpToolName === undefined
+        ? undefined
+        : payload.mcpToolName === null
+          ? null
+          : text(payload.mcpToolName, 'mcpToolName', 128, false)
       return ok(saveWebSearchConfigAndView(getDb(), {
         providerId,
         enabled,
         apiKey,
         baseUrl: baseUrl === undefined ? undefined : baseUrl,
+        mcpServerId,
+        mcpToolName,
       }))
     } catch (error) { return handleError(error) }
   })
@@ -1277,10 +1295,27 @@ export function registerIndustryResearchHandlers(getMainWindow?: () => Electron.
   // ── FR-239 contextual discussion changes ────────────────────────────────────
   ipcMain.handle('industryResearch:prepareDiscussionChanges', async (_event, payload: Record<string, unknown>) => {
     try {
+      const hasSequence = payload.throughMessageSequence != null
+      const hasLegacyIndex = payload.throughMessageIndex != null
+      if (!hasSequence && !hasLegacyIndex) {
+        throw new IndustryResearchError('INVALID_PARAM', 'throughMessageSequence 不能为空')
+      }
+      const throughMessageSequence = hasSequence
+        ? finiteNumber(payload.throughMessageSequence, 'throughMessageSequence', true)
+        : null
+      const throughMessageIndex = !hasSequence
+        ? finiteNumber(payload.throughMessageIndex, 'throughMessageIndex', true)
+        : null
+      const range = throughMessageSequence ?? throughMessageIndex
+      if (range == null || !Number.isInteger(range) || range < 0) {
+        throw new IndustryResearchError('INVALID_PARAM', '消息范围必须是非负整数')
+      }
       return ok(await prepareDiscussionChanges(getDb(), {
         requestId: uuid(payload.requestId, 'requestId'),
         sessionId: finiteNumber(payload.sessionId, 'sessionId', true)!,
-        throughMessageIndex: finiteNumber(payload.throughMessageIndex, 'throughMessageIndex', true)!,
+        ...(throughMessageSequence != null
+          ? { throughMessageSequence }
+          : { throughMessageIndex: throughMessageIndex! }),
         projectId: payload.projectId == null ? null : id(payload.projectId, 'projectId'),
         baseSnapshotId: payload.baseSnapshotId == null ? null : id(payload.baseSnapshotId, 'baseSnapshotId'),
       }))

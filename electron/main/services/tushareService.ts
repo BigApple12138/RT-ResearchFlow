@@ -18,6 +18,21 @@ import {
   type TrendBenchmarkErrorCode,
   type TrendBenchmarkHealth,
 } from './trendBenchmarkFreshness'
+import { getDb } from '../database/db'
+import { getDataSourceConfig } from '../database/dataSourceRepository'
+import {
+  DEFAULT_TUSHARE_API_URL,
+  resolveTushareApiUrl
+} from './tushareApiUrl'
+import {
+  buildDailyRowFromIntradayItems,
+  buildDailyRowFromMinuteRows,
+  isBjDailyBarSession,
+  shouldRefreshTodayDailyBar,
+} from './todayDailyBarRefresh'
+import { getStockMinuteByDate } from '../database/stockMinuteCacheRepository'
+
+export { DEFAULT_TUSHARE_API_URL, resolveTushareApiUrl, validateTushareApiUrlInput } from './tushareApiUrl'
 
 /** Single data point for intraday (分时) chart */
 export interface IntradayItem {
@@ -26,11 +41,26 @@ export interface IntradayItem {
   volume: number  // trading volume in 手 (100 shares)
 }
 
-const TUSHARE_API_URL = 'https://api.tushare.pro'
 const EASTMONEY_KLINE_API = 'https://push2his.eastmoney.com/api/qt/stock/kline/get'
 
+/**
+ * Effective Tushare REST URL: form override when provided, else saved config, else official default.
+ * Safe when DB is not initialized (unit tests) — falls back to default.
+ */
+function getActiveTushareApiUrl(override?: string | null): string {
+  if (override !== undefined) {
+    return resolveTushareApiUrl(override)
+  }
+  try {
+    const cfg = getDataSourceConfig(getDb())
+    return resolveTushareApiUrl(cfg.tushareApiUrl)
+  } catch {
+    return DEFAULT_TUSHARE_API_URL
+  }
+}
+
 /** Eastmoney secid for each preset index (market.code) */
-const INDEX_SECID: Record<string, string> = {
+export const INDEX_SECID: Record<string, string> = {
   '000001.SH': '1.000001',
   '000300.SH': '1.000300',
   '399001.SZ': '0.399001',
@@ -69,6 +99,51 @@ interface TushareResponse {
   }
 }
 
+export type TushareAccessErrorCode =
+  | 'TUSHARE_QUOTA_INSUFFICIENT'
+  | 'TUSHARE_RATE_LIMITED'
+  | 'TUSHARE_AUTH_FAILED'
+  | 'TUSHARE_REQUEST_TIMEOUT'
+
+const TUSHARE_REQUEST_TIMEOUT_MS = 15_000
+const TUSHARE_ACCESS_ERROR_CODES = new Set<TushareAccessErrorCode>([
+  'TUSHARE_QUOTA_INSUFFICIENT',
+  'TUSHARE_RATE_LIMITED',
+  'TUSHARE_AUTH_FAILED',
+  'TUSHARE_REQUEST_TIMEOUT',
+])
+
+/** 把上游自然语言错误收敛为可判定终态，频率限制必须先于通用“权限”文案识别。 */
+export function getTushareAccessErrorCode(error: unknown): TushareAccessErrorCode | null {
+  const explicitCode = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : ''
+  if (TUSHARE_ACCESS_ERROR_CODES.has(explicitCode as TushareAccessErrorCode)) {
+    return explicitCode as TushareAccessErrorCode
+  }
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  for (const code of TUSHARE_ACCESS_ERROR_CODES) {
+    if (message.includes(code)) return code
+  }
+  if (error instanceof Error && error.name === 'AbortError') return 'TUSHARE_REQUEST_TIMEOUT'
+  if (/HTTP_429|每分钟|每小时|最多访问|访问频率|访问过于频繁|频次|限流|稍后再试/i.test(message)) {
+    return 'TUSHARE_RATE_LIMITED'
+  }
+  if (/HTTP_401|token\s*(?:无效|错误|不存在)|无效.*token|用户不存在|认证失败/i.test(message)) {
+    return 'TUSHARE_AUTH_FAILED'
+  }
+  if (/HTTP_403|没有访问.*权限|权限不足|积分不足|积分|购买|套餐|未开通|需要开通/i.test(message)) {
+    return 'TUSHARE_QUOTA_INSUFFICIENT'
+  }
+  return null
+}
+
+function createTushareAccessError(code: TushareAccessErrorCode): Error & { code: TushareAccessErrorCode } {
+  const error = new Error(code) as Error & { code: TushareAccessErrorCode }
+  error.code = code
+  return error
+}
+
 /** Tushare Pro REST API: POST JSON body format */
 function buildRequest(token: string, apiName: string, params: Record<string, string>, fields: string) {
   return {
@@ -101,10 +176,13 @@ function bjDateRange(): { endDate: string; startDate30: string } {
 }
 
 /** Validate a Tushare token using the trade_cal API (lightweight, no data cost) */
-export async function validateTushareToken(token: string): Promise<{ valid: boolean; message: string }> {
+export async function validateTushareToken(
+  token: string,
+  apiUrl?: string
+): Promise<{ valid: boolean; message: string }> {
   try {
     const res = await withRetry(() => fetch(
-      TUSHARE_API_URL,
+      getActiveTushareApiUrl(apiUrl),
       buildRequest(token, 'trade_cal', { exchange: 'SSE', start_date: '20240101', end_date: '20240101' }, 'cal_date')
     ))
     const json = (await res.json()) as TushareResponse
@@ -163,6 +241,93 @@ function normalizeAshareCode(value: string): { stockCode: string; tsCode: string
     stockCode,
     tsCode: `${stockCode}.${market}`,
     secid: `${isShanghai ? '1' : '0'}.${stockCode}`,
+  }
+}
+
+const EASTMONEY_QUOTE_API = 'https://push2.eastmoney.com/api/qt/stock/get'
+
+export type StockIdentityResolveResult =
+  | {
+      ok: true
+      stockCode: string
+      tsCode: string
+      stockName: string
+      source: 'local' | 'eastmoney-quote'
+    }
+  | {
+      ok: false
+      code: 'INVALID_STOCK_CODE' | 'STOCK_NOT_FOUND' | 'FETCH_FAILED'
+      message: string
+    }
+
+/**
+ * 轻量解析股票代码→名称（本地 stock_info 或东财 push2 报价字段 f58）。
+ * 不拉日线，供搜索/加股展示；日线仍走 fetchEastmoneySingleStockDaily / fetchStock。
+ */
+export async function resolveStockIdentityPublic(
+  db: Database.Database,
+  inputCode: string,
+): Promise<StockIdentityResolveResult> {
+  const normalized = normalizeAshareCode(inputCode)
+  if (!normalized) {
+    return { ok: false, code: 'INVALID_STOCK_CODE', message: '请输入六位股票代码' }
+  }
+
+  const localName = getStockInfo(db, normalized.stockCode)?.stockName
+  if (isUsableStockName(localName, normalized.stockCode)) {
+    return {
+      ok: true,
+      stockCode: normalized.stockCode,
+      tsCode: normalized.tsCode,
+      stockName: localName.trim(),
+      source: 'local',
+    }
+  }
+
+  const url = new URL(EASTMONEY_QUOTE_API)
+  url.searchParams.set('fltt', '2')
+  url.searchParams.set('invt', '2')
+  url.searchParams.set('secid', normalized.secid)
+  url.searchParams.set('fields', 'f57,f58')
+  url.searchParams.set('_', String(Date.now()))
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 4_000)
+    let response: Response
+    try {
+      response = await fetch(url.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+    if (!response.ok) {
+      return { ok: false, code: 'FETCH_FAILED', message: '公开行情名称查询失败，请稍后重试' }
+    }
+    const json = (await response.json()) as {
+      rc?: number
+      data?: { f57?: string | number; f58?: string } | null
+    }
+    const name = typeof json.data?.f58 === 'string' ? json.data.f58.trim() : ''
+    if (json.rc !== 0 || !isUsableStockName(name, normalized.stockCode)) {
+      return {
+        ok: false,
+        code: 'STOCK_NOT_FOUND',
+        message: `未找到股票代码 ${normalized.stockCode}，请确认代码是否正确`,
+      }
+    }
+    upsertStockInfo(db, normalized.stockCode, name)
+    return {
+      ok: true,
+      stockCode: normalized.stockCode,
+      tsCode: normalized.tsCode,
+      stockName: name,
+      source: 'eastmoney-quote',
+    }
+  } catch {
+    return { ok: false, code: 'FETCH_FAILED', message: '公开行情名称查询超时或失败，请稍后重试' }
   }
 }
 
@@ -320,28 +485,7 @@ function buildDailyRowFromIntraday(
   tradeDate: string,
   items: IntradayItem[]
 ): StockPriceCacheRow | null {
-  const valid = items
-    .filter((i) => Number.isFinite(i.price))
-    .sort((a, b) => a.time.localeCompare(b.time))
-  if (valid.length === 0) return null
-
-  const open = valid[0].price
-  const close = valid[valid.length - 1].price
-  const high = Math.max(...valid.map((i) => i.price))
-  const low = Math.min(...valid.map((i) => i.price))
-  const volume = valid.reduce((sum, i) => sum + (Number.isFinite(i.volume) ? i.volume : 0), 0)
-
-  return {
-    stockCode,
-    tradeDate,
-    open,
-    high,
-    low,
-    close,
-    volume,
-    amount: null,
-    fetchedAt: Date.now()
-  }
+  return buildDailyRowFromIntradayItems(stockCode, tradeDate, items)
 }
 
 interface IndexPriceFetchResult {
@@ -573,7 +717,7 @@ export async function forceFetchSingleStock(
   // Always fetch authoritative stock name from Tushare stock_basic (can correct AI hallucinations)
   try {
     const res = await withRetry(() => fetch(
-      TUSHARE_API_URL,
+      getActiveTushareApiUrl(),
       buildRequest(token, 'stock_basic', { ts_code: tsCode, fields: 'ts_code,name' }, 'ts_code,name')
     ))
     const json = (await res.json()) as TushareResponse
@@ -589,7 +733,7 @@ export async function forceFetchSingleStock(
 
   // Fetch daily price data — throws on network error (caller should use withRetry)
   const res = await withRetry(() => fetch(
-    TUSHARE_API_URL,
+    getActiveTushareApiUrl(),
     buildRequest(
       token,
       'daily',
@@ -656,13 +800,13 @@ export async function forceFetchSingleStock(
       })()
     }
 
-    // FR-093: during provider lag (intraday available, daily missing), backfill today's daily row.
-    await backfillTodayDailyFromIntradayIfMissing(db, stockCode)
+    // FR-093: 盘中/合成今日 bar 可覆盖刷新；正式日线（有 amount）收盘后不覆盖
+    await backfillTodayDailyFromIntradayIfMissing(db, stockCode, { force: true })
     return newRows.length
   }
 
   // Even when daily endpoint returns empty/non-zero, try intraday fallback for today.
-  await backfillTodayDailyFromIntradayIfMissing(db, stockCode)
+  await backfillTodayDailyFromIntradayIfMissing(db, stockCode, { force: true })
 
   return 0
 }
@@ -696,7 +840,7 @@ export async function fetchStockPricesForPrompt(
     if (!cachedDates.has(endDate) || hasMissingAmount(db, code, startDate30)) {
       try {
         const res = await withRetry(() => fetch(
-          TUSHARE_API_URL,
+          getActiveTushareApiUrl(),
           buildRequest(
             token,
             'daily',
@@ -914,12 +1058,14 @@ export async function fetchEastmoneyMinuteOHLCV(
       const ymd = dt.slice(0, sp).replace(/-/g, '')
       const hm = dt.slice(sp + 1, sp + 6) // HH:mm
       const open = parseFloat(parts[1])
-      const close = parseFloat(parts[2])
+      let close = parseFloat(parts[2])
       const high = parseFloat(parts[3])
       const low = parseFloat(parts[4])
       const vol = parseFloat(parts[5])
       const amountYuan = parseFloat(parts[6])
       if (!hm || isNaN(close)) continue
+      // 开盘初期东财偶发 close=0 的未完成分钟：用 open 回填，避免整段被下游当成无效
+      if (close === 0 && Number.isFinite(open) && open !== 0) close = open
       bars.push({
         tradeDate: ymd,
         tsMinute: hm,
@@ -938,21 +1084,72 @@ export async function fetchEastmoneyMinuteOHLCV(
 }
 
 /**
- * FR-093: Backfill today's missing daily row from intraday 5-min data.
- * Applies to both regular stocks and preset indices.
+ * FR-093: 用分时/分钟合成或刷新「今日」日 K。
+ * 盘中可覆盖已有合成 bar；收盘后不覆盖带 amount 的正式日线。
  */
 export async function backfillTodayDailyFromIntradayIfMissing(
   db: Database.Database,
-  stockCode: string
+  stockCode: string,
+  options?: { force?: boolean },
 ): Promise<boolean> {
+  const raw = stockCode.trim().toUpperCase()
+  // 个股缓存键为 6 位；预置指数为带后缀（000001.SH）
+  const cacheCode = INDEX_SECID[raw]
+    ? raw
+    : raw.replace(/\.(SH|SZ|BJ)$/i, '')
+  const minuteCode = cacheCode.includes('.') ? cacheCode.split('.')[0] : cacheCode
   const { endDate } = bjDateRange()
-  if (getCachedDates(db, stockCode).has(endDate)) return false
+  const existing = getCachedPrices(db, cacheCode).find((r) => r.tradeDate === endDate) ?? null
+  const inSession = isBjDailyBarSession()
+  if (
+    !shouldRefreshTodayDailyBar({
+      hasExisting: existing != null,
+      existingAmount: existing?.amount ?? null,
+      inSession,
+      force: options?.force === true,
+    })
+  ) {
+    return false
+  }
 
-  const intradayItems = await fetchIntradayDataByDate(stockCode, endDate)
-  const row = buildDailyRowFromIntraday(stockCode, endDate, intradayItems)
+  const minuteRows = getStockMinuteByDate(db, minuteCode, endDate)
+  let row = buildDailyRowFromMinuteRows(cacheCode, endDate, minuteRows)
+  if (!row) {
+    const intradayKey = INDEX_SECID[cacheCode] ? cacheCode : minuteCode
+    const intradayItems = await fetchIntradayDataByDate(intradayKey, endDate)
+    row = buildDailyRowFromIntraday(cacheCode, endDate, intradayItems)
+  }
   if (!row) return false
 
+  const hist = getCachedPrices(db, cacheCode).filter((r) => r.tradeDate < endDate)
+  const prevClose = hist.length > 0 ? hist[hist.length - 1].close : null
+  const pctChg =
+    prevClose != null && prevClose > 0 && row.close != null
+      ? ((row.close - prevClose) / prevClose) * 100
+      : 0
+
   insertPrices(db, [row])
+  try {
+    upsertDailyClose(db, [
+      {
+        tsCode: cacheCode.includes('.') ? cacheCode : toTsCode(cacheCode),
+        tradeDate: endDate,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close ?? 0,
+        pctChg,
+        vol: row.volume,
+        turnoverRate: null,
+        amount: row.amount,
+      },
+    ])
+  } catch (err) {
+    console.warn(
+      '[TodayDailyBar] upsertDailyClose failed:',
+      err instanceof Error ? err.message : String(err),
+    )
+  }
   return true
 }
 
@@ -977,7 +1174,7 @@ export async function fetchStockMinute(
   try {
     const res = await withRetry(() =>
       fetch(
-        TUSHARE_API_URL,
+        getActiveTushareApiUrl(),
         buildRequest(
           token,
           'rt_min',
@@ -1069,18 +1266,32 @@ async function callTushareApi(
 ): Promise<TushareResponse> {
   let json: TushareResponse
   try {
-    const res = await withRetry(() => fetch(TUSHARE_API_URL, buildRequest(token, apiName, params, fields)))
-    json = (await res.json()) as TushareResponse
+    json = await withRetry(async () => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), TUSHARE_REQUEST_TIMEOUT_MS)
+      try {
+        const response = await fetch(getActiveTushareApiUrl(), {
+          ...buildRequest(token, apiName, params, fields),
+          signal: controller.signal,
+        })
+        if (response.ok === false) throw new Error(`HTTP_${response.status}`)
+        return (await response.json()) as TushareResponse
+      } finally {
+        clearTimeout(timer)
+      }
+    }, {
+      shouldRetry: (error) => getTushareAccessErrorCode(error) === null,
+    })
   } catch (err) {
+    const accessCode = getTushareAccessErrorCode(err)
+    if (accessCode) throw createTushareAccessError(accessCode)
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(`${apiName} network error: ${msg}`)
   }
   if (json.code !== 0) {
     const msg = json.msg || `code=${json.code}`
-    // 积分不足判定: Tushare 通常返回 "权限" / "积分" / "购买" 等关键字
-    if (/权限|积分|购买|套餐|开通/.test(msg)) {
-      throw new Error('TUSHARE_QUOTA_INSUFFICIENT')
-    }
+    const accessCode = getTushareAccessErrorCode(msg)
+    if (accessCode) throw createTushareAccessError(accessCode)
     throw new Error(`${apiName} API error: ${msg}`)
   }
   return json
@@ -1796,6 +2007,32 @@ export async function fetchDailyForCandidates(
     }
   }
   return results
+}
+
+/**
+ * 按单股 + 交易日取成交额（千元）。用于 mini K 今日缺额时补数，避免全市场重拉。
+ */
+export async function fetchDailyAmountForTradeDate(
+  token: string,
+  tsCode: string,
+  tradeDate: string,
+): Promise<number | null> {
+  const json = await callTushareApi(
+    token,
+    'daily',
+    { ts_code: tsCode, trade_date: tradeDate },
+    'ts_code,trade_date,amount',
+  )
+  if (!json.data?.items?.length) return null
+  const { fields: fs, items } = json.data
+  const idx = (n: string) => fs.indexOf(n)
+  const amountIdx = idx('amount')
+  if (amountIdx < 0) return null
+  for (const it of items) {
+    const amount = parseNumOrNull(it[amountIdx])
+    if (amount != null && amount > 0) return amount
+  }
+  return null
 }
 
 /**

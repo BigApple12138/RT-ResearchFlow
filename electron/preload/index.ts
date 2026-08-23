@@ -45,6 +45,19 @@ import type {
   ResearchAccessWorkbench,
 } from '../main/ipc/researchAccessHandlers'
 import type {
+  ExternalMcpApiResult,
+  ExternalMcpIdRequest,
+  ExternalMcpSaveRequest,
+  ExternalMcpServerView,
+  ExternalMcpSetEnabledRequest,
+  ExternalMcpTestResponse,
+} from '../main/ipc/externalMcpHandlers'
+import type {
+  DataRootActionResponse,
+  DataRootSelectResponse,
+  DataRootStatusResponse,
+} from '../main/ipc/dataRootHandlers'
+import type {
   ResearchAgentDetailResponse,
   ResearchAgentDeleteResponse,
   ResearchAgentListResponse,
@@ -218,6 +231,31 @@ interface MorningAuctionMarketThemeSummary {
   summary: string
   themes: MorningAuctionMarketTheme[]
 }
+type MorningAuctionPriceHistoryState = 'ready' | 'partial' | 'insufficient' | 'unavailable' | 'failed'
+type MorningAuctionPriceHistoryReason =
+  | 'LOCAL_READY'
+  | 'REMOTE_BACKFILLED'
+  | 'SAMPLE_INSUFFICIENT'
+  | 'NO_HISTORY_DATA'
+  | 'REMOTE_BACKFILL_FAILED'
+  | 'LOCAL_READ_FAILED'
+interface MorningAuctionPriceHistoryStatus {
+  state: MorningAuctionPriceHistoryState
+  availableDays: number
+  reason: MorningAuctionPriceHistoryReason
+  remoteAttempted: boolean
+}
+interface MorningAuctionPriceHistoryCoverage {
+  requestedCount: number
+  covered3dCount: number
+  covered5dCount: number
+  readyCount: number
+  partialCount: number
+  insufficientCount: number
+  unavailableCount: number
+  failedCount: number
+  updatedAt: number
+}
 interface MorningAuctionStock {
   tsCode: string
   stockCode: string
@@ -233,6 +271,7 @@ interface MorningAuctionStock {
   currentAmount: number | null
   pctChg3d: number | null
   pctChg5d: number | null
+  priceHistory?: MorningAuctionPriceHistoryStatus
   conceptNames: string[]
   themeAttribution?: MorningAuctionThemeAttribution | null
 }
@@ -269,6 +308,7 @@ interface MorningAuctionSnapshot {
     n: BoardCategoryStock[]
   }
   marketThemes?: MorningAuctionMarketThemeSummary
+  priceHistoryCoverage?: MorningAuctionPriceHistoryCoverage
 }
 
 type MorningAuctionVerificationStatus = 'pending' | 'checked' | 'blocked' | 'not_applicable'
@@ -962,6 +1002,15 @@ interface ReviewReportSnapshot {
   followUps: unknown[]
   disclaimer: string
   emptyDay: boolean
+  aiNarrative?: {
+    status: 'pending' | 'ready' | 'error' | 'skipped'
+    text: string | null
+    generatedAt?: number
+    provider?: string
+    model?: string
+    errorCode?: string
+    errorMessage?: string
+  } | null
 }
 
 interface SavedReviewReportSummary {
@@ -1180,6 +1229,17 @@ interface TrendBenchmarkHealth {
   message: string
 }
 
+interface TrendStructureReviewDto {
+  verdict: 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
+  rationale: string
+  focusPoints: string[]
+  stale: boolean
+  scoreDate: string
+  factsHash: string
+  createdAt: number
+  source: 'gate' | 'model'
+}
+
 interface TrendWorkbenchItem {
   tsCode: string
   stockCode: string
@@ -1239,6 +1299,7 @@ interface TrendWorkbenchItem {
     turnoverRatio: number | null
   } | null
   benchmarkHealth: TrendBenchmarkHealth
+  structureReview: TrendStructureReviewDto | null
 }
 
 interface TrendWorkbenchSnapshot {
@@ -1546,6 +1607,16 @@ const api = {
       ipcRenderer.on('researchAgent:progress', wrapped)
       return () => { ipcRenderer.removeListener('researchAgent:progress', wrapped) }
     },
+    onDelta: (listener: (event: {
+      runId: string
+      phase: string
+      type: 'start' | 'delta' | 'reset' | 'done'
+      accumulated?: string
+    }) => void) => {
+      const wrapped = (_event: IpcRendererEvent, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('researchAgent:delta', wrapped)
+      return () => { ipcRenderer.removeListener('researchAgent:delta', wrapped) }
+    },
   },
   researchAccess: {
     getWorkbench: () => ipcRenderer.invoke('researchAccess:getWorkbench') as Promise<ResearchAccessApiResult<ResearchAccessWorkbench>>,
@@ -1560,8 +1631,31 @@ const api = {
     listAudit: (payload: ResearchAccessAuditRequest = {}) =>
       ipcRenderer.invoke('researchAccess:listAudit', payload) as Promise<ResearchAccessApiResult<{ items: ResearchAccessAuditView[]; nextCursor: number | null }>>,
   },
+  externalMcp: {
+    listServers: () =>
+      ipcRenderer.invoke('externalMcp:listServers') as Promise<ExternalMcpApiResult<ExternalMcpServerView[]>>,
+    saveServer: (payload: ExternalMcpSaveRequest) =>
+      ipcRenderer.invoke('externalMcp:saveServer', payload) as Promise<ExternalMcpApiResult<ExternalMcpServerView>>,
+    deleteServer: (payload: ExternalMcpIdRequest) =>
+      ipcRenderer.invoke('externalMcp:deleteServer', payload) as Promise<ExternalMcpApiResult<{ id: string }>>,
+    setEnabled: (payload: ExternalMcpSetEnabledRequest) =>
+      ipcRenderer.invoke('externalMcp:setEnabled', payload) as Promise<ExternalMcpApiResult<ExternalMcpServerView>>,
+    testServer: (payload: ExternalMcpIdRequest) =>
+      ipcRenderer.invoke('externalMcp:testServer', payload) as Promise<ExternalMcpApiResult<ExternalMcpTestResponse>>,
+  },
   app: {
     relaunch: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),
+  },
+
+  // ── Data root (自定义数据目录) ─────────────────────
+  dataRoot: {
+    getStatus: () => ipcRenderer.invoke('dataRoot:getStatus') as Promise<DataRootStatusResponse>,
+    selectDirectory: () =>
+      ipcRenderer.invoke('dataRoot:selectDirectory') as Promise<DataRootSelectResponse>,
+    setCustomRoot: (path: string) =>
+      ipcRenderer.invoke('dataRoot:setCustomRoot', path) as Promise<DataRootActionResponse>,
+    clearOverride: () =>
+      ipcRenderer.invoke('dataRoot:clearOverride') as Promise<DataRootActionResponse>,
   },
 
   // ── Briefings ──────────────────────────────────────────
@@ -1719,6 +1813,7 @@ const api = {
       customSkillPaths?: string[]
       skillsForTrend?: boolean
       maxSkillChars?: number
+      autoCompactDiscussion?: boolean
       providerConfig?: {
         provider: string
         model?: string
@@ -1756,8 +1851,119 @@ const api = {
     cleanupOldSessions: (olderThanDays: number, dryRun: boolean) =>
       ipcRenderer.invoke('ai:cleanupOldSessions', { olderThanDays, dryRun }),
     triggerRound2: (sessionId: number) => ipcRenderer.invoke('ai:triggerRound2', { sessionId }),
-    followUp: (sessionId: number, message: string) =>
-      ipcRenderer.invoke('ai:followUp', { sessionId, message }),
+    followUp: (payload: { requestId: string; sessionId: number; message: string }) =>
+      ipcRenderer.invoke('ai:followUp', payload) as Promise<{
+        text?: string
+        messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
+        error?: string
+        code?: string
+        warning?: string
+      }>,
+    agentTurn: (payload: { requestId: string; sessionId: number; message: string }) =>
+      ipcRenderer.invoke('ai:agentTurn', payload) as Promise<{
+        text?: string
+        messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
+        terminal?: 'done' | 'error' | 'cancelled'
+        waitingSubagent?: { runId: string }
+        error?: string
+        code?: string
+      }>,
+    agentConfirm: (payload: { requestId: string; hitlId: string; approved: boolean }) =>
+      ipcRenderer.invoke('ai:agentConfirm', payload) as Promise<{
+        ok: boolean
+        requestId?: string
+        hitlId?: string
+        approved?: boolean
+        error?: string
+        code?: string
+      }>,
+    onAgentEvent: (
+      listener: (data: {
+        type: string
+        requestId: string
+        sessionId: number
+        at: number
+        payload?: Record<string, unknown>
+      }) => void,
+    ) => {
+      const wrapped = (_event: unknown, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('ai:agentEvent', wrapped)
+      return () => { ipcRenderer.removeListener('ai:agentEvent', wrapped) }
+    },
+    compactDiscussionContext: (payload: {
+      requestId: string
+      sessionId: number
+      mode: 'auto' | 'manual'
+    }) => ipcRenderer.invoke('ai:compactDiscussionContext', payload) as Promise<{
+      ok: boolean
+      sessionId?: number
+      archivedCount?: number
+      skippedReason?: string
+      compaction?: {
+        id: string
+        sessionId: number
+        requestId: string
+        sourceStartSequence: number
+        coveredThroughSequence: number
+        sourceMessagesHash: string
+        summary: string
+        summaryHash: string
+        provider: string
+        model: string
+        createdAt: number
+        tokensBefore?: number | null
+        tokensAfter?: number | null
+      } | null
+      messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number; requestId?: string }>
+      code?: string
+      message?: string
+      error?: string
+    }>,
+    listDiscussionCompactionCheckpoints: (payload: {
+      sessionId: number
+      limit?: number
+    }) => ipcRenderer.invoke('ai:listDiscussionCompactionCheckpoints', payload) as Promise<{
+      ok: boolean
+      sessionId?: number
+      checkpoints?: Array<{
+        id: string
+        sessionId: number
+        requestId: string
+        sourceStartSequence: number
+        coveredThroughSequence: number
+        summary: string
+        tokensBefore?: number | null
+        tokensAfter?: number | null
+        createdAt: number
+      }>
+      code?: string
+      message?: string
+    }>,
+    restoreDiscussionCompaction: (payload: {
+      requestId: string
+      sessionId: number
+      compactionId?: string
+    }) => ipcRenderer.invoke('ai:restoreDiscussionCompaction', payload) as Promise<{
+      ok: boolean
+      sessionId?: number
+      restoredCompactionId?: string
+      restoredCount?: number
+      messages?: Array<{ role: 'user' | 'assistant'; content: string; sequence?: number }>
+      code?: string
+      message?: string
+    }>,
+    runPortfolioBrief: (payload: {
+      requestId: string
+      sessionId?: number | null
+      mode?: 'analyze' | 'list' | 'checkConfig'
+    }) =>
+      ipcRenderer.invoke('ai:runPortfolioBrief', payload) as Promise<{
+        ok: boolean
+        sessionId?: number
+        text?: string
+        code?: string
+        message?: string
+      }>,
     startResearchDiscussion: (payload: {
       requestId: string
       origin: { type: 'daily_review' | 'weekly_review' | 'decision_signal' | 'judgment' | 'industry_research' | 'briefing' | 'manual'; id: string | null }
@@ -1792,6 +1998,22 @@ const api = {
     ) => {
       ipcRenderer.on('ai:analyzeProgress', (_event, data) => listener(data))
       return () => { ipcRenderer.removeAllListeners('ai:analyzeProgress') }
+    },
+    onFollowUpDelta: (
+      listener: (data: {
+        type: 'start' | 'delta' | 'reset' | 'error'
+        requestId: string
+        sessionId: number
+        streaming?: boolean
+        reason?: 'web_search' | 'buffered'
+        accumulated?: string
+        provider?: string
+        message?: string
+      }) => void,
+    ) => {
+      const wrapped = (_event: unknown, data: Parameters<typeof listener>[0]) => listener(data)
+      ipcRenderer.on('ai:followUpDelta', wrapped)
+      return () => { ipcRenderer.removeListener('ai:followUpDelta', wrapped) }
     },
     onTushareNotConfigured: (listener: (data: { stockCodes: string[] }) => void) => {
       ipcRenderer.on('ai:tushareNotConfigured', (_event, data) => listener(data))
@@ -1865,9 +2087,10 @@ const api = {
   // ── Data Sources ───────────────────────────────────────
   datasource: {
     getConfig: () => ipcRenderer.invoke('datasource:getConfig'),
-    saveConfig: (data: { tushareToken?: string; tushareEnabled?: boolean }) =>
-      ipcRenderer.invoke('datasource:saveConfig', data),
-    validateTushare: (token: string) => ipcRenderer.invoke('datasource:validateTushare', { token }),
+    saveConfig: (data: { tushareToken?: string; tushareEnabled?: boolean; tushareApiUrl?: string }) =>
+      ipcRenderer.invoke('datasource:saveConfig', data) as Promise<{ ok: true } | { ok: false; message: string }>,
+    validateTushare: (token: string, apiUrl?: string) =>
+      ipcRenderer.invoke('datasource:validateTushare', { token, apiUrl }),
     listStocks: () => ipcRenderer.invoke('datasource:listStocks') as Promise<{ stockCode: string; stockName: string }[]>,
     getStockPrices: (stockCode: string) => ipcRenderer.invoke('datasource:getStockPrices', { stockCode }),
     getStockPricePage: (stockCode: string, beforeTradeDate?: string, limit = 149) =>
@@ -1909,6 +2132,11 @@ const api = {
           }
         | { ok: false; reason: 'invalid_code' | 'no_token' | 'not_found' | 'fetch_error' }
       >,
+    refreshTodayBar: (stockCode: string) =>
+      ipcRenderer.invoke('datasource:refreshTodayBar', { stockCode }) as Promise<
+        | { ok: true; updated: boolean }
+        | { ok: false; reason: 'invalid_code' | 'fetch_error'; message?: string }
+      >,
     fetchStock: (stockCode: string) =>
       ipcRenderer.invoke('datasource:fetchStock', { stockCode }) as Promise<
         | {
@@ -1930,7 +2158,12 @@ const api = {
     searchStock: (keyword: string) =>
       ipcRenderer.invoke('datasource:searchStock', { keyword }) as Promise<
         | { ok: true; results: Array<{ tsCode: string; name: string; market: string | null }>; empty: false }
-        | { ok: true; results: []; empty: true }
+        | { ok: true; results: Array<{ tsCode: string; name: string; market: string | null }>; empty: true }
+      >,
+    resolveStockName: (stockCode: string) =>
+      ipcRenderer.invoke('datasource:resolveStockName', { stockCode }) as Promise<
+        | { ok: true; stockCode: string; tsCode: string; stockName: string; source: 'local' | 'eastmoney-quote' }
+        | { ok: false; code: 'INVALID_STOCK_CODE' | 'STOCK_NOT_FOUND' | 'FETCH_FAILED'; message: string }
       >,
     getIntradayData: (stockCode: string) =>
       ipcRenderer.invoke('datasource:getIntradayData', { stockCode }),
@@ -2045,7 +2278,44 @@ const api = {
               }>
             }
           }
-        | { ok: false; code: 'UPSTREAM_TIMEOUT' | 'UPSTREAM_ERROR' | 'EMPTY_DATA'; message: string }
+        | { ok: false; code: 'UPSTREAM_TIMEOUT' | 'UPSTREAM_RATE_LIMITED' | 'UPSTREAM_ERROR' | 'EMPTY_DATA'; message: string }
+      >,
+    recoverMomentum: (payload: {
+      windowMinutes: number
+      includeL2: boolean
+      forceRefresh?: boolean
+      existingRecord?: {
+        tradeDate: string
+        boundary: 'lunch-close' | 'market-close'
+        windowMinutes: number
+      }
+    }) =>
+      ipcRenderer.invoke('marketHeatmap:recoverMomentum', payload) as Promise<
+        | {
+            ok: true
+            data: null | {
+              origin: 'historical-recovery'
+              sourceProvider: 'eastmoney'
+              taxonomy: 'shenwan'
+              tradeDate: string
+              boundary: 'lunch-close' | 'market-close'
+              boundaryTime: string
+              baselineTime: string
+              capturedAt: number
+              windowMinutes: number
+              momentum: Record<string, number>
+              coverage: {
+                l1: { available: number; total: number }
+                l2: { available: number; total: number }
+              }
+              warnings: string[]
+            }
+          }
+        | {
+            ok: false
+            code: 'INVALID_PARAM' | 'UPSTREAM_TIMEOUT' | 'UPSTREAM_RATE_LIMITED' | 'HISTORICAL_DATA_UNAVAILABLE' | 'UPSTREAM_ERROR'
+            message: string
+          }
       >,
     // FR-114: Hover 懒加载行业成分股
     getIndustryConstituents: (industryCode: string, industryName: string) =>
@@ -2346,7 +2616,7 @@ const api = {
       >,
     getStockMiniKline: (tsCode: string) =>
       ipcRenderer.invoke('shortTerm:getStockMiniKline', { tsCode }) as Promise<
-        | { ok: true; rows: Array<{ tsCode: string; tradeDate: string; open: number | null; high: number | null; low: number | null; close: number; pctChg: number; amount: number | null }> }
+        | { ok: true; rows: Array<{ tsCode: string; tradeDate: string; open: number | null; high: number | null; low: number | null; close: number; pctChg: number; vol: number | null; amount: number | null }> }
         | { ok: false; error: string }
       >,
     getStockIntraday: (tsCode: string) =>
@@ -2925,8 +3195,8 @@ const api = {
 
   // ── Market Overview ────────────────────────────────────
   market: {
-    getMarketOverview: (forceRefresh?: boolean) =>
-      ipcRenderer.invoke('market:getMarketOverview', { forceRefresh }) as Promise<
+    getMarketOverview: (request?: { tradeDate?: string | null; forceRefresh?: boolean }) =>
+      ipcRenderer.invoke('market:getMarketOverview', request) as Promise<
         | {
             ok: true
             snapshot: {
@@ -2943,12 +3213,30 @@ const api = {
               generatedAt: number
               isHistorical?: boolean
               tradeDate?: string
+              coverage: {
+                distribution: { available: boolean; sampleCount: number }
+                timeline: { mode: 'exact' | 'approximate' | 'missing'; pointCount: number }
+              }
+              navigation: {
+                selectedTradeDate: string
+                previousTradeDate: string | null
+                nextTradeDate: string | null
+                latestTradeDate: string
+              }
               resonance: {
                 tradeDate: string
+                recoverableTradeDates: string[]
                 dataMode: 'realtime' | 'archive' | 'partial'
+                sourceMode: 'realtime' | 'local_archive' | 'network_backfill'
                 sourceLabel: string
                 generatedAt: number
-                coverage: { available: number; total: number }
+                coverage: {
+                  available: number
+                  total: number
+                  benchmarkTrends: { available: number; total: number }
+                  sectorTrends: { available: number; total: number }
+                  boardFacts: { available: number; total: number }
+                }
                 benchmarks: Array<{
                   key: 'shanghai' | 'csi300' | 'chinext'
                   code: string
@@ -2970,6 +3258,14 @@ const api = {
                   flatCount: number | null
                   mainNetInflow: number | null
                   mainNetInflowRate: number | null
+                  structure: {
+                    state: 'broad_strength' | 'concentrated_lead' | 'divergent' | 'broad_weakness' | 'insufficient'
+                    available: number
+                    total: number
+                    leaders: string[]
+                    laggards: string[]
+                    summary: string
+                  }
                   metrics: Record<'shanghai' | 'csi300' | 'chinext', {
                     sampleCount: number
                     correlation: number | null
@@ -2984,10 +3280,60 @@ const api = {
                   }>
                 }>
               }
+              quality: {
+                status: 'complete' | 'partial'
+                missingParts: Array<
+                  | 'benchmark_trends'
+                  | 'sector_trends'
+                  | 'board_facts'
+                  | 'distribution'
+                  | 'timeline'
+                  | 'timeline_approximate'
+                >
+              }
             }
           }
         | { ok: false; code: string; error: string }
       >,
+    getMarketResonanceChildren: (request: {
+      tradeDate: string
+      parentIndustryCode: string
+      forceRefresh?: boolean
+    }) => ipcRenderer.invoke('market:getMarketResonanceChildren', request) as Promise<
+      | {
+          ok: true
+          result: {
+            tradeDate: string
+            parentIndustryCode: string
+            parentIndustryName: string
+            factSource: 'local_archive' | 'current_network'
+            structure: {
+              state: 'broad_strength' | 'concentrated_lead' | 'divergent' | 'broad_weakness' | 'insufficient'
+              available: number
+              total: number
+              leaders: string[]
+              laggards: string[]
+              summary: string
+            }
+            trendCoverage: { available: number; total: number }
+            children: Array<{
+              boardCode: string
+              name: string
+              tradeDate: string
+              change: number
+              excessVsParent: number | null
+              breadthRate: number | null
+              upCount: number | null
+              downCount: number | null
+              flatCount: number | null
+              mainNetInflow: number | null
+              mainNetInflowRate: number | null
+              points: Array<{ time: string; change: number }>
+            }>
+          }
+        }
+      | { ok: false; code: string; error: string }
+    >,
     getConceptConstituents: (conCode: string) =>
       ipcRenderer.invoke('market:getConceptConstituents', { conCode }) as Promise<
         | {
@@ -3006,8 +3352,8 @@ const api = {
 
   // ── Sector Flow ────────────────────────────────────────
   sectorFlow: {
-    getSnapshot: (forceRefresh?: boolean) =>
-      ipcRenderer.invoke('sectorFlow:getSnapshot', { forceRefresh }) as Promise<
+    getSnapshot: (request: { forceRefresh?: boolean; tradeDate?: string | null } = {}) =>
+      ipcRenderer.invoke('sectorFlow:getSnapshot', request) as Promise<
         | {
             ok: true
             snapshot: {
@@ -3090,6 +3436,12 @@ const api = {
                 archived: boolean
                 message: string
               }
+              navigation: {
+                selectedTradeDate: string | null
+                previousTradeDate: string | null
+                nextTradeDate: string | null
+                latestTradeDate: string | null
+              }
             }
           }
         | { ok: false; error: string; message?: string }
@@ -3150,6 +3502,26 @@ const api = {
       ipcRenderer.invoke('trend:addStocks', stocks) as Promise<{
         ok: boolean; count?: number; error?: string; message?: string
       }>,
+    listTrackedTsCodes: () =>
+      ipcRenderer.invoke('trend:listTrackedTsCodes') as Promise<{
+        ok: boolean
+        codes?: string[]
+        error?: string
+        message?: string
+      }>,
+    listWatchlistCandidates: (payload?: { limit?: number; lookbackDays?: number }) =>
+      ipcRenderer.invoke('trend:listWatchlistCandidates', payload) as Promise<{
+        ok: boolean
+        candidates?: Array<{
+          tsCode: string
+          stockName: string
+          hitCount: number
+          lastSeenAt: string
+          hasEnoughKline: boolean
+        }>
+        error?: string
+        message?: string
+      }>,
     searchStocks: (keyword: string) =>
       ipcRenderer.invoke('trend:searchStocks', keyword) as Promise<{
         ok: boolean
@@ -3159,6 +3531,160 @@ const api = {
     removeStock: ({ tsCode, subCategory }: { tsCode: string; subCategory?: string }) =>
       ipcRenderer.invoke('trend:removeStock', { tsCode, subCategory }) as Promise<{
         ok: boolean; error?: string
+      }>,
+    clearWatchlist: () =>
+      ipcRenderer.invoke('trend:clearWatchlist') as Promise<{
+        ok: boolean
+        removedRows?: number
+        removedStocks?: number
+        error?: string
+        message?: string
+      }>,
+    suggestWatchlistCategory: (tsCode: string) =>
+      ipcRenderer.invoke('trend:suggestWatchlistCategory', { tsCode }) as Promise<{
+        ok: boolean
+        data?: {
+          category: string | null
+          subCategory: string | null
+          source: 'watchlist' | 'eastmoney-map' | null
+          eastmoneyIndustry: string | null
+          eastmoneyConcepts: string[]
+          matchedKeyword: string | null
+          stockName: string | null
+        }
+        error?: string
+        message?: string
+      }>,
+    listCategoryMapRules: () =>
+      ipcRenderer.invoke('trend:listCategoryMapRules') as Promise<{
+        ok: boolean
+        data?: Array<{
+          id: number
+          keyword: string
+          matchField: 'industry' | 'concept' | 'name'
+          category: string
+          subCategory: string
+          priority: number
+          enabled: boolean
+          createdAt: number
+          updatedAt: number
+        }>
+        error?: string
+        message?: string
+      }>,
+    upsertCategoryMapRule: (rule: {
+      id?: number
+      keyword: string
+      matchField: 'industry' | 'concept' | 'name'
+      category: string
+      subCategory: string
+      priority?: number
+      enabled?: boolean
+    }) =>
+      ipcRenderer.invoke('trend:upsertCategoryMapRule', rule) as Promise<{
+        ok: boolean
+        data?: {
+          id: number
+          keyword: string
+          matchField: 'industry' | 'concept' | 'name'
+          category: string
+          subCategory: string
+          priority: number
+          enabled: boolean
+          createdAt: number
+          updatedAt: number
+        }
+        error?: string
+        message?: string
+      }>,
+    deleteCategoryMapRule: (id: number) =>
+      ipcRenderer.invoke('trend:deleteCategoryMapRule', { id }) as Promise<{
+        ok: boolean
+        error?: string
+        message?: string
+      }>,
+    listCategoryTree: () =>
+      ipcRenderer.invoke('trend:listCategoryTree') as Promise<{
+        ok: boolean
+        data?: {
+          tree: Record<string, string[]>
+          nodes: Array<{
+            id: number
+            category: string
+            subCategory: string
+            sortOrder: number
+            enabled: boolean
+            createdAt: number
+            updatedAt: number
+          }>
+        }
+        error?: string
+        message?: string
+      }>,
+    upsertCategoryNode: (node: {
+      category: string
+      subCategory?: string
+      sortOrder?: number
+      enabled?: boolean
+    }) =>
+      ipcRenderer.invoke('trend:upsertCategoryNode', node) as Promise<{
+        ok: boolean
+        data?: {
+          id: number
+          category: string
+          subCategory: string
+          sortOrder: number
+          enabled: boolean
+          createdAt: number
+          updatedAt: number
+        }
+        error?: string
+        message?: string
+      }>,
+    deleteCategoryNode: (payload: {
+      category: string
+      subCategory?: string
+      clearReferences?: boolean
+    }) =>
+      ipcRenderer.invoke('trend:deleteCategoryNode', payload) as Promise<{
+        ok: boolean
+        error?: string
+        message?: string
+        refs?: { inUseWatchlist: number; inUseRules: number }
+      }>,
+    renameCategoryNode: (payload: {
+      from: { category: string; subCategory?: string }
+      to: { category: string; subCategory?: string }
+    }) =>
+      ipcRenderer.invoke('trend:renameCategoryNode', payload) as Promise<{
+        ok: boolean
+        error?: string
+        message?: string
+      }>,
+    webSuggestWatchlistCategory: (payload: { tsCode: string; name?: string }) =>
+      ipcRenderer.invoke('trend:webSuggestWatchlistCategory', payload) as Promise<{
+        ok: boolean
+        data?: {
+          status: 'ok' | 'error'
+          pair: { category: string; subCategory: string; matchedKeyword: string | null } | null
+          pending: Array<{ label: string; suggestedCategory: string; suggestedSubCategory: string }>
+          rawTags: string[]
+          error: string | null
+        }
+        error?: string
+        message?: string
+      }>,
+    adoptWebCategorySuggestion: (payload: {
+      category: string
+      subCategory?: string
+      createMapRule?: boolean
+      keyword?: string
+    }) =>
+      ipcRenderer.invoke('trend:adoptWebCategorySuggestion', payload) as Promise<{
+        ok: boolean
+        data?: { category: string; subCategory: string }
+        error?: string
+        message?: string
       }>,
     updateGroupTag: (tsCode: string, groupTag: string) =>
       ipcRenderer.invoke('trend:updateGroupTag', { tsCode, groupTag }) as Promise<{ ok: boolean; error?: string }>,
@@ -3204,6 +3730,58 @@ const api = {
         error?: string
         message?: string
       }>,
+    reviewStructure: (payload: { requestId: string; tsCode: string; forceModelRefresh?: boolean }) =>
+      ipcRenderer.invoke('trend:reviewStructure', payload) as Promise<{
+        ok: boolean
+        data?: TrendStructureReviewDto
+        error?: string
+        message?: string
+      }>,
+    reviewStructureBatch: (payload: { requestId: string; tsCodes: string[]; forceModelRefresh?: boolean }) =>
+      ipcRenderer.invoke('trend:reviewStructureBatch', payload) as Promise<{
+        ok: boolean
+        data?: Array<{
+          tsCode: string
+          ok: boolean
+          review?: TrendStructureReviewDto
+          error?: string
+        }>
+        error?: string
+        message?: string
+      }>,
+    onReviewProgress: (cb: (progress: {
+      batchRequestId: string
+      tsCode: string
+      index: number
+      total: number
+      status: 'running' | 'succeeded' | 'failed'
+      review?: TrendStructureReviewDto
+      error?: string
+    }) => void) => {
+      const listener = (_event: IpcRendererEvent, data: Parameters<typeof cb>[0]) => cb(data)
+      ipcRenderer.on('trend:reviewProgress', listener)
+      return () => { ipcRenderer.removeListener('trend:reviewProgress', listener) }
+    },
+    openStructureReviewDiscussion: (payload: {
+      requestId: string
+      tsCode: string
+      scoreDate: string
+      factsHash: string
+      initialQuestion?: string
+      returnTarget: { tab: string; subTab?: string; entityId?: string; stateKey?: string; scrollTop?: number }
+    }) => ipcRenderer.invoke('trend:openStructureReviewDiscussion', payload) as Promise<{
+      ok: boolean
+      data?: {
+        session: { id: number; createdAt: string; provider: string; model: string; promptSent: string; response: string | null; messages: unknown[] }
+        discussion: unknown
+        contextPreview: unknown[]
+        resumed: boolean
+        initialQuestion?: string | null
+      }
+      code?: string
+      error?: string
+      message?: string
+    }>,
     getAlerts: (days?: number) =>
       ipcRenderer.invoke('trend:getAlerts', { days }) as Promise<{
         ok: boolean
@@ -3348,6 +3926,98 @@ const api = {
         error?: string
         message?: string
       }>,
+    updateReviewReportSnapshot: (payload: {
+      id: string
+      report: ReviewReportSnapshot
+    }) =>
+      ipcRenderer.invoke('decision:updateReviewReportSnapshot', payload) as Promise<{
+        ok: boolean
+        data?: SavedReviewReportSummary
+        error?: string
+        message?: string
+      }>,
+    generateReviewAiNarrative: (payload: { report: ReviewReportSnapshot }) =>
+      ipcRenderer.invoke('decision:generateReviewAiNarrative', payload) as Promise<{
+        ok: boolean
+        data?: ReviewReportSnapshot['aiNarrative']
+        error?: { code: string; message: string } | string
+        message?: string
+      }>,
+    generateTodayBriefAi: (payload: {
+      brief: {
+        headline: string
+        bullets: string[]
+        marketThemeLine: string | null
+        portfolioClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        sectorClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        strategyClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        peripheralClues: Array<{
+          kind: string
+          title: string
+          summary: string
+          evidence: string
+          meta: string
+          tsCode: string | null
+          stockName: string | null
+          conceptName: string | null
+          priority: number
+          confidence: number | null
+          occurrenceCount: number
+        }>
+        noiseCount: number
+        disclaimer: string
+      }
+    }) =>
+      ipcRenderer.invoke('decision:generateTodayBriefAi', payload) as Promise<{
+        ok: boolean
+        data?: {
+          status: 'pending' | 'ready' | 'error' | 'skipped'
+          text: string | null
+          generatedAt?: number
+          provider?: string
+          model?: string
+          errorCode?: string
+          errorMessage?: string
+        }
+        error?: { code: string; message: string } | string
+        message?: string
+      }>,
     listReviewReports: (filters?: ReviewReportListFilters) =>
       ipcRenderer.invoke('decision:listReviewReports', filters ?? {}) as Promise<{
         ok: boolean
@@ -3428,8 +4098,8 @@ const api = {
       ipcRenderer.invoke('portfolio:updateCostPrice', { tsCode, costPrice }) as Promise<{ ok: boolean; code?: string; message?: string }>,
     getDashboard: (options?: { limit?: number; offset?: number }) =>
       ipcRenderer.invoke('portfolio:getDashboard', options ?? {}) as Promise<{ ok: boolean; data?: PortfolioDashboardItem[]; total?: number; code?: string; message?: string }>,
-    forecastNow: () =>
-      ipcRenderer.invoke('portfolio:forecastNow') as Promise<{ ok: boolean; code?: string }>,
+    forecastNow: (payload?: { force?: boolean }) =>
+      ipcRenderer.invoke('portfolio:forecastNow', payload ?? {}) as Promise<{ ok: boolean; code?: string }>,
     onForecastProgress: (
       cb: (data: { current: number; total: number; stockCode: string; ok: boolean; error?: string }) => void
     ) => {
@@ -3623,10 +4293,12 @@ const api = {
       ipcRenderer.invoke('industryResearch:getFinancialSyncStatus', { companyId }),
     getWebSearchConfig: () => ipcRenderer.invoke('industryResearch:getWebSearchConfig'),
     saveWebSearchConfig: (payload: {
-      providerId: 'tavily' | 'bing' | 'custom_openai_compatible_search'
+      providerId: 'tavily' | 'bing' | 'custom_openai_compatible_search' | 'external_mcp' | 'builtin_web'
       enabled: boolean
       apiKey?: string | null
       baseUrl?: string | null
+      mcpServerId?: string | null
+      mcpToolName?: string | null
     }) => ipcRenderer.invoke('industryResearch:saveWebSearchConfig', payload),
     validateWebSearchConfig: () => ipcRenderer.invoke('industryResearch:validateWebSearchConfig'),
     listEvidenceCandidates: (projectId: string, runId?: string) =>
@@ -3656,7 +4328,9 @@ const api = {
     prepareDiscussionChanges: (payload: {
       requestId: string
       sessionId: number
-      throughMessageIndex: number
+      throughMessageSequence: number
+      /** Compatibility-only field for legacy callers; new UI must use sequence. */
+      throughMessageIndex?: number
       projectId?: string | null
       baseSnapshotId?: string | null
     }) => ipcRenderer.invoke('industryResearch:prepareDiscussionChanges', payload),

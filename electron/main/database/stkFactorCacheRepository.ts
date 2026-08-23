@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { StkFactorRow } from '../services/tushareService'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 // ── FR-143 技术因子缓存仓库 ─────────────────────────────────────────
 
@@ -32,62 +33,47 @@ export function queryFactor(
   tsCode: string,
   tradeDate: string
 ): StkFactorRow | null {
-  const row = db
-    .prepare(
-      `SELECT ts_code, trade_date, close,
-              macd_bfq, macd_dif_bfq, macd_dea_bfq,
-              kdj_k_bfq, kdj_d_bfq, kdj_bfq,
-              rsi_bfq_6, rsi_bfq_12,
-              boll_upper_bfq, boll_mid_bfq, boll_lower_bfq,
-              ma_bfq_5, ma_bfq_10, ma_bfq_20, ma_bfq_60,
-              turnover_rate, volume_ratio, updays, downdays
-       FROM stk_factor_cache
-       WHERE ts_code = ? AND trade_date = ?`
-    )
-    .get(tsCode, tradeDate) as Record<string, unknown> | undefined
-  if (!row) return null
-  return {
-    tsCode: row['ts_code'] as string,
-    tradeDate: row['trade_date'] as string,
-    close: (row['close'] as number | null) ?? null,
-    macdBfq: (row['macd_bfq'] as number | null) ?? null,
-    macdDifBfq: (row['macd_dif_bfq'] as number | null) ?? null,
-    macdDeaBfq: (row['macd_dea_bfq'] as number | null) ?? null,
-    kdjKBfq: (row['kdj_k_bfq'] as number | null) ?? null,
-    kdjDBfq: (row['kdj_d_bfq'] as number | null) ?? null,
-    kdjBfq: (row['kdj_bfq'] as number | null) ?? null,
-    rsiBfq6: (row['rsi_bfq_6'] as number | null) ?? null,
-    rsiBfq12: (row['rsi_bfq_12'] as number | null) ?? null,
-    bollUpperBfq: (row['boll_upper_bfq'] as number | null) ?? null,
-    bollMidBfq: (row['boll_mid_bfq'] as number | null) ?? null,
-    bollLowerBfq: (row['boll_lower_bfq'] as number | null) ?? null,
-    maBfq5: (row['ma_bfq_5'] as number | null) ?? null,
-    maBfq10: (row['ma_bfq_10'] as number | null) ?? null,
-    maBfq20: (row['ma_bfq_20'] as number | null) ?? null,
-    maBfq60: (row['ma_bfq_60'] as number | null) ?? null,
-    turnoverRate: (row['turnover_rate'] as number | null) ?? null,
-    volumeRatio: (row['volume_ratio'] as number | null) ?? null,
-    updays: (row['updays'] as number | null) ?? null,
-    downdays: (row['downdays'] as number | null) ?? null,
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const row = db
+      .prepare(
+        `SELECT ts_code, trade_date, close,
+                macd_bfq, macd_dif_bfq, macd_dea_bfq,
+                kdj_k_bfq, kdj_d_bfq, kdj_bfq,
+                rsi_bfq_6, rsi_bfq_12,
+                boll_upper_bfq, boll_mid_bfq, boll_lower_bfq,
+                ma_bfq_5, ma_bfq_10, ma_bfq_20, ma_bfq_60,
+                turnover_rate, volume_ratio, updays, downdays
+         FROM stk_factor_cache
+         WHERE ts_code = ? AND trade_date = ?`
+      )
+      .get(code, tradeDate) as Record<string, unknown> | undefined
+    if (row) return mapFactorRow(row)
   }
+  return null
 }
 
 /** 查询该股票 DB 中最新一期技术因子（按 trade_date 降序取最新），盘中兜底用 */
 export function queryLatestFactor(db: Database.Database, tsCode: string): StkFactorRow | null {
-  const row = db
-    .prepare(
-      `SELECT ts_code, trade_date, close,
-              macd_bfq, macd_dif_bfq, macd_dea_bfq,
-              kdj_k_bfq, kdj_d_bfq, kdj_bfq,
-              rsi_bfq_6, rsi_bfq_12,
-              boll_upper_bfq, boll_mid_bfq, boll_lower_bfq,
-              ma_bfq_5, ma_bfq_10, ma_bfq_20, ma_bfq_60,
-              turnover_rate, volume_ratio, updays, downdays
-       FROM stk_factor_cache
-       WHERE ts_code = ? ORDER BY trade_date DESC LIMIT 1`
-    )
-    .get(tsCode) as Record<string, unknown> | undefined
-  if (!row) return null
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const row = db
+      .prepare(
+        `SELECT ts_code, trade_date, close,
+                macd_bfq, macd_dif_bfq, macd_dea_bfq,
+                kdj_k_bfq, kdj_d_bfq, kdj_bfq,
+                rsi_bfq_6, rsi_bfq_12,
+                boll_upper_bfq, boll_mid_bfq, boll_lower_bfq,
+                ma_bfq_5, ma_bfq_10, ma_bfq_20, ma_bfq_60,
+                turnover_rate, volume_ratio, updays, downdays
+         FROM stk_factor_cache
+         WHERE ts_code = ? ORDER BY trade_date DESC LIMIT 1`
+      )
+      .get(code) as Record<string, unknown> | undefined
+    if (row) return mapFactorRow(row)
+  }
+  return null
+}
+
+function mapFactorRow(row: Record<string, unknown>): StkFactorRow {
   return {
     tsCode: row['ts_code'] as string,
     tradeDate: row['trade_date'] as string,
@@ -131,44 +117,24 @@ export function queryFactorHistory(
   tsCode: string,
   startDate: string   // YYYYMMDD
 ): StkFactorRow[] {
-  const rows = db
-    .prepare(
-      `SELECT ts_code, trade_date, close,
-              macd_bfq, macd_dif_bfq, macd_dea_bfq,
-              kdj_k_bfq, kdj_d_bfq, kdj_bfq,
-              rsi_bfq_6, rsi_bfq_12,
-              boll_upper_bfq, boll_mid_bfq, boll_lower_bfq,
-              ma_bfq_5, ma_bfq_10, ma_bfq_20, ma_bfq_60,
-              turnover_rate, volume_ratio, updays, downdays
-       FROM stk_factor_cache
-       WHERE ts_code = ? AND trade_date >= ?
-       ORDER BY trade_date ASC`
-    )
-    .all(tsCode, startDate) as Record<string, unknown>[]
-  return rows.map((row) => ({
-    tsCode: row['ts_code'] as string,
-    tradeDate: row['trade_date'] as string,
-    close: (row['close'] as number | null) ?? null,
-    macdBfq: (row['macd_bfq'] as number | null) ?? null,
-    macdDifBfq: (row['macd_dif_bfq'] as number | null) ?? null,
-    macdDeaBfq: (row['macd_dea_bfq'] as number | null) ?? null,
-    kdjKBfq: (row['kdj_k_bfq'] as number | null) ?? null,
-    kdjDBfq: (row['kdj_d_bfq'] as number | null) ?? null,
-    kdjBfq: (row['kdj_bfq'] as number | null) ?? null,
-    rsiBfq6: (row['rsi_bfq_6'] as number | null) ?? null,
-    rsiBfq12: (row['rsi_bfq_12'] as number | null) ?? null,
-    bollUpperBfq: (row['boll_upper_bfq'] as number | null) ?? null,
-    bollMidBfq: (row['boll_mid_bfq'] as number | null) ?? null,
-    bollLowerBfq: (row['boll_lower_bfq'] as number | null) ?? null,
-    maBfq5: (row['ma_bfq_5'] as number | null) ?? null,
-    maBfq10: (row['ma_bfq_10'] as number | null) ?? null,
-    maBfq20: (row['ma_bfq_20'] as number | null) ?? null,
-    maBfq60: (row['ma_bfq_60'] as number | null) ?? null,
-    turnoverRate: (row['turnover_rate'] as number | null) ?? null,
-    volumeRatio: (row['volume_ratio'] as number | null) ?? null,
-    updays: (row['updays'] as number | null) ?? null,
-    downdays: (row['downdays'] as number | null) ?? null,
-  }))
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const rows = db
+      .prepare(
+        `SELECT ts_code, trade_date, close,
+                macd_bfq, macd_dif_bfq, macd_dea_bfq,
+                kdj_k_bfq, kdj_d_bfq, kdj_bfq,
+                rsi_bfq_6, rsi_bfq_12,
+                boll_upper_bfq, boll_mid_bfq, boll_lower_bfq,
+                ma_bfq_5, ma_bfq_10, ma_bfq_20, ma_bfq_60,
+                turnover_rate, volume_ratio, updays, downdays
+         FROM stk_factor_cache
+         WHERE ts_code = ? AND trade_date >= ?
+         ORDER BY trade_date ASC`
+      )
+      .all(code, startDate) as Record<string, unknown>[]
+    if (rows.length > 0) return rows.map(mapFactorRow)
+  }
+  return []
 }
 
 /** 批量写入技术因子历史记录（事务包裹，提升性能） */

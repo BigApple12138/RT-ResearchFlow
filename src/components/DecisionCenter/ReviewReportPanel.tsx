@@ -11,6 +11,8 @@ interface ReviewReportPanelProps {
   saveError?: string | null
   savedMeta?: { versionNumber: number; versionCount: number; savedAt: number } | null
   onRetrySave?: () => void
+  onRetryAi?: () => void
+  aiBusy?: boolean
   onDiscuss?: () => void
   discussLabel?: string
   discussLoading?: boolean
@@ -30,7 +32,7 @@ function formatGeneratedAt(ms: number): string {
 }
 
 /**
- * FR-233/FR-236: 日/周复盘报告抽屉与快照保存反馈。
+ * FR-233/FR-236/FR-250: 日/周复盘报告抽屉、快照保存反馈与 AI 研判段落。
  */
 export function ReviewReportPanel({
   open,
@@ -41,6 +43,8 @@ export function ReviewReportPanel({
   saveError = null,
   savedMeta = null,
   onRetrySave,
+  onRetryAi,
+  aiBusy = false,
   onDiscuss,
   discussLabel = '和 AI 讨论',
   discussLoading = false,
@@ -169,8 +173,99 @@ export function ReviewReportPanel({
               <SummaryCell label="未处理风险" value={report.summary.openRiskCount} tone="red" />
               <SummaryCell label="证据缺口" value={report.summary.evidenceGapCount} tone="amber" />
               <SummaryCell label="待验证" value={report.summary.followUpCount} tone="blue" />
+              {report.summary.watchingCount != null && (
+                <SummaryCell label="关注中" value={report.summary.watchingCount} tone="blue" />
+              )}
             </div>
           </section>
+
+          {report.kind === 'daily' && (
+            <>
+              <ReportSection
+                title="市场环境"
+                empty={report.marketEnvironment?.unavailableReason || '本地暂无市场环境摘要'}
+                count={report.marketEnvironment?.available ? 1 : 0}
+              >
+                {report.marketEnvironment?.available && (
+                  <>
+                    <ReportRow
+                      title={`涨跌家数 涨${report.marketEnvironment.upCount}/平${report.marketEnvironment.flatCount}/跌${report.marketEnvironment.downCount}`}
+                      body={report.marketEnvironment.isHistorical ? '历史回退数据' : '本地市场概览'}
+                    />
+                    {report.marketEnvironment.indexLines.map((line) => (
+                      <ReportRow key={line} title={line} body="指数" />
+                    ))}
+                  </>
+                )}
+              </ReportSection>
+
+              <ReportSection
+                title="资金要点"
+                empty={report.capitalHighlights?.unavailableReason || '本地暂无资金/热度摘要'}
+                count={report.capitalHighlights?.items.length ?? 0}
+              >
+                {(report.capitalHighlights?.items ?? []).map((item) => {
+                  const bits = [
+                    item.avgChange != null ? `均涨跌 ${item.avgChange > 0 ? '+' : ''}${item.avgChange.toFixed(2)}%` : null,
+                    item.limitUpCount != null ? `涨停 ${item.limitUpCount}` : null,
+                    item.mainNetInflow != null ? `主力净流入 ${(item.mainNetInflow / 1e8).toFixed(2)}亿` : null,
+                    item.mainNetInflowRate != null ? `净流入率 ${item.mainNetInflowRate.toFixed(2)}%` : null,
+                    item.kind === 'concept_heat' ? '概念热度' : '板块资金',
+                  ].filter(Boolean)
+                  return (
+                    <ReportRow
+                      key={`${item.kind}-${item.name}`}
+                      title={item.name}
+                      body={bits.join(' · ')}
+                    />
+                  )
+                })}
+              </ReportSection>
+
+              <ReportSection
+                title="持仓走势"
+                empty={report.holdingMoves?.unavailableReason || (report.holdingMoves?.items.length === 0 ? '暂无持仓' : '本地暂无持仓走势')}
+                count={report.holdingMoves?.items.length ?? 0}
+              >
+                {(report.holdingMoves?.items ?? []).map((item) => {
+                  const bits = [
+                    `现价 ${item.price != null ? item.price.toFixed(2) : '—'}`,
+                    `涨跌 ${item.changePct != null ? `${item.changePct > 0 ? '+' : ''}${item.changePct.toFixed(2)}%` : '—'}`,
+                    item.profitPct != null ? `浮盈 ${item.profitPct > 0 ? '+' : ''}${item.profitPct.toFixed(2)}%` : '浮盈 —',
+                    item.trendScore != null ? `趋势分 ${item.trendScore}` : '趋势分 —',
+                    item.maAbove60 == null ? 'MA60 —' : (item.maAbove60 ? '站上MA60' : '未站上MA60'),
+                    `今日信号 ${item.todaySignalCount}`,
+                    item.positionAdvice ? `规则辅助 ${item.positionAdvice}` : null,
+                    item.quoteUnavailable ? '行情未加载' : null,
+                  ].filter(Boolean)
+                  return (
+                    <ReportRow
+                      key={item.tsCode}
+                      title={item.stockName}
+                      body={bits.join(' · ')}
+                      onClick={() => onNavigateStock?.(item.tsCode, item.stockName)}
+                    />
+                  )
+                })}
+              </ReportSection>
+
+              <ReportSection
+                title="今日关注"
+                empty="暂无关注中信号"
+                count={report.watchedSignals?.length ?? 0}
+              >
+                {(report.watchedSignals ?? []).map((item) => (
+                  <ReportRow
+                    key={`w-${item.signalId}`}
+                    title={`${item.stockName || item.conceptName || item.tsCode || '未映射'} · P${item.priority}`}
+                    body={`${item.sourceModule} · ${item.title}`}
+                    tone="blue"
+                    onClick={item.tsCode ? () => onNavigateStock?.(item.tsCode!, item.stockName) : undefined}
+                  />
+                ))}
+              </ReportSection>
+            </>
+          )}
 
           <ReportSection
             title="已处理"
@@ -234,6 +329,61 @@ export function ReviewReportPanel({
               />
             ))}
           </ReportSection>
+
+          <section className="mt-5" data-testid="review-report-ai-narrative">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">AI 研判</h3>
+              <span className="text-[11px] text-slate-400 dark:text-slate-500">辅助研判，非投资建议</span>
+            </div>
+            <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/70 px-3 py-2 text-sm leading-6 text-slate-800 dark:border-violet-900/50 dark:bg-violet-950/30 dark:text-slate-100">
+              {(aiBusy || report.aiNarrative?.status === 'pending') && (
+                <p data-testid="review-report-ai-loading">AI 研判生成中…</p>
+              )}
+              {!aiBusy && report.aiNarrative?.status === 'ready' && report.aiNarrative.text && (
+                <p data-testid="review-report-ai-text" className="whitespace-pre-wrap">{report.aiNarrative.text}</p>
+              )}
+              {!aiBusy && (!report.aiNarrative || report.aiNarrative.status === 'skipped') && (
+                <p data-testid="review-report-ai-missing" className="text-slate-500 dark:text-slate-400">AI 研判未生成</p>
+              )}
+              {!aiBusy && report.aiNarrative?.status === 'error' && (
+                <div data-testid="review-report-ai-error" className="space-y-2">
+                  <p className="text-red-700 dark:text-red-300">
+                    {report.aiNarrative.errorMessage || report.aiNarrative.errorCode || 'AI 研判失败'}
+                  </p>
+                  {onRetryAi && (
+                    <button
+                      type="button"
+                      data-testid="review-report-ai-retry"
+                      onClick={onRetryAi}
+                      className="text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+                    >
+                      仅重试 AI
+                    </button>
+                  )}
+                </div>
+              )}
+              {!aiBusy && report.aiNarrative?.status === 'ready' && !report.aiNarrative.text && onRetryAi && (
+                <button
+                  type="button"
+                  data-testid="review-report-ai-retry"
+                  onClick={onRetryAi}
+                  className="text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+                >
+                  仅重试 AI
+                </button>
+              )}
+              {!aiBusy && (!report.aiNarrative || report.aiNarrative.status === 'skipped') && onRetryAi && (
+                <button
+                  type="button"
+                  data-testid="review-report-ai-retry"
+                  onClick={onRetryAi}
+                  className="mt-2 text-xs font-semibold text-violet-700 hover:underline dark:text-violet-300"
+                >
+                  仅重试 AI
+                </button>
+              )}
+            </div>
+          </section>
 
           <p className="mt-5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
             {report.disclaimer}

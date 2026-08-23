@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { useAppStore } from './store/appStore'
 import { isInTradingHours } from './utils/tradingHours'
+import { getBeijingMinuteKey, isInClosingMomentumCaptureWindow } from './utils/heatmapMomentum'
 import { FilterBar } from './components/FilterBar/FilterBar'
 import { DateArchive } from './components/DateArchive/DateArchive'
 import { BriefingFeed } from './components/BriefingFeed/BriefingFeed'
@@ -8,7 +9,7 @@ import { BriefingDetail } from './components/BriefingDetail/BriefingDetail'
 import { ScanProgressModal } from './components/ScanProgressModal/ScanProgressModal'
 import { MARKET_OVERVIEW_SUB_TABS, type MarketOverviewSubTab } from './components/MarketOverview/marketOverviewNavigation'
 import { SHORT_TERM_SUB_TABS } from './components/ShortTermStrategy/shortTermNavigation'
-import { TREND_WATCHER_SUB_TABS, type TrendWatcherSubTab } from './components/TrendWatcher/trendWatcherNavigation'
+import { TREND_WATCHER_SUB_TABS } from './components/TrendWatcher/trendWatcherNavigation'
 import { AIAnalysisConfirmDialog } from './components/AIAnalysisConfirmDialog/AIAnalysisConfirmDialog'
 import { AIAnalysisProgressPanel } from './components/AIAnalysisProgressPanel/AIAnalysisProgressPanel'
 import { ConfigDrawer, type ConfigDrawerTab } from './components/ConfigDrawer/ConfigDrawer'
@@ -21,6 +22,7 @@ import { buildOnboardingModel, type DiagnosticsHealthSnapshot } from './componen
 import { buildInitializationModel } from './components/Onboarding/initializationModel'
 import {
   createInitialFlowState,
+  getQuickStartDeferral,
   INITIALIZATION_TASKS,
   shouldSkipInitializationTask,
   type InitializationFlowState,
@@ -137,7 +139,7 @@ type SecondaryNavItem = {
   onSelect: () => void
 }
 
-const SECONDARY_NAV_TABS = new Set<Tab>(['trend-watcher', 'industry-heatmap', 'short-term-strategy', 'ai-analysis'])
+const SECONDARY_NAV_TABS = new Set<Tab>(['trend-watcher', 'industry-heatmap', 'short-term-strategy'])
 
 function readMarketOverviewSubTab(): MarketOverviewSubTab {
   const saved = localStorage.getItem('marketOverviewSubTab')
@@ -182,7 +184,6 @@ export default function App() {
   const [navFlyoutTab, setNavFlyoutTab] = useState<Tab | null>(null)
   const [navFlyoutAnchorY, setNavFlyoutAnchorY] = useState<number | null>(null)
   const [marketOverviewSubTab, setMarketOverviewSubTab] = useState<MarketOverviewSubTab>(() => readMarketOverviewSubTab())
-  const [trendWatcherSubTab, setTrendWatcherSubTab] = useState<TrendWatcherSubTab>('portfolio')
   const [onboardingSnapshot, setOnboardingSnapshot] = useState<DiagnosticsHealthSnapshot | null>(null)
   const [onboardingLoading, setOnboardingLoading] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
@@ -222,6 +223,9 @@ export default function App() {
     briefings,
     catchUpMessage,
     unreadCount,
+    allUnreadCount,
+    relevanceScope,
+    relevanceModeApplied,
     scanStatus,
     isScanning,
     settings,
@@ -240,6 +244,8 @@ export default function App() {
     setAiProgress,
     activeTab,
     setActiveTab,
+    trendWatcherSubTab,
+    setTrendWatcherSubTab,
     theme,
     toggleTheme,
     initTheme,
@@ -250,16 +256,17 @@ export default function App() {
     heatmapPollingStarted,
     initHeatmapPolling,
     fetchHeatmapSnapshot,
+    recoverHeatmapMomentum,
     shortTermActiveSubTab,
     setShortTermActiveSubTab,
-    aiAnalysisSubTab,
-    setAIAnalysisSubTab,
-    clearPendingResearchDiscussion,
-    navigateToIndustryResearch,
+    aiAnalysisWorkbench,
+    openAIAnalysisWorkbench,
     navigateToBriefing,
     openPremarketScenario
   } = useAppStore()
   const navShellRef = useRef<HTMLDivElement>(null)
+  const heatmapCloseCaptureMinuteRef = useRef<string | null>(null)
+  const configuredMomentumWindowMinutes = settings?.momentumWindowMinutes ?? null
   const highImpactCount = useMemo(
     () => briefings.filter(item => item.impactRating === 'CRITICAL' || item.impactRating === 'IMPORTANT').length,
     [briefings]
@@ -272,6 +279,21 @@ export default function App() {
     () => new Set(briefings.map(item => item.sourceName)).size,
     [briefings]
   )
+
+  useEffect(() => {
+    const testApi = {
+      openAIAnalysisWorkbench: (workbench: null | 'deepResearch' | 'industryResearch', projectId?: string | null) => {
+        useAppStore.getState().openAIAnalysisWorkbench(workbench, projectId)
+      },
+      setAIAnalysisSubTab: (subTab: 'records' | 'deepResearch' | 'industryResearch') => {
+        useAppStore.getState().setAIAnalysisSubTab(subTab)
+      },
+    }
+    ;(window as unknown as { __RT_TEST__?: typeof testApi }).__RT_TEST__ = testApi
+    return () => {
+      delete (window as unknown as { __RT_TEST__?: typeof testApi }).__RT_TEST__
+    }
+  }, [])
 
   // Bootstrap: load initial data
   useEffect(() => {
@@ -291,6 +313,12 @@ export default function App() {
   }, [])
 
   useEffect(() => subscribeAppToast(setAppToast), [])
+
+  // 午休、盘后或休市日启动时主动还原最近交易边界，不要求行业云图曾在盘中打开。
+  useEffect(() => {
+    if (configuredMomentumWindowMinutes == null) return
+    void recoverHeatmapMomentum()
+  }, [configuredMomentumWindowMinutes, recoverHeatmapMomentum])
 
   useEffect(() => window.api.premarket.onOpenScenario(openPremarketScenario), [openPremarketScenario])
 
@@ -477,20 +505,33 @@ export default function App() {
     }))
 
     let latestSnapshot = onboardingSnapshot
+    const pendingTaskKeys = new Set<InitializationTaskKey>()
     for (const task of queue) {
-      if (task.key !== 'refresh-before' && task.key !== 'refresh-after') {
-        const datasourceReady = latestSnapshot?.groups.flatMap(group => group.items).find(item => item.key === 'config.tushare')?.status === 'ok'
-        if (!datasourceReady) {
-          updateInitializationTask(task.key, { status: 'retryable', endedAt: Date.now(), error: 'Tushare 未配置或不可用, 请先打开数据源配置。' })
-          setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, error: 'Tushare 未配置或不可用, 初始化已暂停。' }))
-          return
-        }
-      }
-
       const skipReason = shouldSkipInitializationTask(latestSnapshot, task)
       if (skipReason) {
         updateInitializationTask(task.key, { status: 'skipped', message: skipReason, startedAt: Date.now(), endedAt: Date.now() })
         continue
+      }
+
+      const deferredReason = getQuickStartDeferral(task, Boolean(onlyTaskKey))
+      if (deferredReason) {
+        pendingTaskKeys.add(task.key)
+        updateInitializationTask(task.key, { status: 'deferred', message: deferredReason, startedAt: Date.now(), endedAt: Date.now() })
+        continue
+      }
+
+      if (task.requiresTushare) {
+        const datasourceReady = latestSnapshot?.groups.flatMap(group => group.items).find(item => item.key === 'config.tushare')?.status === 'ok'
+        if (!datasourceReady) {
+          const message = 'Tushare 未配置或不可用；该增强任务可稍后重试，不影响资讯和六位代码直查等本地优先能力。'
+          pendingTaskKeys.add(task.key)
+          updateInitializationTask(task.key, { status: 'retryable', startedAt: Date.now(), endedAt: Date.now(), error: message })
+          if (task.failurePolicy === 'stop') {
+            setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, error: message }))
+            return
+          }
+          continue
+        }
       }
 
       const taskStartedAt = Date.now()
@@ -500,10 +541,24 @@ export default function App() {
       try {
         const res = await window.api.diagnostics.runCheck(task.action)
         if (!res.ok) {
-          updateInitializationTask(task.key, { status: 'retryable', endedAt: Date.now(), error: res.message || '任务执行失败' })
-          setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, error: res.message || `${task.title} 执行失败` }))
-          await loadOnboardingHealth()
-          return
+          const message = res.message || '任务执行失败'
+          pendingTaskKeys.add(task.key)
+          updateInitializationTask(task.key, { status: 'retryable', endedAt: Date.now(), error: message })
+          if (task.failurePolicy === 'stop') {
+            setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, error: message }))
+            await loadOnboardingHealth()
+            return
+          }
+          continue
+        }
+        if (res.data.status === 'started') {
+          pendingTaskKeys.add(task.key)
+          updateInitializationTask(task.key, {
+            status: 'deferred',
+            endedAt: Date.now(),
+            message: res.data.message,
+          })
+          continue
         }
         updateInitializationTask(task.key, { status: 'success', endedAt: Date.now(), message: res.data.message })
         if (task.action === 'refreshHealth') {
@@ -515,16 +570,26 @@ export default function App() {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : `${task.title} 执行失败`
+        pendingTaskKeys.add(task.key)
         updateInitializationTask(task.key, { status: 'retryable', endedAt: Date.now(), error: message })
-        setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, error: message }))
-        await loadOnboardingHealth()
-        return
+        if (task.failurePolicy === 'stop') {
+          setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, error: message }))
+          await loadOnboardingHealth()
+          return
+        }
       }
     }
 
     await loadOnboardingHealth()
     await loadDecisionSignalSummary()
-    setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, message: '初始化任务已完成。', error: undefined }))
+    const finalMessage = pendingTaskKeys.size > 0
+      ? onlyTaskKey
+        ? `${queue[0]?.title ?? '该任务'}仍待处理，可稍后重试；基础入口不受阻塞。`
+        : `基础入口已开放，${pendingTaskKeys.size} 项数据增强任务待处理。`
+      : onlyTaskKey
+        ? `${queue[0]?.title ?? '该任务'}已完成。`
+        : '初始化任务已完成。'
+    setInitializationFlow(prev => ({ ...prev, running: false, endedAt: Date.now(), currentTaskKey: undefined, message: finalMessage, error: undefined }))
   }
 
   function startInitializationFlow() {
@@ -535,25 +600,47 @@ export default function App() {
     void runInitializationFlow(taskKey)
   }
 
-  // FR-099: 首次进入行业云图 Tab 时启动轮询
+  // 行业云图可见时每 60s 刷新；离开页面立即停止，重新进入时先补一次当前快照。
   useEffect(() => {
-    if (activeTab === 'industry-heatmap' && !heatmapPollingStarted) {
+    if (activeTab !== 'industry-heatmap') return
+    if (!heatmapPollingStarted) {
       initHeatmapPolling()
+      return
     }
-  }, [activeTab, heatmapPollingStarted])
 
-  // FR-099: 全局 60s 轮询，不随 Tab 切换停止
-  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  useEffect(() => {
-    if (!heatmapPollingStarted) return
-    if (pollingIntervalRef.current !== null) return // 已经在运行
-    pollingIntervalRef.current = setInterval(() => {
+    void fetchHeatmapSnapshot()
+    const interval = window.setInterval(() => {
       if (isInTradingHours()) {
-        fetchHeatmapSnapshot()
+        void fetchHeatmapSnapshot()
       }
     }, 60_000)
-    // 注意：此 interval 有意不清除（全局持续运行）
-  }, [heatmapPollingStarted])
+    return () => window.clearInterval(interval)
+  }, [activeTab, heatmapPollingStarted, initHeatmapPolling, fetchHeatmapSnapshot])
+
+  // 盘后回看只需保留收盘窗口样本；行业云图不在前台时执行有界补采，不恢复全天后台轮询。
+  useEffect(() => {
+    if (activeTab === 'industry-heatmap') return
+
+    const capture = () => {
+      const now = Date.now()
+      const momentumWindowMinutes = settings?.momentumWindowMinutes ?? 3
+      if (!isInClosingMomentumCaptureWindow(now, momentumWindowMinutes)) return
+
+      const minuteKey = getBeijingMinuteKey(now)
+      if (heatmapCloseCaptureMinuteRef.current === minuteKey) return
+      heatmapCloseCaptureMinuteRef.current = minuteKey
+
+      if (!heatmapPollingStarted) {
+        initHeatmapPolling()
+        return
+      }
+      void fetchHeatmapSnapshot()
+    }
+
+    capture()
+    const interval = window.setInterval(capture, 15_000)
+    return () => window.clearInterval(interval)
+  }, [activeTab, settings?.momentumWindowMinutes, heatmapPollingStarted, initHeatmapPolling, fetchHeatmapSnapshot])
 
   // Subscribe to push events from main process
   useEffect(() => {
@@ -679,42 +766,7 @@ export default function App() {
           setNavFlyoutTab(null)
         }
       })),
-    'ai-analysis': [
-        {
-          key: 'records',
-          label: '研判记录',
-          current: activeTab === 'ai-analysis' && aiAnalysisSubTab === 'records',
-          onSelect: () => {
-            clearPendingResearchDiscussion()
-            setAIAnalysisSubTab('records')
-            setActiveTab('ai-analysis')
-            setNavFlyoutTab(null)
-          }
-        },
-        {
-          key: 'deepResearch',
-          label: '深度研究',
-          current: activeTab === 'ai-analysis' && aiAnalysisSubTab === 'deepResearch',
-          onSelect: () => {
-            clearPendingResearchDiscussion()
-            setAIAnalysisSubTab('deepResearch')
-            setActiveTab('ai-analysis')
-            setNavFlyoutTab(null)
-          }
-        },
-        {
-          key: 'industryResearch',
-          label: '产业研究',
-          current: activeTab === 'ai-analysis' && aiAnalysisSubTab === 'industryResearch',
-          onSelect: () => {
-            clearPendingResearchDiscussion()
-            setAIAnalysisSubTab('industryResearch')
-            setActiveTab('ai-analysis')
-            setNavFlyoutTab(null)
-          }
-        }
-      ]
-  }), [activeTab, aiAnalysisSubTab, clearPendingResearchDiscussion, marketOverviewSubTab, setAIAnalysisSubTab, setActiveTab, setShortTermActiveSubTab, shortTermActiveSubTab, trendWatcherSubTab])
+  }), [activeTab, marketOverviewSubTab, setActiveTab, setShortTermActiveSubTab, shortTermActiveSubTab, trendWatcherSubTab])
 
   const navFlyoutTitle = navFlyoutTab ? NAV_TABS.find(item => item.tab === navFlyoutTab)?.label : undefined
   const navFlyoutItems = navFlyoutTab ? secondaryNavItemsByTab[navFlyoutTab] ?? [] : []
@@ -1083,14 +1135,17 @@ export default function App() {
       )}
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        {industryResearchTask && !(activeTab === 'ai-analysis' && aiAnalysisSubTab === 'industryResearch') && (
+      {/* 壳层 select-none 防误选；主工作区需可选中复制（AI 气泡、研判正文等） */}
+      <div className="flex min-w-0 flex-1 flex-col select-text">
+        {industryResearchTask && activeTab !== 'ai-analysis' && (
           <button
             type="button"
             data-testid="industry-research-background-task"
             aria-live="polite"
-            aria-label={`${researchTaskLabel(industryResearchTask)}，点击返回产业研究项目`}
-            onClick={() => navigateToIndustryResearch(industryResearchTask.projectId)}
+            aria-label={`${researchTaskLabel(industryResearchTask)}，点击打开产业研究工作台`}
+            onClick={() => {
+              openAIAnalysisWorkbench('industryResearch', industryResearchTask.projectId)
+            }}
             className={[
               'flex min-h-[52px] shrink-0 flex-col justify-center gap-1 border-b px-4 py-1.5 text-left text-xs transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-cyan-400',
               industryResearchTask.status === 'failed'
@@ -1173,9 +1228,22 @@ export default function App() {
                       <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">重大影响</div>
                       <div className="mt-1 text-2xl font-semibold leading-none tabular-nums text-red-500">{highImpactCount}</div>
                     </div>
-                    <div data-testid="feed-summary-metric" className="flex min-w-[92px] flex-col items-center justify-center rounded-md border border-slate-200/80 bg-white px-3 py-2 text-center shadow-sm shadow-slate-100/70 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10">
-                      <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">未读资讯</div>
+                    <div
+                      data-testid="feed-summary-metric"
+                      className="flex min-w-[92px] flex-col items-center justify-center rounded-md border border-slate-200/80 bg-white px-3 py-2 text-center shadow-sm shadow-slate-100/70 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10"
+                      title={
+                        relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' && allUnreadCount > unreadCount
+                          ? `相关未读 ${unreadCount} · 全部未读 ${allUnreadCount}`
+                          : undefined
+                      }
+                    >
+                      <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                        {relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' ? '相关未读' : '未读资讯'}
+                      </div>
                       <div className="mt-1 text-2xl font-semibold leading-none tabular-nums text-slate-950 dark:text-white">{unreadCount}</div>
+                      {relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' && allUnreadCount > unreadCount && (
+                        <div className="mt-1 text-[10px] tabular-nums text-slate-400 dark:text-slate-500">全部 {allUnreadCount}</div>
+                      )}
                     </div>
                     <div data-testid="feed-summary-metric" className="flex min-w-[92px] flex-col items-center justify-center rounded-md border border-slate-200/80 bg-white px-3 py-2 text-center shadow-sm shadow-slate-100/70 dark:border-slate-800 dark:bg-slate-950/40 dark:shadow-black/10">
                       <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">待处理</div>
@@ -1218,17 +1286,19 @@ export default function App() {
         )}
 
         {activeTab === 'ai-analysis' && (
-          <div data-testid="ai-analysis-page" className="flex flex-1 bg-white dark:bg-gray-900 overflow-hidden">
-            {aiAnalysisSubTab === 'records' && <AIAnalysis />}
-            {aiAnalysisSubTab === 'deepResearch' && (
+          <div data-testid="ai-analysis-page" className="flex flex-1 overflow-hidden bg-white dark:bg-gray-900">
+            {aiAnalysisWorkbench === 'deepResearch' ? (
               <DeepResearchWorkbench
                 onOpenAiConfig={() => {
                   setConfigDrawerTab('ai-config')
                   setConfigDrawerOpen(true)
                 }}
               />
+            ) : aiAnalysisWorkbench === 'industryResearch' ? (
+              <IndustryResearch />
+            ) : (
+              <AIAnalysis />
             )}
-            {aiAnalysisSubTab === 'industryResearch' && <IndustryResearch />}
           </div>
         )}
 
@@ -1263,7 +1333,7 @@ export default function App() {
         )}
 
         {activeTab === 'decision-center' && (
-          <div data-testid="decision-center-page" className="flex-1 bg-white dark:bg-gray-900 overflow-hidden">
+          <div data-testid="decision-center-page" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
             <DecisionCenter
               initialization={initializationModel}
               initializationFlow={initializationFlow}

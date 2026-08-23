@@ -1,8 +1,12 @@
 <h1 align="center">RT-ResearchFlow</h1>
 
-<p align="center"><b>把资讯、行情、产业研究和策略信号，变成可追踪、可复盘、可验证的 A 股研究决策闭环</b></p>
+<p align="center"><b>本地优先的 A 股个人投研工作台：把资讯、行情、产业研究与策略信号，沉淀为可追踪、可复盘、可验证的研究闭环</b></p>
 
 <p align="center">
+  <img src="https://img.shields.io/github/v/release/BigApple12138/RT-ResearchFlow?include_prereleases" alt="Release 版本（含预发布）">
+  <img src="https://img.shields.io/github/license/BigApple12138/RT-ResearchFlow" alt="开源许可证">
+  <img src="https://img.shields.io/github/actions/workflow/status/BigApple12138/RT-ResearchFlow/verify.yml?branch=main&label=verify" alt="Verify CI 状态">
+  <img src="https://img.shields.io/github/downloads/BigApple12138/RT-ResearchFlow/total" alt="累计下载量">
   <img src="https://img.shields.io/badge/Electron-41-47848F?logo=electron&logoColor=white" alt="Electron 41">
   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white" alt="React 18">
   <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5">
@@ -11,494 +15,530 @@
 </p>
 
 <p align="center">
-  <a href="#产品预览">产品预览</a> ·
-  <a href="#它解决什么问题">它解决什么问题</a> ·
-  <a href="#决策与复盘如何形成闭环">决策闭环</a> ·
-  <a href="#盘前情景如何工作">盘前推演</a> ·
-  <a href="#短线策略如何工作">短线策略</a> ·
-  <a href="#ai-研究如何工作">AI 研究</a> ·
+  <a href="https://github.com/BigApple12138/RT-ResearchFlow/releases/tag/v0.1.0-beta.5"><b>下载 v0.1.0-beta.5</b></a> ·
+  <a href="#它解决什么问题">解决什么问题</a> ·
+  <a href="#工作台一览">工作台</a> ·
+  <a href="#ai-研判与-agent-工作台">AI 与 Agent</a> ·
+  <a href="#数据与零-key-路径">数据与零 Key</a> ·
   <a href="#快速开始">快速开始</a> ·
-  <a href="#数据隐私与安全边界">安全边界</a>
+  <a href="#安全与隐私边界">安全边界</a> ·
+  <a href="#已知限制">已知限制</a> ·
+  <a href="#路线图">路线图</a> ·
+  <a href="#反馈与支持">反馈</a>
 </p>
 
-> 本地优先，不替用户跳过研究过程，也不把一段 AI 文本直接当成结论。
+> **二次开发说明：** 本仓库基于 [caoritian002-wq/RT-ResearchFlow](https://github.com/caoritian002-wq/RT-ResearchFlow) 继续演进与试验。功能、发版与文档以**本仓库**为准；若你希望跟随原作者社区节奏，请访问原项目主页。
 
-RT-ResearchFlow 面向希望长期建立自己研究体系的 A 股个人投资者。它不只是展示行情，也不把一段 AI 文本直接当成结论：系统会从资讯中识别相关公司，用近期真实行情进行第二轮复核，将产业研究落实到公司、财报和证据，再把判断、回访和历史效果沉淀到本地。
+RT-ResearchFlow 面向希望建立**自己**研究体系的 A 股个人投资者。它不是「问一次 AI 就出结论」的工具，而是把来源、事实日期、行情覆盖、反证与后续验证放在结论旁边，让判断可以保存、回访、对照结果，并在有价值时继续沉淀为产业研究增量。
 
-你可以使用自己的 AI Provider 和数据凭据。基础行情、本地趋势和部分公开资料不依赖 AI；深度研究可以从独立工作台直接发起，多视角复核等能力只在用户显式确认后运行，并记录阶段、证据、Token、成本和恢复状态。
-
-| 用户关心的问题 | RT-ResearchFlow 的回答 |
+| 用户关心的问题 | RT-ResearchFlow 的做法 |
 |---|---|
-| 一条消息究竟影响哪些 A 股公司？ | 映射具体公司，识别持仓风险，再用近期真实行情完成第二轮复核 |
-| 今天形成的判断以后还能验证吗？ | 判断按版本保存，支持到期回访、日周复盘和事后结果对照 |
-| AI 结论依据什么，失败后是否要重来？ | 绑定来源、正文、资料截点和审计账本，长任务可恢复且不会静默重复消费 |
-| 一次有价值的讨论如何沉淀下来？ | 从信号、判断、复盘或产业项目继续讨论，整理为语义变更后再正式纳入研究 |
+| 一条资讯究竟影响哪些 A 股公司？ | 映射具体公司，识别持仓风险，再用近期真实行情做第二轮复核 |
+| 今天的判断以后还能验证吗？ | 判断按版本保存，支持 3/7/14 日回访、日周复盘与事后走势对照 |
+| AI 结论依据什么，失败后要不要重来？ | 绑定来源、正文、资料截点与审计账本；长任务可恢复，未知计费不自动重放 |
+| 一次讨论如何变成正式研究？ | 显式「整理本次讨论」→ 可编辑语义变更包 → 用户确认后才写入产业项目 |
 
-> 本项目用于信息整理、研究记录与历史验证，不构成任何投资建议，不承诺收益，不提供自动交易。
+> **边界声明：** 本项目用于信息整理、研究记录与历史验证，**不构成投资建议**，不承诺收益，**不提供自动交易**或仓位控制。
+
+---
+
+## 下载与安装
+
+**当前公开测试版：** [v0.1.0-beta.5](https://github.com/BigApple12138/RT-ResearchFlow/releases/tag/v0.1.0-beta.5)（Windows 10/11 x64）
+
+| 文件 | 说明 |
+|---|---|
+| `RT-ResearchFlow-Setup-0.1.0-beta.5-x64.exe` | 安装包 |
+| `SHA256SUMS.txt` | 完整性校验 |
+
+```powershell
+Get-FileHash .\RT-ResearchFlow-Setup-0.1.0-beta.5-x64.exe -Algorithm SHA256
+```
+
+输出应与 Release 页 `SHA256SUMS.txt` 一致。安装包尚未商业代码签名，SmartScreen 提示属预期；请只从本仓库 Releases 下载。
+
+- **安装：** 支持当前用户安装与自选目录；数据默认保存在安装目录下的 `data`。
+- **升级：** 自 beta.1–beta.3 升级会保留 `data` 并自动执行向前 Migration。
+- **卸载：** 默认询问是否删除本地数据，默认选项为保留。
+
+完整版本说明见 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md)。
+
+---
+
+## 它解决什么问题
+
+很多工具停在「看数据」或「问一次 AI」。RT-ResearchFlow 把研究连成一条可复盘的工作流：
+
+```mermaid
+flowchart LR
+    A[资讯与市场信号] --> B[结构化研判]
+    B --> C[A股映射与行情复核]
+    C --> D[今日看板与判断账本]
+    D --> E[回访与日周复盘]
+    E --> F[AI讨论与研究增量]
+
+    G[产业问题] --> H[受控取证与图谱]
+    H --> I[深度研究]
+    I --> J[多视角复核]
+
+    K[板块资金与竞价] --> L[短线线索复核]
+    L --> D
+
+    M[策略条件] --> N[历史信号]
+    N --> O[持有N日效果]
+```
+
+系统不替用户跳过研究过程；它负责把**依据什么、缺什么、之后如何验证**写清楚。
+
+---
+
+## 工作台一览
+
+主导航一级工作台如下（产业研究、策略实验室等通过二级入口进入；配置中心经底部入口以抽屉打开，消息中心为标题栏通知入口）：
+
+| 工作台 | 回答的问题 | 要点 |
+|---|---|---|
+| **今日看板** | 今天先处理什么？ | 今日提炼、持仓风险、策略信号、盘前推演、一键复盘、判断账本与回访 |
+| **股票走势图** | 这只股近期结构怎样？ | 日 K/分时、MA、BOLL、筹码、基本面按需补齐、公共股票抽屉 |
+| **长线趋势** | 谁在转强或走弱？ | 持仓总览、趋势雷达、趋势事件、观察池、结构研判与 AI 第二意见徽章 |
+| **大盘云图** | 指数/行业/资金是否共振？ | 行业云图、市场共振、板块资金历史回看、次日竞价观察 |
+| **短线策略** | 有哪些可复核短线线索？ | 早盘竞价主线、尾盘/涨停/连板/首阴/低吸、策略实验室与效果评估 |
+| **资讯** | 今天有哪些消息值得看？ | RSS/Atom 扫描、分组、影响评级、归档与一键 AI 分析 |
+| **AI 分析** | 如何持续研判与深挖？ | Cursor 式会话面、Agent 工作台、深度研究、研究讨论与增量 |
+| **配置中心** | 数据源、AI、Agent 怎么配？ | 底部入口抽屉打开；Tushare/自定义网关、多 Provider、联网搜索、本机 MCP、数据目录 |
+
+---
+
+## 本 fork 相对上游的增量（beta.5）
+
+在合入 upstream 零 Key 公共日线、板块历史、云图抛光等能力之外，本仓库额外包含：
+
+| 能力 | 说明 |
+|---|---|
+| **Agent Context Engine** | 讨论自动/手动压缩、研究笔记 flush、检查点列表与恢复 |
+| **Agent 工作台（Agent Hub）** | Planner–Executor 回合、本地只读 Tool、HITL 写闸门、外部 MCP 投影 |
+| **Cursor 式 AI 会话面** | 可折叠侧栏、Agent 正文流式、深度研究时间线块 |
+| **趋势 AI 锚定偏差分** | 本地结构复核与 AI 第二意见并排；EOD 事实绑定，不随盘中刷新误作废 |
+| **自定义数据目录（FR-265）** | 引导文件 + 智能迁移，窄 IPC，env 锁定只读 |
+| **指数分时专业版** | 预设指数蜡烛 + VWAP，带后缀缓存键 |
+| **工程门禁** | SDD 归档、合入 `develop`/`main` 的 PR 须先 Review |
+
+---
+
+## 决策与复盘闭环
+
+入口：**决策中心 → 今日看板**。
+
+1. **提炼与直达：** 优先展示值得处理的事实、证据缺口与行动入口；指标可跳到对应工作台。
+2. **保存判断：** 记录结论标签、证据快照、反证、未知项与下一次回访日期。
+3. **按期回访：** 3/7/14 日选择维持、修正或结束；复盘积压支持逐条或批量收口。
+4. **形成复盘：** 本地事实报告先落盘；AI 已配置时再追加研判，失败仍保留本地报告。
+5. **对照结果：** 成熟后把判断与真实走势对照；缺口显式展示，不包装成命中。
+6. **继续研究：** 从信号、判断或复盘进入 AI 讨论，保留来源上下文与返回位置。
+
+**盘前推演**（今日看板标题区）：08:45 外盘与持仓事实 → 09:28 竞价确认（事实封顶 09:30）→ 18:00 盘后验证；修订按 R1/R2/R3 不可变保存，晚采事实不得倒灌进历史版本。
+
+---
+
+## AI 研判与 Agent 工作台
+
+### 资讯分析与第二轮复核
+
+普通分析回答「这条消息与哪些 A 股有关」：第一轮结构化映射，第二轮读取本地或接口中的真实行情复核趋势与支撑压力。缺口会明确提示，不伪造第二轮结论。
+
+### 持续讨论与研究增量
+
+信号、判断、日报、周报、产业项目均可进入**同一套研究讨论**。讨论保留受限来源上下文；**不会**自动改写正式产业研究。只有用户点击「整理本次讨论」后，才生成 3–7 个可编辑语义变更包，确认接受后才增量写入产业项目。
+
+### Agent 工作台（`ai:agentTurn`）
+
+- **目标驱动回合：** 计划 → 工具 → 正文；时间线展示 plan/status/tool/message/HITL。
+- **Context Engine：** 发模前统一装配硬事实、累计摘要与热尾；超窗自动压缩；可列检查点并「恢复最近整理」。
+- **工具边界：** 本地只读 Tool 免确认；`research.deep_start`、外部 MCP 等为 network Tool，须开启「允许 Agent 联网」。
+- **与联网搜索解耦：** 观察池「联网补充分类」、深度研究 `web.search` 走「本应用联网搜索」配置，不依赖 Agent 联网闸门。
+
+### 深度研究
+
+从会话意图或 Agent 调用进入五阶段流水线（计划、取证、综合、审计、写回）。运行在主进程，账本可恢复；证据不足时只产出受限或受阻结果，不用模型常识补齐。完成后可进行**多视角复核**（多方/空方/中立，只复用父运行不可变证据，不重新取数）。
+
+---
+
+## 数据与零 Key 路径
+
+**本地 SQLite** 是权威事实源：资讯、行情缓存、持仓、观察池、策略信号、研究项目、AI 会话、判断账本与运行审计。
+
+| 来源 | 角色 |
+|---|---|
+| **Tushare**（可选） | 更完整的日线、财务、题材、筹码等；支持自定义 API 网关地址 |
+| **公共证券池 + 历史日线** | 无 Token 或权限不足时的冷启动底座（Migration 156）；多源 OHLCV 统一口径与来源追踪 |
+| **东方财富 / 新浪 / 腾讯等公开接口** | 单股补齐、盘前历史分钟、零 Key 降级路径 |
+| **用户 AI Provider** | Claude、OpenAI-compatible、Qwen、DeepSeek 等 |
+| **受控网页搜索 / PDF** | 仅深度研究证据不足且用户已配置时使用 |
+
+公共全市场补采采用全局限流与可续跑检查点；界面表达为「通常约 2 小时」。不同网络与权限会导致覆盖差异，界面尽量展示来源、事实日期与失败原因。
+
+---
 
 ## 产品预览
 
-### 每日工作台
+主图与下列 `<details>` 中的扩展图均来自 `docs/screenshots/`，与 **beta.5** 当前 UI 对齐。可用文末脚本一键全量重拍（内置 E2E 演示种子，无需手工造数）。
 
-今日看板把持仓风险、市场线索、策略信号和待处理事项集中到同一个入口，帮助用户先回答“今天最应该关注什么”。
+### 今日看板
 
-![RT-ResearchFlow每日工作台](docs/screenshots/001.png)
+![每日工作台](docs/screenshots/001.png)
 
-### 决策、回访与复盘闭环
-
-今日信号会按股票和风险优先级进入待办；用户研判时保存结论标签、证据快照、缺口和下一次回访日期。到期后可以维持、修正或结束观察，系统继续保留判断版本，并把日报、周报、历史版本和事后结果放回同一条复盘链。
-
-<!-- SCREENSHOT_SLOT_DECISION_REVIEW_LOOP
-文件：docs/screenshots/decision-review-loop.png
-建议画面：优先展示按股研判或到期回访面板，同时能看到判断标签、证据缺口、3/7/14日回访和历史版本入口。请使用 RT-ResearchFlow 公开构建与演示数据。
-替换下一行占位文案为：![决策、回访与复盘闭环](docs/screenshots/decision-review-loop.png)
--->
-
-> 截图预留：按股研判、到期回访与不可变判断版本。
+### 决策、回访与讨论沉淀
 
 ![从讨论到研究增量](docs/screenshots/research-discussion-increment.png)
 
 <details>
-<summary>查看已保存的日报、周报与历史版本</summary>
+<summary>研究讨论与语义变更包</summary>
 
-![日报、周报与历史复盘](docs/screenshots/premarket-scenario-2.png)
+![研究讨论增量 1](docs/screenshots/research-discussion-increment-1.png)
+![研究讨论增量 2](docs/screenshots/research-discussion-increment-2.png)
 
 </details>
 
-### 盘前情景与盘后验证
+### Agent 工作台（Agent Hub）
 
-盘前推演把 08:45 外盘风险、持仓趋势与筹码、行业题材、资讯和 09:28 后取得的真实集合竞价组织成可验证情景，所有事实严格封顶 09:30。确认版按 R1/R2/R3 不可变修订保存；缺失时可以显式重新补采历史竞价、盘前资讯和外盘事实，但不会把 09:30 后的新事实倒灌进盘前判断。
-
-![盘前结论、修订记录与证据覆盖](docs/screenshots/premarket-scenario.png)
-
-### 从资讯到 A 股研判
-
-资讯进入系统后可以一键进行 AI 分析，输出相关 A 股公司、利好与利空方向、持仓风险，再读取近期日 K、均线、支撑与压力完成第二轮复核。
-
-![资讯情报台与一键AI分析](docs/screenshots/news-ai-analysis.png)
+![Agent 回合时间线](docs/screenshots/agent-hub.png)
 
 <details>
-<summary>查看 AI 分析进度与完整结果</summary>
+<summary>写操作 HITL 与上下文检查点</summary>
 
-![AI分析后台进度](docs/screenshots/news-ai-analysis-loading.png)
-![A股公司映射与影响研判](docs/screenshots/news-ai-analysis-result.png)
-![近期走势与支撑压力复核](docs/screenshots/news-ai-analysis-result-2.png)
+![Agent HITL 确认条](docs/screenshots/agent-hub-2.png)
+![Agent Context Engine 检查点](docs/screenshots/agent-context-checkpoints.png)
+
+</details>
+
+### 盘前推演
+
+![盘前情景](docs/screenshots/premarket-scenario.png)
+
+<details>
+<summary>推演结果与盘后验证</summary>
+
+![盘前推演结果验证](docs/screenshots/premarket-scenario-2.png)
+
+</details>
+
+### 资讯与 AI 分析
+
+![资讯情报台](docs/screenshots/news-ai-analysis.png)
+
+<details>
+<summary>AI 分析进度与结构化结果</summary>
+
+![AI 分析加载中](docs/screenshots/news-ai-analysis-loading.png)
+![A 股映射与影响研判](docs/screenshots/news-ai-analysis-result.png)
+![走势与支撑压力复核](docs/screenshots/news-ai-analysis-result-2.png)
 ![结构化结论与证据](docs/screenshots/news-ai-analysis-result-3.png)
 
 </details>
 
-### 产业研究工作台
-
-从研究问题出发，系统分阶段完成联网取证、产业图谱、A 股公司映射、业务暴露、财务时间轴、市场验证和研究报告；长任务可以在后台运行，失败阶段可以继续收集并恢复。
+### 产业研究
 
 ![产业研究工作台](docs/screenshots/industry-research.png)
 
 <details>
-<summary>查看产业图谱、公司财报与研究证据</summary>
+<summary>产业图谱、公司财报与研究证据</summary>
 
-![产业研究工作台](docs/screenshots/industry-research-2.png)
-![产业研究工作台](docs/screenshots/industry-research-3.png)
-![产业研究工作台](docs/screenshots/industry-research-4.png)
-![产业研究工作台](docs/screenshots/industry-research-5.png)
-![产业研究工作台](docs/screenshots/industry-research-6.png)
-![产业研究工作台](docs/screenshots/industry-research-7.png)
+![产业研究 2](docs/screenshots/industry-research-2.png)
+![产业研究 3](docs/screenshots/industry-research-3.png)
+![产业研究 4](docs/screenshots/industry-research-4.png)
+![产业研究 5](docs/screenshots/industry-research-5.png)
+![产业研究 6](docs/screenshots/industry-research-6.png)
+![产业研究 7](docs/screenshots/industry-research-7.png)
 
 </details>
 
 ### 深度研究与多视角复核
 
-`AI分析 → 深度研究` 提供独立的研究工作台：直接选择股票或产业项目，查看全部、进行中和已结束运行，并跟踪计划、取证、综合、审计和写回五个阶段。报告与证据分开呈现；运行结束后，可以让多方、空方和中立主持基于同一份不可变证据进行多轮复核。
-
-![深度研究与多视角复核](docs/screenshots/deep-research-review.png)
+![深度研究](docs/screenshots/deep-research-review.png)
 
 <details>
-<summary>查看证据页与多视角复核详情</summary>
+<summary>证据页与复核详情</summary>
 
-![深度研究与多视角复核](docs/screenshots/deep-research-review-2.png)
+![深度研究详情](docs/screenshots/deep-research-review-2.png)
 
 </details>
 
-### 个股走势与筹码结构
+### 个股走势与筹码
 
-公共股票抽屉统一承载近期日 K、MA5/10/20/60、筹码峰、两日筹码变化、支撑压力、趋势事实和基本面入口，便于从不同工作台快速复核同一只股票。
-
-![个股走势与筹码结构](docs/screenshots/stock-chip-drawer.png)
+![股票抽屉](docs/screenshots/stock-chip-drawer.png)
 
 <details>
-<summary>查看筹码变化与更多结构事实</summary>
+<summary>筹码变化与结构事实</summary>
 
-![个股走势与筹码结构](docs/screenshots/stock-chip-drawer-2.png)
-![筹码结构事实工作台](docs/screenshots/strategy-evaluation-2.png)
+![筹码结构](docs/screenshots/stock-chip-drawer-2.png)
+![策略评估筹码视图](docs/screenshots/strategy-evaluation-2.png)
 
 </details>
 
-### 长线趋势工作台
+### 长线趋势
 
-长线趋势把持仓和观察池放在统一视角下，通过趋势总览、强弱雷达、趋势事件、行业分类和沪深300同期对比，帮助用户识别持续转强、结构走弱以及需要进一步复核的标的；本地趋势摘要会同时说明数据覆盖和判断依据。
+![长线趋势](docs/screenshots/long-term-trend.png)
 
-![长线趋势工作台](docs/screenshots/long-term-trend.png)
+### 大盘云图与板块资金
 
-### 大盘云图与市场共振
-
-大盘云图把主要指数、行业强弱、板块资金流向和次日竞价观察放在同一市场视角中，帮助用户判断资金是否形成集中方向、哪些板块正在与指数共振，以及当天资金结构能否为下一交易日的早盘竞价提供参考。
-
-![大盘云图与市场共振](docs/screenshots/market-cloud-map.png)
+![大盘云图](docs/screenshots/market-cloud-map.png)
 
 <details>
-<summary>查看板块资金走势，为第二天早盘提供研判依据</summary>
+<summary>板块资金走势与历史回看</summary>
 
-![大盘云图与市场共振](docs/screenshots/market-cloud-map-2.png)
-![大盘云图与市场共振](docs/screenshots/market-cloud-map-3.png)
-
+![大盘云图 2](docs/screenshots/market-cloud-map-2.png)
+![大盘云图 3](docs/screenshots/market-cloud-map-3.png)
 
 </details>
 
-### 早盘竞价与短线决策工作台
+### 早盘竞价与短线工作台
 
-早盘集合竞价不只列出涨幅榜。系统从候选股反向聚合当日竞价主线，用昨日板块资金与今日竞价进行双重确认，并在个股侧解释“今天在炒什么”，同时结合筹码结论、分时承接和历史表现复核。尾盘、涨停、连板、首阴和低吸工作台统一展示证据、风险、继续确认和明确失效条件。
-
-<!-- SCREENSHOT_SLOT_MORNING_AUCTION_WORKBENCH
-文件：docs/screenshots/morning-auction-workbench.png
-建议画面：早盘集合竞价战情台，同时展示今日竞价主线、候选队列和选中股票的题材归因，最好能看到“昨日资金 × 今日竞价”、筹码结论与历史表现入口。请使用 RT-ResearchFlow 公开构建与演示数据。
-替换下一行占位文案为：![早盘竞价与短线决策工作台](docs/screenshots/morning-auction-workbench.png)
--->
-
-> 竞价主线、题材归因、昨日资金交叉验证与个股研判。
-
-![早盘竞价与短线决策工作台](docs/screenshots/morning-auction-workbench.png)
+![早盘竞价](docs/screenshots/morning-auction-workbench.png)
 
 <details>
-<summary>查看早盘集合竞价历史效果评估</summary>
+<summary>竞价历史效果评估</summary>
 
-![早盘竞价与短线决策工作台](docs/screenshots/morning-auction-workbench-1.png)
+![早盘竞价历史](docs/screenshots/morning-auction-workbench-1.png)
+
 </details>
-
 
 ### 策略实验与效果评估
 
-策略实验室允许自由配置股票池、条件、阈值和组合逻辑，再从真实命中样本生成统一回测。效果评估不要求用户维护模拟持仓，而是直接比较不同策略在信号出现后持有 T+1/T+2/T+3/T+5 的表现。
-
-![策略实验与效果评估](docs/screenshots/strategy-evaluation.png)
+![策略评估](docs/screenshots/strategy-evaluation.png)
 
 <details>
-<summary>查看规则配置与效果评估</summary>
+<summary>规则配置与样本可信度</summary>
 
-![策略条件与阈值配置](docs/screenshots/strategy-evaluation-1.png)
-![策略效果、样本覆盖与可信度](docs/screenshots/strategy-evaluation-3.png)
-![策略效果、样本覆盖与可信度](docs/screenshots/strategy-evaluation-4.png)
+![策略条件配置](docs/screenshots/strategy-evaluation-1.png)
+![效果与样本覆盖](docs/screenshots/strategy-evaluation-3.png)
+![策略横向比较](docs/screenshots/strategy-evaluation-4.png)
+
 </details>
 
-### 数据质量、回测可信度与 AI 评测
+### 数据质量与 AI 评测
 
-关键数据质量中心检查股票基础、交易日历、日线与复权、竞价、核心基准和产业财务；回测可信度把数据完整性、时间完整性、成交可执行性、样本充分性和稳健性放在收益之前；AI 固定评测集则用版本化合成样本比较不同 Provider 与模型，不让一次看起来合理的回答代替长期质量验证。
+![质量中心](docs/screenshots/quality-center.png)
 
-> 关键数据质量、回测可信度和 AI 固定评测集。
+更多未收录截图见 [`docs/screenshots/`](docs/screenshots/)。
 
-![数据质量、回测可信度与AI评测](docs/screenshots/quality-center.png)
+### 刷新产品截图
 
-### 从一次讨论沉淀为研究增量
+在仓库根目录执行（会先 `build`，再启动 Electron 写入 `docs/screenshots/`）：
 
-信号、判断、日报、周报和产业项目都可以进入同一套 AI 研究讨论。讨论保留受限来源上下文和返回位置；只有用户点击“整理本次讨论”后，系统才生成 3 至 7 个可编辑的语义变更包，确认接受后再增量写入产业研究并生成不可变版本。
-
-> 来源上下文、持续讨论、语义变更包与正式纳入。
-
-![从讨论到研究增量](docs/screenshots/research-discussion-increment.png)
-
-<details>
-<summary>查看产业图谱、公司财报与研究证据</summary>
-
-![从讨论到研究增量](docs/screenshots/research-discussion-increment-1.png)
-![从讨论到研究增量](docs/screenshots/research-discussion-increment-2.png)
-</details>
-
-
-## 它解决什么问题
-
-很多个人投研工具停留在“看数据”或“问一次 AI”。RT-ResearchFlow 希望把研究变成一条连续工作流：
-
-```mermaid
-flowchart LR
-    A[资讯与市场信号] --> B[AI结构化研判]
-    B --> C[A股公司映射]
-    C --> D[近期行情与基本面复核]
-    D --> E[今日看板与判断账本]
-    E --> F[T+N回访与日周复盘]
-    F --> V[AI讨论与研究增量]
-    V --> I
-
-    Q[外盘与持仓事实] --> R[08:45盘前情景]
-    R --> S[09:28确认，事实封顶09:30]
-    S --> T[18:00盘后验证]
-    T --> U[历史校准]
-
-    G[产业问题] --> H[受控联网取证]
-    H --> I[产业图谱与公司财报]
-    I --> J[深度研究]
-    J --> K[多视角复核]
-    K --> L[研究增量与后续验证]
-
-    M[策略条件] --> N[历史信号]
-    N --> O[持有N日效果]
-    O --> P[可信度与数据质量门]
-
-    W[昨日板块资金与竞价候选] --> X[主线、题材、筹码与历史表现复核]
-    X --> E
+```powershell
+pnpm run build
+pnpm run screenshots:product
 ```
 
-系统不替用户跳过研究过程。它负责把来源、事实日期、行情覆盖、反证、未知项和后续验证放在结论旁边，让用户知道结论依据什么、缺少什么、之后如何复盘。
+与 Release 一致时，可改用已打包应用：
 
-## 核心能力
-
-| 工作台 | 它回答的问题 | 主要能力 |
-|---|---|---|
-| **今日看板** | 今天先处理什么，之后如何验证？ | 持仓风险、市场机会、策略信号、盘前推演、判断账本、3/7/14 日回访、不可变日报/周报和事后结果对照 |
-| **股票走势图** | 这只股票近期结构怎样？ | 日 K、分时、MA/BOLL、AI预测记录、筹码峰、基本面、公告与公共股票抽屉 |
-| **长线趋势** | 持仓和观察池中谁在转强或走弱？ | 持仓总览、趋势雷达、趋势事件、观察池、沪深300同期对比和本地趋势摘要 |
-| **大盘云图** | 指数、行业和资金是否形成共振？ | 行业云图、市场共振、板块资金流向和次日竞价观察 |
-| **短线策略** | 当前有哪些可复核的短线线索？ | 竞价主线、昨日资金交叉验证、个股题材归因、尾盘、涨停、连板、首阴、低吸、筹码与历史表现 |
-| **策略实验室** | 自己配置的条件能筛出什么？ | 参数化条件、阈值、组合逻辑、本地扫描、命中证据和运行保存 |
-| **策略评估** | 信号出现后持有 N 天表现如何？ | T+1/T+2/T+3/T+5、策略横向比较、样本明细、历史报告和可信度门 |
-| **资讯情报台** | 今天有哪些消息值得看？ | RSS/Atom扫描、来源分组、影响评级、去重、归档、全文检索和一键AI分析 |
-| **AI研判记录** | 一条消息影响哪些 A 股公司，能否继续形成研究？ | 公司代码映射、利好/利空、持仓警报、真实行情第二轮复核，以及从信号、判断和复盘进入持续讨论 |
-| **深度研究** | 一个复杂问题能否形成可审计结论？ | 直接预检与启动、五阶段进度、受控联网、PDF正文、报告/证据分层、恢复与重新研究、多视角复核 |
-| **产业研究** | 一条产业逻辑如何持续落到公司和财报？ | 受控搜索、引用、产业图谱、公司映射、业务暴露、财务时间轴、估值情景，以及讨论生成的语义变更包 |
-| **可靠性工具** | 数据和模型结果能不能相信？ | 数据质量中心、回测可信度、AI固定评测集、来源状态、失败诊断和恢复动作 |
-
-## 决策与复盘如何形成闭环
-
-入口位于 `决策中心 → 今日看板`。这里不是只展示当天信号，而是把一次判断从“待处理”带到“可回看、可修正、可验证”：
-
-1. **聚合待办**：资讯、持仓风险和策略信号按股票聚合，用户先处理风险更高、证据更完整或更接近回访日期的事项。
-2. **保存判断**：记录结论标签、证据快照、反证、未知项和下一次回访日期，避免日后用新信息改写当时为什么这样判断。
-3. **按期回访**：在 3/7/14 日等回访节点选择维持、修正或结束观察；每次变化形成新版本，旧判断继续保留。
-4. **形成复盘**：日报和周报汇总当期信号、判断变化与未处理事项，并以不可变版本保存，休市日也能回看最近交易日内容。
-5. **对照结果**：本地行情成熟后，系统把判断与真实走势放在一起核对；缺少行情或样本时明确显示缺口，不把缺失包装成命中。
-6. **继续研究**：从信号、判断、日报或周报进入 AI 讨论，保留原始上下文；有价值的讨论可以整理为语义变更，再由用户确认是否纳入产业研究。
-
-## 盘前情景如何工作
-
-盘前推演位于“决策中心 → 今日看板”标题区。它不是直接预测涨跌，而是把下一交易日可能面对的路径拆成可验证的情景：
-
-1. **07:30 与 08:45 外部事实**：盘前联网采集默认关闭；开启后，系统在可信时间窗口内记录全球主要指数、汇率、利率、商品等外生风险，不把外盘上涨直接等同于 A 股或个股上涨。
-2. **08:45 初版情景**：将外部风险与当前持仓的趋势、筹码、公告、资讯、行业和题材事实组合，输出基准、强化、风险三种情景及各自的支持、反证、确认、失效和未知项。
-3. **09:28 竞价确认，09:30 事实封顶**：09:28 只是确认版生成门槛，09:30 是事实边界。系统使用真实集合竞价确认或削弱初版，不在 09:27 提前生成。
-4. **09:29 组合提醒**：存在合格确认版时只发送一条组合通知，点击后回到同一个盘前版本。
-5. **18:00 盘后验证**：读取当日完整 OHLC，标记高开承接、高开回落、低开修复、全天偏弱等实际路径，并累计历史覆盖与分组样本。
-
-所有正式版本按交易日、阶段和修订不可变保存。确认版从 R1 开始，用户显式“重新补采”后最多形成 R2/R3；晚采的 09:25 竞价和 09:30 前精确发布的资讯、公告可以进入新修订，09:30 后的新事实仍被排除。缺失的 08:45 外盘事实优先通过 Tushare 最近已闭市美股日线和东方财富日韩历史分钟恢复，且每条事实必须不晚于原截点。休市日会明确展示最近交易日版本；盘后验证和可选 AI 解释绑定当前修订，下一交易日准备不会替换历史结论。
-
-## 短线策略如何工作
-
-入口位于 `短线策略 → 早盘集合竞价`，尾盘、涨停板、连板龙头、首阴和低吸则提供不同交易阶段的补充观察。它们共享一条“先找方向，再复核个股，最后验证历史表现”的逻辑：
-
-1. **从候选反推主线**：不只按涨幅罗列股票，而是把竞价候选按行业和题材聚合，识别当日是否存在集中方向。
-2. **用前后两日事实确认**：将昨日板块资金与今日集合竞价交叉对照，区分资金延续、竞价新方向和仅有少量个股异动的噪声。
-3. **解释个股在炒什么**：在候选股票侧展示主炒题材、相关题材和归因依据，并结合筹码结论、分时承接、趋势与近期行情继续复核。
-4. **统一表达风险边界**：尾盘、涨停、连板、首阴和低吸不只给名单，同时展示支持事实、风险、继续确认条件和明确失效条件。
-5. **回到真实样本**：信号进入策略效果评估，统一查看 T+1/T+2/T+3/T+5 表现、样本明细和可信度门；数据不足时不输出看似精确的胜率。
-
-## AI 研究如何工作
-
-### 普通资讯分析
-
-普通分析优先解决“这条消息与哪些 A 股公司有关”。第一轮提取公司代码、产业链传导、利好与利空及持仓风险；第二轮读取本地或接口中的近期真实行情，再分析趋势、相对强弱、支撑和压力。没有有效公司代码或行情不足时，界面会明确提示缺口，而不是伪造第二轮结论。
-
-### 持续讨论与研究增量
-
-资讯分析、策略信号、判断记录、日报、周报和产业项目都可以进入研究讨论。系统保留来源类型、原始上下文和返回位置，因此追问不会变成一段与业务脱节的孤立聊天。
-
-讨论本身不会自动改写正式产业研究。只有用户显式选择“整理本次讨论”后，系统才会提取 3 至 7 个可编辑的语义变更包；用户确认接受的内容会增量写入产业项目并形成新的不可变版本，未接受内容不会混入正式研究结论。
-
-### 全局深度研究工作台
-
-用户不需要先理解或创建“研究讨论”，可以直接从 `AI分析 → 深度研究` 开始：
-
-1. 选择股票或已有产业研究项目，输入研究问题，并确认是否允许使用持仓这一敏感范围。
-2. 系统先执行零写入预检，展示固定 Provider、模型、资料截点、主体和证据策略；配置缺失时可以直接前往 AI 配置。
-3. 启动后在同一工作台查看全部、进行中和已结束运行；切换到其他页面不会取消主进程任务。
-4. 五阶段进度带持续展示当前步骤、模型与工具累计次数、连续耗时，以及计划、工具、门禁、综合、审计和写回消息。
-5. 完成态分别展示“执行状态”和“结论覆盖”。运行成功只代表流程和账本完整，结论仍可能是完整、受限或受阻。
-6. “研究报告”优先展示结论，“证据”页集中展示来源、正文、门禁、调用、成本和审计；可以返回内部讨论继续追问。
-
-### 可恢复的深度研究
-
-深度研究运行在 Electron 主进程，并把计划、工具调用、模型调用、证据、Token、成本和报告写入本地四级账本。应用中断后不会自动继续消费额度，只有显式继续才会从最后成功阶段恢复。
-
-证据流程遵循以下顺序：
-
-1. 固定研究问题、主体、资料截点、Provider、模型、规则和工具版本。
-2. 读取本地行情、趋势、基本面、公告、资讯或产业项目快照。
-3. 执行证据充分性检查；只有硬缺口存在时才开放受控联网工具。
-4. 搜索结果只作为候选；网页或 PDF 取得可引用正文后才计入证据，转载、过期、无关或伪官方来源不会凑数。
-5. 每批补证后重新检查。当前事件至少要求两份独立正文且包含一级来源；产业研究至少要求三份独立正文、两份近三年资料和一份一级来源。
-6. 门禁通过后使用实际采用的最小合格正文进行综合；证据仍不足时只形成受限或受阻结果，不用模型常识补齐。
-7. 报告经过确定性审计后写回内部讨论，可继续追问或整理为产业研究增量。
-
-暂停或可恢复失败会继续原账本；结果未知、取消或不可恢复失败需要“重新研究”，以当前资料截点创建可对照的新账本。删除只作用于当前选中的终态记录，不会连带删除其他重试；存在直接多视角复核依赖时会阻止删除来源记录。
-
-### 绑定证据的多视角复核
-
-多视角复核不是让多个模型自由发挥。它只接受已经完成且证据充分的深度研究，固定复用父运行的不可变证据：
-
-```text
-同一证据快照
-    ├─ 多方：成立逻辑、支撑事实、前提和未知项
-    ├─ 空方：反证、风险事实、脆弱环节和未知项
-    └─ 中立主持：共识、核心分歧、剩余未知、验证清单
+```powershell
+$env:TRADE_WATCH_PACKAGED_EXECUTABLE = "release\win-unpacked\RT-ResearchFlow.exe"
+pnpm run screenshots:product
 ```
 
-多视角复核不再取数、不再联网，也不调用工具。多方与空方至少完成两轮交锋，并根据实质分歧继续收敛，最后由中立主持汇总；事实主张必须引用父运行中的稳定证据编号。最终结果不输出买卖、仓位、目标价或收益承诺。
+脚本覆盖 README 引用的全部产品图文件名（今日看板、盘前推演、资讯与 AI 研判、产业研究、深度研究、趋势、大盘云图、早盘竞价、策略评估、质量中心等），演示数据由 `tests/e2e/helpers/` 下种子脚本写入临时库。
 
-### 调用与成本边界
-
-| 类型 | 模型策略 | 工具策略 | 联网 | 说明 |
-|---|---|---|---|---|
-| 新建或重新研究 | 按研究需要收敛，不设固定次数 | 按研究需要，每轮最多2个 | 仅按证据缺口开放 | 固定模型与主体，保留输入、结果容量和安全网络边界 |
-| 多视角复核 | 至少两轮多空交锋，按分歧收敛 | 0 次 | 不联网 | 只复用父运行不可变证据 |
-| 历史研究账本 | 保持创建时固化的旧预算 | 保持创建时固化的旧预算 | 按历史规则 | 不升级、不改写、不静默重放 |
-
-“不设固定次数”不代表无边界运行：主体权限、证据门禁、每轮工具数、输入与工具结果容量、SSRF、重定向、MIME、响应体积、显式取消、幂等和单活动运行保护仍然生效。实际费用取决于用户配置的 Provider、模型价格和上游计费规则；请求提交后响应未知时，同一运行禁止自动重放，界面会提示可能的重复费用风险。
-
-## 数据源
-
-RT-ResearchFlow 使用“本地事实优先、用户显式补齐、失败保留旧事实”的数据策略。
-
-- **本地 SQLite**：保存资讯、行情缓存、持仓、观察池、策略信号、研究项目、AI会话、判断账本和运行审计。
-- **Tushare**：可选，用于更完整的 A 股基础数据、日线、财务、题材、筹码和部分策略数据，也可在显式盘前补采时读取最近已闭市的美股日线；具体能力取决于账号权限。
-- **东方财富与新浪财经等公开接口**：用于单股零 Key 日线、公司概况、主要财务、公告索引及部分市场数据的显式补齐或降级；盘前补采可读取日韩 08:45 历史分钟，并在 Tushare 不可用时回退美股历史日线。
-- **全球市场公开行情**：用于用户启用后的盘前外生风险快照、受控历史恢复和下一交易日准备；每条恢复事实受原截点约束，只提供 A 股情景证据，不扩展为海外交易工具。
-- **RSS/Atom 与公开网页**：用于资讯扫描；来源、发布时间和采集时间分别记录。
-- **用户自己的 AI Provider**：支持 Claude、ChatGPT/OpenAI-compatible、Qwen、DeepSeek 等配置。
-- **受控网页搜索与正式披露入口**：只在深度研究证据不足且用户已配置相应服务时使用。
-- **受控 PDF 正文**：交易所、公告和研报 PDF 经主进程安全出口与正文解析器处理，解析失败保留哈希和缺口诊断，不把文件标题当作正文证据。
-
-不同网络环境、接口权限、交易日历和上游服务状态会影响数据覆盖。界面会尽量展示来源、事实日期、覆盖、失败原因和恢复入口，但不会把缺失值填成确定事实。
-
-## 数据隐私与安全边界
-
-- 数据以本地 SQLite 为权威源；安装版的数据库、配置、备份、缓存和日志保存在用户选择安装目录下的 `data` 子目录。
-- Tushare Token、AI API Key 和搜索服务凭据由主进程加密管理，不进入 renderer、研究账本、模型投影或普通日志。
-- Electron 保持 `sandbox` 与 `contextIsolation`，禁用 `nodeIntegration` 和远程 `webview`；非应用导航、窗口和权限默认拒绝。
-- Agent 联网通过独立安全出口，阻断私网、环回、危险重定向、凭据传播、超大响应和不受支持的内容类型。
-- 深度研究的搜索只登记候选，正文工具只接受同一运行已经落账的候选 ID；renderer 和模型都不能提交任意 URL 抓取。
-- 模型或联网请求提交后失联会进入结果未知状态，同一账本禁止自动重放；旧账本、证据和可能费用提示均保留。
-- 本机 MCP 默认关闭，只能读取用户明确授权的事实范围；不开放 SQL、文件、Shell、任意网络、数据刷新或交易动作。
-- 页面加载、打开抽屉和应用重启不会因为“顺便补齐”而自动遍历持仓、调用 AI 或消费 Token。
-- 盘前联网采集默认关闭；休市回看只读本地冻结版本，重新补采和下一交易日准备仅在用户显式点击后请求网络，且不能把截点后的事实倒灌进历史版本。
+---
 
 ## 架构
 
 ```text
 RT-ResearchFlow/
-├─ src/                         React 18 + Zustand + Tailwind renderer
+├─ src/                 React 18 + Zustand + Tailwind 渲染层
 ├─ electron/
-│  ├─ preload/                  窄类型 IPC 边界
-│  └─ main/                     任务、数据、AI、研究与安全网络出口
-├─ tests/                       Vitest + Playwright
-├─ resources/                   安装与内置资源
-├─ scripts/                     构建、体积与启动测量
-└─ package.json
+│  ├─ preload/          窄类型 IPC（window.api）
+│  └─ main/             SQLite、行情、AI、研究与安全网络出口
+├─ skills/              应用内投研技能（巴菲特/产业链等）
+├─ tests/               Vitest + Playwright
+└─ docs/                发版说明、社区文档、SDD 归档
 ```
-
-运行边界：
 
 ```text
-React Renderer
-      │  仅允许白名单 window.api
-      ▼
-Sandbox Preload
-      │  窄 IPC
-      ▼
-Electron Main Process
-      ├─ SQLite / FTS5
-      ├─ 行情、资讯、财务与策略服务
-      ├─ AI与可恢复研究运行器
-      ├─ 受控联网出口
-      └─ 当前用户本机 MCP 网关
+React Renderer  →  Sandbox Preload  →  Electron Main
+                      窄 IPC              ├─ SQLite / FTS5
+                                          ├─ 行情与策略服务
+                                          ├─ AI 与可恢复研究运行器
+                                          ├─ 受控联网出口
+                                          └─ 本机 MCP 网关
 ```
+
+Renderer **不**直接持有凭据、数据库连接或任意网络权限；新能力走主进程校验与白名单 IPC。
+
+模块级行为说明见 [`src/components/*/README.md`](src/components/AIAnalysis/README.md)（含 FR 约束）。
+
+---
 
 ## 快速开始
 
 ### 环境要求
 
-- Node.js 20.x LTS
-- pnpm 10.x，仓库锁定 `pnpm@10.14.0`
-- Windows 10/11 x64 用于当前主要开发和安装包验证
+- Node.js **20.x** LTS
+- pnpm **10.x**（仓库锁定 `pnpm@10.14.0`）
+- Windows 10/11 x64（当前主要开发与安装包验证环境）
+
+Windows 上若符号链接权限不足：
+
+```powershell
+pnpm install --config.node-linker=hoisted
+```
 
 ### 从源码运行
 
-```bash
+```powershell
 corepack enable
 corepack prepare pnpm@10.14.0 --activate
 pnpm install --frozen-lockfile
-pnpm run dev
+pnpm dev
 ```
 
-首次启动不要求配置 AI 或 Tushare。用户可以先通过公开数据源查询单股日线、建立观察池并体验本地趋势；需要更完整数据、AI分析或联网研究时，再在配置中心按需添加凭据。
+首次启动**不要求**配置 AI 或 Tushare。可先体验公开数据路径、观察池与本地趋势；需要更完整数据或 AI 时再在配置中心添加凭据。
 
 ### 构建 Windows 安装包
 
-```bash
+```powershell
 pnpm run dist:win
 ```
 
-安装器支持选择安装目录。普通升级和卸载默认保留安装目录下的 `data`，正式迁移或删除前仍建议从诊断页执行备份。
+等价于生产构建 + `electron-builder`（自动禁用代码签名发现）。
 
-## 配置 AI
+---
 
-在客户端配置中心选择 Provider、模型、Base URL 和凭据。普通 AI 研判与深度研究共用受控配置，但深度研究会在创建时固定 Provider、模型、资料截点和规则版本，不会在运行中静默切换备用模型。
+## 配置要点
 
-本机 Agent 用户可以在“设置 → 本机研究访问”中创建访问配置，选择 `market.read`、`research.read`、`portfolio.read` 等权限并复制一次性 MCP 配置。访问配置可以停用、轮换或撤销，最近调用保留有界审计。
+| 位置 | 内容 |
+|---|---|
+| **数据源** | Tushare Token、可选自定义 API 地址、验证与保存 |
+| **AI** | 多 Provider、模型、Base URL、凭据（主进程加密） |
+| **Agent** | 本应用联网搜索、Agent 联网闸门、本机研究访问、外部 MCP |
+| **设置** | 扫描频率、盘前采集、通知、**自定义数据目录**、产业链维护 |
+
+深度研究在创建时固定 Provider、模型与资料截点，运行中不静默切换备用模型。
+
+---
 
 ## 测试与质量门禁
 
-```bash
+```powershell
 pnpm run typecheck
 pnpm run lint
 pnpm run test:unit
 pnpm run build
 pnpm run verify
+./.github/scripts/Test-PublicBoundary.ps1
 ```
 
-`pnpm run verify` 是统一质量门禁，依次执行 Node/Web TypeScript、ESLint、Electron ABI 单元测试和带体积预算的生产构建。
+`pnpm run verify` = TypeScript + ESLint + 单元测试（Electron ABI）+ 生产构建。
 
-常用真实 Electron 旅程：
+常用 E2E 旅程：
 
-```bash
+```powershell
 pnpm run test:e2e -- tests/e2e/zero-key-first-value.spec.ts
 pnpm run test:e2e -- tests/e2e/premarket-scenario-drawer.spec.ts
-pnpm run test:e2e -- tests/e2e/premarket-capture-settings.spec.ts
 pnpm run test:e2e -- tests/e2e/research-agent-recovery.spec.ts
 pnpm run test:e2e -- tests/e2e/user-journey.spec.ts
 ```
 
-自动研究测试使用注入 Provider 或隔离 SQLite，不连接真实付费模型。真实模型质量、供应商限流和实际费用需要用户在客户端显式运行后通过账本验收。
+自动测试使用注入 Provider 或隔离数据库，**不**连接真实付费模型。
+
+---
+
+## 安全与隐私边界
+
+- 数据以本地 SQLite 为权威；安装版数据在 `data` 目录（可自定义根路径）。
+- 凭据由主进程加密管理，不进入 renderer、研究账本或普通日志。
+- Electron 启用 `sandbox` 与 `contextIsolation`；禁用 `nodeIntegration`。
+- Agent 联网经独立安全出口，阻断私网、危险重定向与超大响应。
+- 深度研究搜索只登记候选；正文须经主进程安全解析后才计为证据。
+- 请求提交后失联进入「结果未知」，同一账本**禁止**自动重放。
+- 本机 MCP 默认关闭，只读用户授权的事实范围；不开放 SQL/Shell/交易动作。
+- 盘前联网默认关闭；休市回看只读本地冻结版本。
+
+---
+
+## 已知限制
+
+与 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md) 的「已知限制」保持一致：
+
+- 本次只提供 Windows x64 安装包，macOS 尚未纳入发布验收。
+- 安装包尚未进行商业代码签名。
+- 策略实验室「通用日线 DSL / 两阶段组合」仍留给后续批次。
+- 云端分钟数据服务（`minuteData:saveCloudConfig`）尚未启用。
+- 竞价价史 snapshot IPC 在冷启动大批量候选时仍可能较长阻塞（已知技术债）。
+- 应用不执行下单、自动交易、仓位控制或收益预测。
+
+以上以当前版本 Release 说明为准，后续版本如有变化以对应 [`docs/releases/`](docs/releases/) 文档为准。
+
+---
+
+## 路线图
+
+以下为方向性计划，由 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md)「已知限制」反推而来，**不承诺交付时间**：
+
+- 策略实验室「通用日线 DSL / 两阶段组合」落地。
+- 云端分钟数据服务（`minuteData:saveCloudConfig`）启用。
+- 竞价价史 snapshot IPC 冷启动性能债清理。
+- 安装包商业代码签名。
+- macOS 纳入发布验收。
+- 其余方向以 Discussions Ideas 中用户反馈为准；以上条目也适合作为 `good first issue` / `help wanted` 的出处，欢迎认领。
+
+---
 
 ## 项目原则
 
-1. **本地优先**：个人持仓、研究记录、凭据和审计不依赖云端账户体系。
-2. **事实与结论分开**：来源、事实日、覆盖和未知项不能被 AI 文本替代。
-3. **用户显式触发**：联网、刷新、AI调用、继续运行和正式纳入研究都需要明确动作。
-4. **失败可恢复**：长任务保存阶段与结果，成功步骤不重复，未知计费不自动重放。
-5. **研究可以被反驳**：结论必须允许查看反证、分歧和下一步验证事项。
-6. **不越过交易边界**：不接券商下单，不提供自动调仓、目标价指令或收益承诺。
+1. **本地优先** — 持仓、研究记录与审计不依赖云端账户。
+2. **事实与结论分开** — 来源、事实日、覆盖与未知项不能被 AI 文本替代。
+3. **用户显式触发** — 联网、刷新、AI 调用、继续运行与正式纳入研究都需明确动作。
+4. **失败可恢复** — 长任务保存阶段与结果；成功步骤不重复；未知计费不自动重放。
+5. **结论可被反驳** — 必须能查看反证、分歧与下一步验证项。
+6. **不越过交易边界** — 不接券商下单，不提供自动调仓、目标价指令或收益承诺。
+
+---
+
+## 反馈与支持
+
+按问题类型选择渠道，全部在本仓库：
+
+| 场景 | 渠道 |
+|---|---|
+| 可复现 Bug | [提交 Issue](https://github.com/BigApple12138/RT-ResearchFlow/issues/new/choose)，附版本、复现步骤、预期与实际结果 |
+| 安装与使用问题 | [Discussions Q&A](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/q-a) |
+| 功能想法 | [Discussions Ideas](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/ideas) |
+| 安全问题 | [Security 私密报告](https://github.com/BigApple12138/RT-ResearchFlow/security/advisories/new)，不要创建公开 Issue |
+
+参与前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)、[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) 与 [SECURITY.md](SECURITY.md)。
+
+---
 
 ## 贡献
 
-欢迎通过 Issue 报告问题、提出改进建议或提交 Pull Request。代码合入前至少执行 `pnpm run verify`；涉及真实客户端交互时，请补充相应的 Playwright 旅程，并确保没有提交 API Key、Token、本地数据库、日志或个人持仓信息。
+欢迎 Pull Request。合入前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) 与 [`AGENTS.md`](AGENTS.md)；问题反馈与功能想法请先见上方 [反馈与支持](#反馈与支持) 的对应渠道。
+
+- 功能与行为变更走 **SDD**（spec/plan 归档于 `docs/superpowers/`）。
+- 至少执行 `pnpm run verify` 与公开边界脚本。
+- **合入 `develop`/`main` 的 PR 必须先 Review。**
+- 勿提交 API Key、Token、数据库、日志、持仓或个人路径。
+
+---
 
 ## 免责声明
 
 本项目仅用于信息整理、软件研究、个人投研记录和历史验证，不构成任何证券、基金或其他金融产品的投资建议。市场数据和公开资料可能延迟、缺失或错误，AI 输出也可能存在遗漏与幻觉。任何结论都应由用户独立核实，投资决策与风险由用户自行承担。
 
+---
+
 ## 赞赏
 
-如果这个工具帮到了你，欢迎请作者喝杯咖啡。
+若本工具对你有帮助，也可向**原作者**表达支持（赞赏图来自原项目）：
 
-![请作者喝杯咖啡](docs/screenshots/support-caoritian.jpg)
+[![请原作者喝杯咖啡](docs/screenshots/support-caoritian.jpg)](https://github.com/caoritian002-wq/RT-ResearchFlow)
+
+原项目：[caoritian002-wq/RT-ResearchFlow](https://github.com/caoritian002-wq/RT-ResearchFlow)
+
+---
 
 ## License
 
-社区版基于 GNU Affero General Public License v3.0 only（`AGPL-3.0-only`）发布，完整条款见 [LICENSE](LICENSE)。
+社区版基于 **GNU Affero General Public License v3.0 only**（`AGPL-3.0-only`）发布，完整条款见 [LICENSE](LICENSE)。
 
-版权所有者保留为 RT-ResearchFlow 提供独立商业许可证的权利。闭源集成、闭源再分发或其他不符合 AGPL-3.0-only 的商业使用，需要另行取得商业授权。
+版权所有者保留提供独立商业许可证的权利。闭源集成、闭源再分发或其他不符合 AGPL-3.0-only 的商业使用，须另行取得商业授权。

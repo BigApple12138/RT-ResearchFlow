@@ -2,6 +2,10 @@ import type Database from 'better-sqlite3'
 import { queryStockOHLCV } from '../database/dailyCloseCacheRepository'
 import { getCachedPrices } from '../database/stockPriceCacheRepository'
 import {
+  listTrendStructureReviewsByCodes,
+  type TrendStructureReview,
+} from '../database/trendStructureReviewRepository'
+import {
   getTrendAlerts,
   getTrendScoreComputationSnapshot,
   getTrendScoreSnapshot,
@@ -16,6 +20,15 @@ import {
   type TrendState,
 } from './trendScoreModel'
 import { inspectTrendBenchmarkHealth, type TrendBenchmarkHealth } from './trendBenchmarkFreshness'
+import {
+  buildTrendReviewFactsFromItem,
+  deriveImpliedScore,
+  deriveTrendReviewSource,
+  hashTrendReviewFacts,
+  normalizeTrendTsCode,
+  type TrendReviewFacts,
+  type TrendStructureReviewSummary,
+} from './trendStructureReviewTypes'
 
 export interface TrendWorkbenchScorePoint {
   tradeDate: string
@@ -41,6 +54,7 @@ export interface TrendWorkbenchItem extends Omit<TrendScoreDetail, 'category' | 
   dimensions: TrendScoreComputation['dimensions'] | null
   facts: TrendScoreComputation['facts'] | null
   benchmarkHealth: TrendBenchmarkHealth
+  structureReview: TrendStructureReviewSummary | null
 }
 
 export interface TrendWorkbenchEvent {
@@ -80,7 +94,8 @@ export function getTrendWorkbench(db: Database.Database, now = Date.now()): Tren
   const startDate = offsetYmd(-760)
   const benchmarkBars = loadBars(db, '000300.SH', startDate)
   const benchmarkHealth = inspectTrendBenchmarkHealth(db, now)
-  const items = [...grouped.values()].map((group) => buildWorkbenchItem(db, group, benchmarkBars, benchmarkHealth, startDate))
+  const baseItems = [...grouped.values()].map((group) => buildWorkbenchItem(db, group, benchmarkBars, benchmarkHealth, startDate))
+  const items = attachStructureReviews(db, baseItems, now)
   const itemByCode = new Map(items.map((item) => [normalizeTsCode(item.tsCode), item]))
   const events = getTrendAlerts(db, 90).map((event) => buildEvent(event, itemByCode.get(normalizeTsCode(event.tsCode))))
   const latestTradeDate = items
@@ -102,6 +117,123 @@ export function getTrendWorkbench(db: Database.Database, now = Date.now()): Tren
       benchmark: benchmarkHealth,
     },
   }
+}
+
+function attachStructureReviews(
+  db: Database.Database,
+  items: TrendWorkbenchItem[],
+  now: number,
+): TrendWorkbenchItem[] {
+  const reviewByCode = new Map<string, TrendStructureReview>()
+  for (const review of listTrendStructureReviewsByCodes(db, items.map((item) => item.tsCode))) {
+    const code = normalizeTrendTsCode(review.tsCode)
+    if (!reviewByCode.has(code)) reviewByCode.set(code, review)
+  }
+
+  return items.map((item) => {
+    const review = reviewByCode.get(normalizeTrendTsCode(item.tsCode))
+    if (!review) return { ...item, structureReview: null }
+    const currentFacts = buildEodTrendReviewFactsForItem(db, item, now)
+    const stale = review.scoreDate !== currentFacts.scoreDate
+      || review.factsHash !== hashTrendReviewFacts(currentFacts)
+    return {
+      ...item,
+      structureReview: {
+        verdict: review.verdict,
+        rationale: review.rationale,
+        focusPoints: [...review.focusPoints],
+        stale,
+        scoreDate: review.scoreDate,
+        factsHash: review.factsHash,
+        createdAt: review.createdAt,
+        source: deriveTrendReviewSource(review.provider, review.model),
+        aiScoreStatus: review.aiScoreStatus,
+        aiScoreDelta: review.aiScoreDelta,
+        aiScoreRationale: review.aiScoreRationale,
+        localScore: review.localTotalScore,
+        impliedScore: review.aiScoreStatus === 'scored'
+          && review.localTotalScore != null
+          && review.aiScoreDelta != null
+          ? deriveImpliedScore(review.localTotalScore, review.aiScoreDelta)
+          : null,
+      },
+    }
+  })
+}
+
+/**
+ * 结构复核白名单事实：仅用本地日线结算（不叠加盘中实时价）。
+ * 日线不足时回退到 item 投影，供无行情夹具单测使用。
+ */
+export function buildEodTrendReviewFactsForItem(
+  db: Database.Database,
+  item: TrendWorkbenchItem,
+  now = Date.now(),
+): TrendReviewFacts {
+  const startDate = offsetYmd(-760)
+  const stockBars = loadBars(db, item.tsCode, startDate)
+  const benchmarkBars = loadBars(db, '000300.SH', startDate)
+  if (stockBars.length < 20) {
+    return buildTrendReviewFactsFromItem(item, now)
+  }
+
+  const computation = computeLatest(stockBars, benchmarkBars, null)
+  const latestTradeDate = stockBars.at(-1)?.tradeDate ?? null
+  const scoreDate = latestTradeDate ?? formatUtcYmd(now)
+  const totalScore = computation?.score.totalScore ?? null
+  const history = buildRollingHistory(stockBars, benchmarkBars)
+  const scoreHistory = mergeCurrentScore(history, scoreDate, totalScore)
+  const scoreDelta5d = scoreDelta(scoreHistory, 5)
+  const scoreDelta20d = scoreDelta(scoreHistory, 20)
+  const maAbove60 = computation?.score.maAbove60 == null
+    ? null
+    : computation.score.maAbove60 > 0
+  const bars = stockBars.length
+
+  const dimensions = computation?.dimensions ?? {
+    maArrangement: null, maAbove60: null, relativeStrength: null,
+    drawdownQuality: null, turnoverQuality: null, macd: null, boll: null,
+  }
+  const score = computation?.score
+  const trendState = classifyTrendState(totalScore, maAbove60, scoreDelta5d)
+
+  return {
+    tsCode: normalizeTrendTsCode(item.tsCode),
+    stockName: item.stockName,
+    scoreDate,
+    scoreSource: 'eod',
+    scoreVersion: 'v2',
+    trendState,
+    totalScore,
+    scoreDelta5d,
+    scoreDelta20d,
+    maAbove60,
+    validWeight: computation?.validWeight ?? null,
+    dataCoverage: {
+      bars,
+      requiredBars: 60,
+      latestTradeDate,
+      state: bars >= 60 ? 'ready' : bars >= 20 ? 'partial' : 'missing',
+    },
+    dimensions,
+    maScore: score?.maScore ?? null,
+    alphaScore: score?.alphaScore ?? null,
+    drawdown: score?.drawdown ?? null,
+    turnoverRatio: score?.turnoverRatio ?? null,
+    macdAboveZero: score?.macdAboveZero != null ? score.macdAboveZero === 1 : null,
+    bollAboveMid: score?.bollAboveMid != null ? score.bollAboveMid === 1 : null,
+    facts: computation?.facts ?? null,
+    scoreHistory,
+    benchmarkHealth: {
+      state: item.benchmarkHealth.state,
+      message: item.benchmarkHealth.message,
+    },
+  }
+}
+
+function formatUtcYmd(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${date.getUTCFullYear()}${String(date.getUTCMonth() + 1).padStart(2, '0')}${String(date.getUTCDate()).padStart(2, '0')}`
 }
 
 interface DetailGroup {
@@ -168,9 +300,12 @@ function buildWorkbenchItem(
       latestTradeDate,
       state: bars >= 60 ? 'ready' : bars >= 20 ? 'partial' : 'missing',
     },
+    scoreSource: primary.scoreSource,
+    scoreVersion: primary.scoreVersion,
     dimensions: currentComputation?.dimensions ?? null,
     facts: currentComputation?.facts ?? null,
     benchmarkHealth,
+    structureReview: null,
   }
 }
 
@@ -297,12 +432,7 @@ function addNonEmpty(target: Set<string>, value: string): void {
 }
 
 function normalizeTsCode(tsCode: string): string {
-  const clean = tsCode.trim().toUpperCase()
-  if (/^\d{6}\.(SH|SZ|BJ)$/.test(clean)) return clean
-  const code = stripSuffix(clean)
-  if (/^(600|601|603|605|688|900|110|113|118|127|128|129|131|132)/.test(code)) return `${code}.SH`
-  if (/^(430|830|87|88|89|92)/.test(code)) return `${code}.BJ`
-  return `${code}.SZ`
+  return normalizeTrendTsCode(tsCode)
 }
 
 function stripSuffix(tsCode: string): string {

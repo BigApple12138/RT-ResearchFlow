@@ -7,6 +7,7 @@ import {
   getResearchAgentRun,
   getResearchAgentRunByRequestId,
   getResearchAgentRunLedger,
+  hasActiveResearchAgentRunForDiscussionSession,
   hashResearchAgentText,
   listResearchAgentRuns,
   pauseExpiredResearchAgentRuns,
@@ -30,7 +31,7 @@ import {
   getResearchDiscussionContext,
   getResearchDiscussionContextByRequestId,
 } from '../database/researchDiscussionRepository'
-import { getResearchWebSearchConfig } from '../database/industryResearchGenerationRepository'
+import { isAppWebSearchConfigured } from './appWebSearchGateway'
 import { getResearchProject } from '../database/industryResearchRepository'
 import { getStockBasicByTsCodes } from '../database/stockBasicCacheRepository'
 import { getStockInfo } from '../database/stockPriceCacheRepository'
@@ -65,6 +66,7 @@ import {
   resolveCurrentResearchAgentModelConfig,
   runResearchAgent,
   type ResearchAgentPersistInput,
+  type ResearchAgentRunnerDelta,
   type ResearchAgentRunnerProgress,
 } from './researchAgentRunner'
 import {
@@ -78,6 +80,9 @@ import {
   RESEARCH_AGENT_NETWORK_TOOL_DEFINITIONS,
   RESEARCH_AGENT_TOOL_REGISTRY_VERSION,
 } from './researchAgentNetworkTools'
+import { withDiscussionSessionLock } from './discussionSessionLock'
+import { deleteSessionWithSessionLock } from './discussionSessionLifecycleService'
+import { notifyResearchAgentBridge } from '../agent/researchAgentBridge'
 import {
   MULTI_PERSPECTIVE_PROTOCOL_VERSION,
   MULTI_PERSPECTIVE_UNRESTRICTED_PROMPT_RULE_VERSION,
@@ -98,6 +103,13 @@ const LEASE_TTL_MS = 150_000
 const LEASE_RENEW_INTERVAL_MS = 30_000
 const MAX_CONTEXT_MESSAGES = 40
 const MAX_CONTEXT_MESSAGE_CHARS = 4_000
+
+export function isDiscussionSessionBusy(
+  db: import('better-sqlite3').Database,
+  sessionId: number,
+): boolean {
+  return hasActiveResearchAgentRunForDiscussionSession(db, sessionId)
+}
 
 export interface ResearchAgentPreflightView {
   sessionId: number | null
@@ -224,12 +236,15 @@ export interface ResearchAgentRunDetailView {
     coverage: Record<string, unknown>
     warnings: unknown[]
     scope: 'local' | 'network'
-    kind: 'local' | 'search' | 'document' | 'refresh'
+    kind: 'local' | 'search' | 'document' | 'refresh' | 'mcp'
     request: {
       query: string | null
       candidateId: string | null
       stockCode: string | null
       requestedLimit: number | null
+      serverId: string | null
+      toolName: string | null
+      subjectRef: string | null
     }
     searchProvider: string | null
     candidates: Array<{
@@ -255,6 +270,17 @@ export interface ResearchAgentRunDetailView {
       contentSha256: string
       rawBodySha256: string
       mimeKind: string
+    } | null
+    mcp: {
+      serverId: string
+      serverName: string | null
+      toolName: string
+      subjectRef: string | null
+      sourceClass: 'secondary'
+      sourceKind: 'external_mcp'
+      truncated: boolean
+      resultPreview: string | null
+      resultSha256: string | null
     } | null
     network: {
       method: string
@@ -361,14 +387,14 @@ export class ResearchAgentRunManager {
     })
   }
 
-  startDirect(input: {
+  async startDirect(input: {
     requestId: string
     question: string
     subjects: unknown[]
     includePortfolio: boolean
     projectId?: string | null
     confirmedBudgetVersion: string
-  }): { run: ResearchAgentRunSummaryView; replayed: boolean; discussionSessionId: number } {
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean; discussionSessionId: number }> {
     if (input.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前固定研究预算版本')
     }
@@ -398,7 +424,7 @@ export class ResearchAgentRunManager {
     })
     let started: { run: ResearchAgentRunSummaryView; replayed: boolean }
     try {
-      started = this.start({
+      started = await this.start({
         requestId: input.requestId,
         sessionId: discussion.discussion.sessionId,
         question: input.question,
@@ -409,7 +435,11 @@ export class ResearchAgentRunManager {
       })
     } catch (error) {
       if (!discussion.resumed && !getResearchAgentRunByRequestId(this.db, input.requestId)) {
-        try { deleteSession(this.db, discussion.discussion.sessionId) } catch { /* Preserve the original start error. */ }
+        try {
+          await deleteSessionWithSessionLock(this.db, discussion.discussion.sessionId, {
+            allowResearchDiscussion: true,
+          })
+        } catch { /* Preserve the original start error. */ }
       }
       throw error
     }
@@ -419,7 +449,35 @@ export class ResearchAgentRunManager {
     }
   }
 
-  start(input: {
+  async start(input: {
+    requestId: string
+    sessionId: number
+    question: string
+    subjects: unknown[]
+    includePortfolio: boolean
+    confirmedBudgetVersion: string
+    parentRunId?: string | null
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean }> {
+    return withDiscussionSessionLock(input.sessionId, () => this.startWithinSessionLock(input))
+  }
+
+  /**
+   * 调用方已持有同一 session 的 discussionSessionLock 时使用（如 Agent Hub agentTurn 内调 deep_start）。
+   * 不可再进 withDiscussionSessionLock，否则非可重入锁会死锁。
+   */
+  startAssumingSessionLockHeld(input: {
+    requestId: string
+    sessionId: number
+    question: string
+    subjects: unknown[]
+    includePortfolio: boolean
+    confirmedBudgetVersion: string
+    parentRunId?: string | null
+  }): { run: ResearchAgentRunSummaryView; replayed: boolean } {
+    return this.startWithinSessionLock(input)
+  }
+
+  private startWithinSessionLock(input: {
     requestId: string
     sessionId: number
     question: string
@@ -463,7 +521,23 @@ export class ResearchAgentRunManager {
     return { run: toRunSummary(getResearchAgentRun(this.db, started.run.id)!), replayed: started.replayed }
   }
 
-  startReview(input: {
+  async startReview(input: {
+    requestId: string
+    sourceRunId: string
+    confirmedBudgetVersion: string
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean }> {
+    if (input.confirmedBudgetVersion !== RESEARCH_AGENT_MULTI_PERSPECTIVE_BUDGET.id) {
+      throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前多视角固定预算版本')
+    }
+    const source = getResearchAgentRun(this.db, input.sourceRunId)
+    if (!source) throw new ResearchAgentRunManagerError('NOT_FOUND', '来源研究运行不存在')
+    const execute = () => this.startReviewWithinSessionLock(input)
+    return source.discussion_session_id == null
+      ? execute()
+      : withDiscussionSessionLock(source.discussion_session_id, execute)
+  }
+
+  private startReviewWithinSessionLock(input: {
     requestId: string
     sourceRunId: string
     confirmedBudgetVersion: string
@@ -550,11 +624,11 @@ export class ResearchAgentRunManager {
     return toRunSummary(requireRun(this.db, runId))
   }
 
-  retry(input: {
+  async retry(input: {
     requestId: string
     sourceRunId: string
     confirmedBudgetVersion: string
-  }): { run: ResearchAgentRunSummaryView; replayed: boolean } {
+  }): Promise<{ run: ResearchAgentRunSummaryView; replayed: boolean }> {
     if (input.confirmedBudgetVersion !== RESEARCH_AGENT_STANDARD_BUDGET.id) {
       throw new ResearchAgentRunManagerError('INVALID_PARAM', '必须确认当前连续研究预算版本')
     }
@@ -618,6 +692,17 @@ export class ResearchAgentRunManager {
     return transaction()
   }
 
+  /**
+   * Delete through the same session lock used by discussion follow-up and
+   * compaction. The synchronous delete method remains available to internal
+   * callers that already own the lifecycle boundary; IPC uses this method.
+   */
+  async deleteWithSessionLock(runId: string): Promise<{ deletedRunIds: string[]; discussionDeleted: boolean }> {
+    const run = requireRun(this.db, runId)
+    if (run.discussion_session_id == null) return this.delete(runId)
+    return withDiscussionSessionLock(run.discussion_session_id, () => this.delete(runId))
+  }
+
   cancel(runId: string): ResearchAgentRunSummaryView {
     const before = requireRun(this.db, runId)
     if (before.status === 'succeeded') {
@@ -668,6 +753,7 @@ export class ResearchAgentRunManager {
       signal: controller.signal,
       persistReport: persistResearchAgentReport,
       onProgress: (event) => this.emit(event),
+      onDelta: (event) => this.emitDelta(event),
     }).catch((error) => {
       console.error('[ResearchAgent] run failed:', error instanceof Error ? error.message : String(error))
     }).finally(() => {
@@ -679,13 +765,35 @@ export class ResearchAgentRunManager {
         current,
         current.error_message ?? researchAgentStatusLabel(current.status),
       ))
+      this.emitDelta({ runId, phase: current.phase, type: 'done' })
     })
   }
 
   private emit(event: ResearchAgentRunnerProgress): void {
+    // Agent Hub：progress 桥接总线（ai:agentEvent）；不改变既有 researchAgent:progress
+    notifyResearchAgentBridge('progress', {
+      runId: event.runId,
+      phase: event.phase,
+      message: event.message,
+      status: event.status,
+    })
     const window = this.dependencies.getWindow?.()
     if (!window || window.isDestroyed()) return
     window.webContents.send('researchAgent:progress', event)
+  }
+
+  private emitDelta(event: ResearchAgentRunnerDelta): void {
+    notifyResearchAgentBridge('delta', {
+      runId: event.runId,
+      phase: event.phase,
+      type: event.type,
+      accumulated: event.accumulated,
+    })
+    const window = this.dependencies.getWindow?.()
+    if (!window || window.isDestroyed()) return
+    try {
+      window.webContents.send('researchAgent:delta', event)
+    } catch { /* UI only */ }
   }
 
   private buildPreflight(input: {
@@ -698,12 +806,7 @@ export class ResearchAgentRunManager {
     includeJudgmentHistory: boolean
   }): ResearchAgentPreflightView {
     const config = this.resolveModelConfig(this.db)
-    const searchConfig = getResearchWebSearchConfig(this.db)
-    const searchConfigured = Boolean(
-      searchConfig?.enabled === 1
-      && searchConfig.api_key_encrypted
-      && searchConfig.api_key_encrypted.length > 0,
-    )
+    const searchConfigured = isAppWebSearchConfigured(this.db)
     const toolIds = new Set<string>(['news.recent_briefings'])
     if (!input.projectId) {
       for (const id of ['stock.price_history', 'stock.trend_snapshot', 'stock.fundamentals', 'stock.announcements']) toolIds.add(id)
@@ -721,6 +824,7 @@ export class ResearchAgentRunManager {
     }
     toolIds.add('web.search')
     toolIds.add('web.fetch_page')
+    toolIds.add('mcp.invoke')
     if (input.includeJudgmentHistory) toolIds.add('decision.judgment_history')
     toolIds.add('portfolio.holdings')
     return {
@@ -751,8 +855,8 @@ export class ResearchAgentRunManager {
         mode: 'local_then_network',
         networkToolsAvailable: true,
         message: searchConfigured
-          ? '本地证据不足时可通过受控搜索、候选正文、正式披露及必要行情工具补证；补证后仍有缺口时继续生成降级报告，并明确披露未知项。'
-          : '行情与财务受控补证可用；网页搜索尚未配置密钥时仍继续综合，但新闻、披露或产业正文结论会明确降级。',
+          ? '本地证据不足时可通过受控搜索（配置中心 → Agent → 本应用联网搜索）、候选正文、正式披露及必要行情工具补证；任意外部 MCP（mcp.invoke）另需开启「允许 Agent 联网」；补证后仍有缺口时继续生成降级报告，并明确披露未知项。'
+          : '行情与财务受控补证可用；网页搜索请到配置中心 → Agent → 本应用联网搜索启用通道。任意外部 MCP（mcp.invoke）另需开启「允许 Agent 联网」。未配置搜索时新闻/披露正文结论会明确降级。',
       },
     }
   }
@@ -925,33 +1029,35 @@ function assertDirectDiscussionReplayMatches(
   }
 }
 
-export function persistResearchAgentReport(
+export async function persistResearchAgentReport(
   db: Database.Database,
   input: ResearchAgentPersistInput,
-): void {
+): Promise<void> {
   if (input.run.discussion_session_id == null) return
-  const transaction = db.transaction(() => {
-    const session = getSession(db, input.run.discussion_session_id!)
-    const discussion = getResearchDiscussionContext(db, input.run.discussion_session_id!)
-    if (!session || !discussion) throw new ResearchAgentRunManagerError('PERSIST_FAILED', '目标研究讨论不存在')
-    const messages = parseConversationMessages(session.messages)
-    if (messages.some((message) => message.researchAgentRunId === input.run.id)) return
-    const assistant: ConversationMessage = {
-      role: 'assistant',
-      content: input.reportMarkdown,
-      researchAgentRunId: input.run.id,
-      researchAudit: input.audit,
-    }
-    const next: ConversationMessage[] = input.run.run_kind === 'multi_perspective'
-      ? [...messages, assistant]
-      : [
-          ...messages,
-          { role: 'user', content: input.run.question, researchAgentRunId: input.run.id },
-          assistant,
-        ]
-    updateSessionMessages(db, session.id, next)
+  await withDiscussionSessionLock(input.run.discussion_session_id, () => {
+    const transaction = db.transaction(() => {
+      const session = getSession(db, input.run.discussion_session_id!)
+      const discussion = getResearchDiscussionContext(db, input.run.discussion_session_id!)
+      if (!session || !discussion) throw new ResearchAgentRunManagerError('PERSIST_FAILED', '目标研究讨论不存在')
+      const messages = parseConversationMessages(session.messages)
+      if (messages.some((message) => message.researchAgentRunId === input.run.id)) return
+      const assistant: ConversationMessage = {
+        role: 'assistant',
+        content: input.reportMarkdown,
+        researchAgentRunId: input.run.id,
+        researchAudit: input.audit,
+      }
+      const next: ConversationMessage[] = input.run.run_kind === 'multi_perspective'
+        ? [...messages, assistant]
+        : [
+            ...messages,
+            { role: 'user', content: input.run.question, researchAgentRunId: input.run.id },
+            assistant,
+          ]
+      updateSessionMessages(db, session.id, next)
+    })
+    transaction()
   })
-  transaction()
 }
 
 function toRunSummary(run: ResearchAgentRunRow): ResearchAgentRunSummaryView {
@@ -1316,6 +1422,7 @@ function projectResearchAgentToolCall(
     ? data.candidates.flatMap((candidate) => projectCandidate(candidate)).slice(0, 8)
     : []
   const document = projectDocument(data?.document)
+  const mcp = projectMcpSample(data?.mcp)
   const network = projectNetworkEnvelope(data?.networkEnvelope)
   const failure = projectToolFailure(call.status, call.error_code, call.error_message)
   return {
@@ -1337,10 +1444,14 @@ function projectResearchAgentToolCall(
       candidateId: boundedText(input?.candidateId, 40),
       stockCode: boundedText(input?.stockCode, 16),
       requestedLimit: boundedIntegerView(input?.maxResults ?? input?.limit),
+      serverId: boundedText(input?.serverId, 80),
+      toolName: boundedText(input?.toolName, 160),
+      subjectRef: boundedText(input?.subjectRef, 160),
     },
     searchProvider: boundedText(data?.providerId, 40),
     candidates,
     document,
+    mcp,
     network,
     failure,
     durationMs: call.duration_ms,
@@ -1398,6 +1509,26 @@ function projectDocument(value: unknown): ResearchAgentRunDetailView['toolCalls'
   }
 }
 
+function projectMcpSample(value: unknown): ResearchAgentRunDetailView['toolCalls'][number]['mcp'] {
+  const mcp = recordValue(value)
+  const serverId = boundedText(mcp?.serverId, 80)
+  const toolName = boundedText(mcp?.toolName, 160)
+  if (!serverId || !toolName || mcp?.sourceClass !== 'secondary' || mcp?.sourceKind !== 'external_mcp') {
+    return null
+  }
+  return {
+    serverId,
+    serverName: boundedText(mcp.serverName, 120),
+    toolName,
+    subjectRef: boundedText(mcp.subjectRef, 160),
+    sourceClass: 'secondary',
+    sourceKind: 'external_mcp',
+    truncated: mcp.truncated === true,
+    resultPreview: boundedText(mcp.resultPreview, 4_000),
+    resultSha256: hashValue(mcp.resultSha256),
+  }
+}
+
 function projectNetworkEnvelope(value: unknown): ResearchAgentRunDetailView['toolCalls'][number]['network'] {
   const envelope = recordValue(value)
   const request = recordValue(envelope?.request)
@@ -1438,7 +1569,7 @@ function projectToolFailure(
   else if (status === 'cancelled' || /CANCEL/i.test(code)) category = 'cancelled'
   else if (code === 'NETWORK_RATE_LIMITED') category = 'rate_limited'
   else if (/NOT_CONFIGURED|CONFIG_INVALID/.test(code)) category = 'configuration'
-  else if (/SUBJECT_DENIED|CANDIDATE_NOT_AUTHORIZED|URL_INVALID|PROTOCOL_NOT_ALLOWED|HOST_BLOCKED|REDIRECT_(?:INVALID|UNSAFE)|DNS_REBIND/.test(code)) category = 'security'
+  else if (/SUBJECT_DENIED|CANDIDATE_NOT_AUTHORIZED|URL_INVALID|PROTOCOL_NOT_ALLOWED|HOST_BLOCKED|REDIRECT_(?:INVALID|UNSAFE)|DNS_REBIND|MCP_SERVER_DISABLED|MCP_TOOL_NOT_AUTHORIZED|NETWORK_DISABLED/.test(code)) category = 'security'
   else if (code.startsWith('NETWORK_') || /_FETCH_FAILED|_REFRESH_FAILED|_PROVIDER_FAILED/.test(code)) category = 'network'
   return {
     category,
@@ -1456,6 +1587,7 @@ function isNetworkToolId(toolId: string): boolean {
 function toolCallKind(toolId: string): ResearchAgentRunDetailView['toolCalls'][number]['kind'] {
   if (toolId === 'web.search' || toolId === 'official.disclosure_search') return 'search'
   if (toolId === 'web.fetch_page' || toolId === 'official.disclosure_document') return 'document'
+  if (toolId === 'mcp.invoke') return 'mcp'
   return isNetworkToolId(toolId) ? 'refresh' : 'local'
 }
 

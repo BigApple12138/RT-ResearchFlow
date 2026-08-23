@@ -7,10 +7,15 @@
 ## 事件流
 
 - 来源页调用 `useResearchDiscussionNavigation.start`，主进程按来源 ID 构造有限上下文并创建或恢复会话。
+- 趋势雷达调用 `startFromTrendReview` 时只提交 `tsCode + scoreDate + factsHash` 身份；主进程从当前 workbench 与趋势复核表重建 `contextKind: 'trend_review'` 快照，使用 `trend-review:{code}:{date}:{factsHash}` 隔离会话。持仓成本、浮盈亏和处置建议不进入该事实包，首条问题只预填、不自动发送。
 - 审计事实对比存在真实变化时调用 `useResearchDiscussionNavigation.startFromEvidence`。renderer只提交原消息或产业运行身份；主进程重新校验并重建差异，按内容指纹创建或恢复schema v4专项讨论，界面只预填问题而不自动发送。
 - Zustand 只保存待打开 session、返回目标和未发送草稿；返回目标包含当前局部视图与受限滚动位置，恢复已有讨论时刷新为本次进入位置。来源事实、消息、候选和研究版本均在主进程持久化。
 - `ResearchDiscussionContextBar` 在首条消息前允许移除可选上下文，并始终提供可预测的返回来源动作。
 - 用户点击“整理本次讨论”后，`ResearchDiscussionChangePanel` 才请求 3 至 7 个语义变更包。底层候选默认折叠，超过 20 项在接受对话框分页展示。
+- 聊天上下文整理是另一条链路：消息使用主进程生成的 session 内 `sequence`，旧原文进入 `ai_discussion_message_archives`，累计摘要进入 `ai_discussion_context_compactions`，热区保留最近 6 条；摘要不插入 `messages`。
+- 讨论达到未归档的 12 个完整 user/assistant 对后，下一次 `ai:followUp` 前可自动整理（AI 配置可关闭）；页面“整理聊天上下文”按钮走 `ai:compactDiscussionContext`，显式整理失败不丢热消息。follow-up、compact、持仓简报、上下文化深度研究启动和研究报告写回由主进程 session lock 串行，深度研究 busy 时拒绝追问/整理。
+- FR-239 的“整理本次讨论”仍按 `throughMessageSequence` 从归档与热区恢复完整原文；`summarized_through_message_index` 只作旧数据兼容游标，不由上下文压缩更新。
+- 任一归档消息 JSON、角色、正文或内嵌 sequence 损坏时，完整历史读取以 `ARCHIVE_INTEGRITY_ERROR` 失败关闭；“整理本次讨论”不得用残缺历史调用 AI、生成变更或推进 sequence 游标。
 - 接受、暂存和忽略都按变更包执行。接受可关联现有项目或创建研究草稿；事实候选必须补充人工确认的一级来源 URL。
 
 ## 边界

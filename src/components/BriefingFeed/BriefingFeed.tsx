@@ -26,7 +26,9 @@ export function BriefingFeed() {
     clearBriefingDeepLink,
     setFilter,
     goToPage,
-    markAllRead
+    markAllRead,
+    relevanceScope,
+    relevanceModeApplied,
   } = useAppStore()
 
   const [chainText, setChainText] = useState<string>('')
@@ -112,7 +114,32 @@ export function BriefingFeed() {
         )}
 
         {!isLoadingBriefings && briefings.length === 0 && (
-          <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-xs text-slate-400 dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-500">当前条件下暂无资讯</div>
+          <div
+            data-testid="briefing-feed-empty"
+            className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-10 text-center dark:border-slate-800 dark:bg-slate-900/60"
+          >
+            {relevanceScope === 'portfolio' && relevanceModeApplied === 'portfolio' ? (
+              <div className="space-y-3">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200">当前没有与持仓相关的资讯</p>
+                <p className="text-xs text-slate-400 dark:text-slate-500">本地按持仓名称与代码过滤，不消耗 Token。可切换查看全部资讯。</p>
+                <button
+                  type="button"
+                  data-testid="briefing-feed-empty-show-all"
+                  onClick={() => setFilter({ relevanceScope: 'all' })}
+                  className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 dark:bg-cyan-500 dark:text-slate-950 dark:hover:bg-cyan-400"
+                >
+                  查看全部资讯
+                </button>
+              </div>
+            ) : relevanceModeApplied === 'portfolio_fallback_empty' ? (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200">尚未添加持仓</p>
+                <p className="text-xs text-slate-400 dark:text-slate-500">「与我相关」暂回退为全部资讯。在持仓总览添加股票后即可过滤。</p>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400 dark:text-slate-500">当前条件下暂无资讯</p>
+            )}
+          </div>
         )}
 
         {!isLoadingBriefings && sortedBriefings.length > 0 && (

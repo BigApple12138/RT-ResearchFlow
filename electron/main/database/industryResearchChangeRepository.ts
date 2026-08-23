@@ -52,6 +52,8 @@ export interface PreparedCandidateBatchInput {
   baseSnapshotId: string | null
   messageStartIndex: number | null
   messageEndIndex: number | null
+  messageStartSequence?: number | null
+  messageEndSequence?: number | null
   contextHash: string
   provider: string | null
   model: string | null
@@ -90,13 +92,15 @@ export function savePreparedCandidateBatch(
     db.prepare(`
       INSERT INTO industry_research_candidate_batches (
         id, request_id, idempotency_key, source_type, source_session_id, project_id,
-        base_snapshot_id, message_start_index, message_end_index, context_hash, provider,
+        base_snapshot_id, message_start_index, message_end_index,
+        message_start_sequence, message_end_sequence, context_hash, provider,
         model, rule_version, status, change_set_count, candidate_count, conflict_count,
         degraded_reasons_json, archive_meta_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.id, input.requestId, input.idempotencyKey, input.sourceType, input.sourceSessionId,
       input.projectId, input.baseSnapshotId, input.messageStartIndex, input.messageEndIndex,
+      input.messageStartSequence ?? null, input.messageEndSequence ?? null,
       input.contextHash, input.provider, input.model, input.ruleVersion, input.changeSets.length,
       candidateCount, conflictCount, JSON.stringify(input.degradedReasons ?? []),
       input.archiveMeta == null ? null : JSON.stringify(input.archiveMeta), now, now,
@@ -105,16 +109,18 @@ export function savePreparedCandidateBatch(
       INSERT INTO industry_research_change_sets (
         id, batch_id, title, summary, impact, action, status, risk, affected_objects_json,
         evidence_summary_json, confidence_boundary, requires_expanded_review, candidate_count,
-        source_session_id, message_start_index, message_end_index, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_session_id, message_start_index, message_end_index,
+        message_start_sequence, message_end_sequence, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertCandidate = db.prepare(`
       INSERT INTO industry_research_change_candidates (
         id, change_set_id, batch_id, project_id, kind, action, status, external_ref,
-        source_locator, message_start_index, message_end_index, target_entity_id,
+        source_locator, message_start_index, message_end_index,
+        message_start_sequence, message_end_sequence, target_entity_id,
         statement_type, primary_source, payload_json, conflicts_json, warnings_json,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const changeSet of input.changeSets) {
       insertSet.run(
@@ -122,14 +128,16 @@ export function savePreparedCandidateBatch(
         changeSet.action, changeSet.risk, JSON.stringify(changeSet.affectedObjects),
         JSON.stringify(changeSet.evidenceSummary), changeSet.confidenceBoundary,
         changeSet.requiresExpandedReview ? 1 : 0, changeSet.candidates.length,
-        input.sourceSessionId, input.messageStartIndex, input.messageEndIndex, now, now,
+        input.sourceSessionId, input.messageStartIndex, input.messageEndIndex,
+        input.messageStartSequence ?? null, input.messageEndSequence ?? null, now, now,
       )
       for (const candidate of changeSet.candidates) {
         const status: ResearchChangeCandidateStatus = candidate.conflicts?.length ? 'conflicted' : 'pending'
         insertCandidate.run(
           candidate.id, changeSet.id, input.id, input.projectId, candidate.kind, candidate.action,
           status, candidate.externalRef ?? null, candidate.sourceLocator, input.messageStartIndex,
-          input.messageEndIndex, candidate.targetEntityId ?? null, candidate.statementType,
+          input.messageEndIndex, input.messageStartSequence ?? null, input.messageEndSequence ?? null,
+          candidate.targetEntityId ?? null, candidate.statementType,
           candidate.primarySource ? 1 : 0, JSON.stringify(candidate.payload),
           JSON.stringify(candidate.conflicts ?? []), JSON.stringify(candidate.warnings ?? []), now, now,
         )

@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { ipcMain } from 'electron'
-import { getSession, type ConversationMessage } from '../database/aiAnalysisSessionRepository'
+import { getSession, getSessionMessages } from '../database/aiAnalysisSessionRepository'
+import { loadFullDiscussionMessages } from '../database/discussionMessageArchiveRepository'
 import { getDb } from '../database/db'
 import { getResearchDiscussionContext } from '../database/researchDiscussionRepository'
 import { getResearchProject } from '../database/industryResearchRepository'
@@ -23,6 +24,7 @@ import { getResearchAgentAuditContext } from '../services/researchAgentRunManage
 const ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/
 
 export type ResearchEvidenceCompareRequest =
+  | { sourceKind: 'discussion_message'; sessionId: number; messageSequence: number }
   | { sourceKind: 'discussion_message'; sessionId: number; messageIndex: number }
   | { sourceKind: 'industry_report'; projectId: string; runId: string }
 
@@ -121,12 +123,28 @@ function parseResearchEvidenceSource(payload: unknown, forDiscussion: boolean): 
   if (!isRecord(payload)) throw new ResearchEvidenceRequestError('INVALID_PARAM', '请求必须是对象')
   const commonKeys = forDiscussion ? ['requestId', 'returnTarget'] : []
   if (payload.sourceKind === 'discussion_message') {
-    requireExactKeys(payload, ['sourceKind', 'sessionId', 'messageIndex', ...commonKeys])
-    return {
-      sourceKind: 'discussion_message',
-      sessionId: positiveInteger(payload.sessionId, 'sessionId'),
-      messageIndex: nonNegativeInteger(payload.messageIndex, 'messageIndex'),
+    const hasSequence = Object.prototype.hasOwnProperty.call(payload, 'messageSequence')
+    const hasIndex = Object.prototype.hasOwnProperty.call(payload, 'messageIndex')
+    if (hasSequence === hasIndex) {
+      throw new ResearchEvidenceRequestError('INVALID_PARAM', 'messageSequence 与 messageIndex 必须二选一')
     }
+    requireExactKeys(payload, [
+      'sourceKind',
+      'sessionId',
+      hasSequence ? 'messageSequence' : 'messageIndex',
+      ...commonKeys,
+    ])
+    return hasSequence
+      ? {
+          sourceKind: 'discussion_message',
+          sessionId: positiveInteger(payload.sessionId, 'sessionId'),
+          messageSequence: nonNegativeInteger(payload.messageSequence, 'messageSequence'),
+        }
+      : {
+          sourceKind: 'discussion_message',
+          sessionId: positiveInteger(payload.sessionId, 'sessionId'),
+          messageIndex: nonNegativeInteger(payload.messageIndex, 'messageIndex'),
+        }
   }
   if (payload.sourceKind === 'industry_report') {
     requireExactKeys(payload, ['sourceKind', 'projectId', 'runId', ...commonKeys])
@@ -145,8 +163,10 @@ function resolveResearchEvidenceSource(db: Database.Database, source: ResearchEv
     if (!session) throw new ResearchEvidenceRequestError('NOT_FOUND', '研究讨论不存在')
     const discussion = getResearchDiscussionContext(db, source.sessionId)
     if (!discussion) throw new ResearchEvidenceRequestError('TRACE_UNAVAILABLE', '该消息不属于研究讨论')
-    const messages = parseMessages(session.messages)
-    const message = messages[source.messageIndex]
+    const messages = loadFullDiscussionMessages(db, source.sessionId, getSessionMessages(db, source.sessionId))
+    const message = 'messageSequence' in source
+      ? messages.find((candidate) => candidate.sequence === source.messageSequence)
+      : messages[source.messageIndex]
     if (!message) throw new ResearchEvidenceRequestError('NOT_FOUND', '讨论消息不存在')
     if (message.role !== 'assistant' || !message.researchAudit) {
       throw new ResearchEvidenceRequestError('TRACE_UNAVAILABLE', '该消息没有可用于对比的研究审计')
@@ -186,17 +206,6 @@ function resolveResearchEvidenceSource(db: Database.Database, source: ResearchEv
       sourceUrl: null,
       projectId: project.id,
     },
-  }
-}
-
-function parseMessages(value: string | null): ConversationMessage[] {
-  if (!value) throw new ResearchEvidenceRequestError('TRACE_UNAVAILABLE', '该讨论没有消息记录')
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!Array.isArray(parsed) || parsed.length > 500) throw new Error('invalid messages')
-    return parsed as ConversationMessage[]
-  } catch {
-    throw new ResearchEvidenceRequestError('TRACE_UNAVAILABLE', '讨论消息记录损坏，无法校验历史审计')
   }
 }
 

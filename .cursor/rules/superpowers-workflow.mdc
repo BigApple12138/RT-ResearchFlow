@@ -1,0 +1,28 @@
+---
+description: SDD hard gate — core is Spec-Driven Development; superpowers skills are optional tools
+alwaysApply: true
+---
+
+# Spec-Driven Development (SDD) — hard gate
+
+Canonical process: root [`AGENTS.md`](AGENTS.md) §「功能开发流程 — Spec-Driven Development（SDD）」. Also [`docs/superpowers/README.md`](docs/superpowers/README.md). Do not weaken that section.
+
+## Core vs tools (explicit)
+
+- **Core = SDD (required):** Specify → Plan → Implement → Validate against archived spec. Specs/plans under `docs/superpowers/` are first-class git artifacts.
+- **Tools = superpowers skills (optional, borrowable):** brainstorming, writing-plans, executing-plans, etc. Help run SDD stages. **Not using a skill does not waive SDD.** Running a skill does not replace writing/approving/archiving spec + plan + 设计初衷检核.
+- Folder name `superpowers` is a path convention only — the methodology name is **SDD**.
+
+## Hard gate
+
+- **Default:** Behavior/UI/IPC/data-model/research/copy changes MUST: write spec → **user approves** → write plan → **user says execute** → then edit `src/` / `electron/` (etc.).
+- **Archive:** Spec and plan committed under `docs/superpowers/` (not chat-only). After ship, fill plan 「设计初衷检核」.
+- **PR Review before merge:** Every PR into `develop`/`main` must have a verifiable review (Approve or conclusive review report) before merge. Agent must not `gh pr merge` unless the user explicitly authorizes merge **and** review gates in `AGENTS.md` §「Pull Request Review」are satisfied. CI green / MERGEABLE alone is not enough.
+- **Forbidden:** Code-first then backfill docs; skip because "small"/"urgent"/"no skill available"; rewrite old design to hide drift; merge without review.
+- Never put process docs in `docs/community/` or `docs/releases/`.
+- Before editing a module, read `src/components/*/README.md` (FR); update when behavior changes.
+- Narrow exemptions only as listed in `AGENTS.md` (exemptions do **not** waive PR review when a PR is used).
+
+## Product invariants (summary)
+
+Local-first, narrow IPC, forward Migrations, no stock tips / auto-trading / credential commits. Full list in `AGENTS.md` and `CONTRIBUTING.md`.

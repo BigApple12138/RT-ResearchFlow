@@ -81,8 +81,10 @@ test('sidebar persists while the window blocks edge resizing and supports maximi
     await aiAnalysis.press('Enter')
     await expect(shortTerm).toHaveAttribute('aria-expanded', 'false')
     await expect(inlineGroup).toHaveCount(0)
-    await expect(aiAnalysis).toHaveAttribute('aria-expanded', 'true')
-    await expect(window.getByRole('group', { name: 'AI分析二级导航' })).toBeVisible()
+    // Phase 2a: AI 分析无二级菜单，直接进入聊天
+    await expect(aiAnalysis).not.toHaveAttribute('aria-expanded', 'true')
+    await expect(window.getByRole('group', { name: 'AI分析二级导航' })).toHaveCount(0)
+    await expect(window.getByTestId('ai-analysis-page')).toBeVisible()
 
     await shortTerm.click()
     await expect(inlineGroup).toBeVisible()

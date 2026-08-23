@@ -1,0 +1,426 @@
+import Database from 'better-sqlite3'
+import { randomUUID } from 'crypto'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { runMigrations } from '../../electron/main/database/db'
+import type { TrendWorkbenchSnapshot } from '../../electron/main/services/trendWorkbenchService'
+import type { ResearchTextAudit } from '../../electron/main/services/researchEvidenceAuditService'
+import {
+  buildTrendReviewFacts,
+  hashTrendReviewFacts,
+  isTrendStructureReviewStale,
+  parseAiTrendReviewPayload,
+  reviewStructure,
+} from '../../electron/main/services/trendStructureReviewService'
+import type { AiTrendReviewBundle } from '../../electron/main/services/trendStructureReviewTypes'
+
+function createAudit(status: ResearchTextAudit['status'] = 'passed'): ResearchTextAudit {
+  return {
+    schemaVersion: 1,
+    documentKind: 'discussion',
+    status,
+    generatedAt: 1_000,
+    asOf: '20260808',
+    originalTextSha256: 'a'.repeat(64),
+    checkedCharacters: 20,
+    evidenceSummary: { subjectCount: 1, supporting: 1, challenging: 0, unknowns: 0 },
+    checks: [],
+  }
+}
+
+function createSnapshot(overrides: Record<string, unknown> = {}): TrendWorkbenchSnapshot {
+  const item = {
+    tsCode: '600000.SH', stockCode: '600000', stockName: '浦发银行',
+    categories: ['金融'], subCategories: ['银行'], groupTags: [], notes: [], isPortfolio: true,
+    costPrice: 8.5, profitPct: 12.3, positionAdvice: 'HOLD', positionAdviceReason: '本地规则',
+    chip: null, totalScore: 78, maScore: 80, maAbove60: true, alphaScore: 75,
+    drawdown: 4.2, turnoverRatio: 66, macdAboveZero: true, bollAboveMid: true,
+    price: 9.5, change: 1.2, dataSource: 'eod', dataTime: '20260808', scoreSource: 'eod',
+    scoreDate: '20260808', quoteSource: 'eod', quoteTime: '20260808', scoreVersion: 'v2', validWeight: 1,
+    scoreDelta5d: 3, scoreDelta20d: 8, trendState: 'strong', scoreHistory: [],
+    dataCoverage: { bars: 90, requiredBars: 60, latestTradeDate: '20260808', state: 'ready' },
+    dimensions: {
+      maArrangement: 80, maAbove60: 100, relativeStrength: 75, drawdownQuality: 78,
+      turnoverQuality: 66, macd: 100, boll: 100,
+    },
+    facts: {
+      stockReturn20d: 8, benchmarkReturn20d: 3, excessReturn20d: 5,
+      maxDrawdown20d: 4.2, turnoverRatio: 1.1,
+    },
+    benchmarkHealth: {
+      tsCode: '000300.SH', state: 'current', latestTradeDate: '20260808', expectedTradeDate: '20260808',
+      bars: 90, requiredBars: 21, calendarSource: 'trade-calendar', refreshOutcome: 'not-needed',
+      attempted: false, rowsWritten: 0, errorCode: null, message: '当前',
+    },
+    ...overrides,
+  }
+  return {
+    generatedAt: 1_000,
+    items: [item] as unknown as TrendWorkbenchSnapshot['items'],
+    events: [],
+    dataHealth: { total: 1, ready: 1, partial: 0, missing: 0, latestTradeDate: '20260808', benchmark: item.benchmarkHealth },
+  }
+}
+
+describe('趋势结构复核服务', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    runMigrations(db)
+  })
+
+  it('只接受固定五态和有界的结构化字段', () => {
+    expect(parseAiTrendReviewPayload(JSON.stringify({
+      verdict: 'agree', rationale: '结构仍完整', focusPoints: ['观察量价背离'],
+    }))).toEqual({
+      verdict: 'agree', rationale: '结构仍完整', focusPoints: ['观察量价背离'],
+    })
+    expect(() => parseAiTrendReviewPayload('{bad json')).toThrow()
+    expect(() => parseAiTrendReviewPayload(JSON.stringify({
+      verdict: 'buy', rationale: '结构仍完整', focusPoints: [],
+    }))).toThrow()
+    expect(() => parseAiTrendReviewPayload(JSON.stringify({
+      verdict: 'agree', rationale: 'x'.repeat(121), focusPoints: [],
+    }))).toThrow()
+    expect(() => parseAiTrendReviewPayload(JSON.stringify({
+      verdict: 'agree', rationale: '结构仍完整', focusPoints: Array.from({ length: 4 }, () => '关注'),
+    }))).toThrow()
+  })
+
+  it('事实构造只输出白名单，不携带持仓成本、浮盈亏、处置建议或原始 workbench 对象', () => {
+    const facts = buildTrendReviewFacts(db, '600000.SH', () => createSnapshot())
+    const serialized = JSON.stringify(facts)
+
+    expect(facts).toMatchObject({
+      tsCode: '600000.SH', stockName: '浦发银行', scoreDate: '20260808', totalScore: 78,
+      validWeight: 1, trendState: 'strong',
+    })
+    expect(facts).not.toHaveProperty('costPrice')
+    expect(facts).not.toHaveProperty('profitPct')
+    expect(facts).not.toHaveProperty('positionAdvice')
+    expect(serialized).not.toContain('本地规则')
+    expect(serialized).not.toContain('8.5')
+    expect(facts).not.toHaveProperty('price')
+    expect(facts).not.toHaveProperty('change')
+    expect(facts).not.toHaveProperty('quoteTime')
+    expect(facts).not.toHaveProperty('benchmark')
+    expect(serialized).not.toContain('costPrice')
+    expect(serialized).not.toContain('profitPct')
+    expect(serialized).not.toContain('positionAdvice')
+  })
+
+  it('ready 事实调用模型、审计并按 factsHash 幂等保存', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构仍完整。', focusPoints: ['关注量价背离'] }),
+    }))
+    const auditText = vi.fn(() => createAudit())
+    const requestId = randomUUID()
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText,
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId, tsCode: '600000.SH' }, dependencies)
+    const replay = await reviewStructure(db, { requestId, tsCode: '600000.SH' }, dependencies)
+
+    expect(first.review.verdict).toBe('agree')
+    expect(first.factsHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(first.review.provider).toBe('qwen')
+    expect(first.review.model).toBe('test-model')
+    expect(first.review.audit).toEqual(createAudit())
+    expect(replay).toEqual(first)
+    expect(callAI).toHaveBeenCalledTimes(1)
+    expect(auditText).toHaveBeenCalledTimes(1)
+  })
+
+  it('评分不足时直接落 need_more_data，不调用模型', async () => {
+    const callAI = vi.fn()
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot({ totalScore: null, validWeight: 0.5, dataCoverage: {
+        bars: 20, requiredBars: 60, latestTradeDate: '20260808', state: 'partial',
+      }}),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('need_more_data')
+    expect(result.review.provider).toBeNull()
+    expect(callAI).not.toHaveBeenCalled()
+  })
+
+  it('审计 blocked 时不写入复核结果', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '建议买入并设置目标价。', focusPoints: [] }),
+    }))
+    await expect(reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit('blocked'),
+      now: () => 1_000,
+    })).rejects.toThrow('AUDIT_BLOCKED')
+    expect(db.prepare('SELECT COUNT(*) AS count FROM trend_structure_reviews').get()).toEqual({ count: 0 })
+  })
+
+  it('评分日或 factsHash 改变时标记 stale', () => {
+    const facts = buildTrendReviewFacts(db, '600000.SH', () => createSnapshot())
+    expect(isTrendStructureReviewStale({ scoreDate: facts.scoreDate, factsHash: hashTrendReviewFacts(facts) }, facts)).toBe(false)
+    expect(isTrendStructureReviewStale({ scoreDate: '20260807', factsHash: hashTrendReviewFacts(facts) }, facts)).toBe(true)
+    expect(isTrendStructureReviewStale({ scoreDate: facts.scoreDate, factsHash: 'c'.repeat(64) }, facts)).toBe(true)
+  })
+
+  it('同 requestId 在同代码但 scoreDate 或 factsHash 改变时拒绝重放', async () => {
+    const requestId = randomUUID()
+    const first = await reviewStructure(db, { requestId, tsCode: '600000.SH' }, {
+      getWorkbench: () => createSnapshot(),
+      callAI: async () => ({ provider: 'qwen', model: 'test-model', text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }) }),
+      auditText: () => createAudit(), now: () => 1_000,
+    })
+    expect(first.review.requestId).toBe(requestId)
+
+    await expect(reviewStructure(db, { requestId, tsCode: '600000.SH' }, {
+      getWorkbench: () => createSnapshot({ scoreDate: '20260809', totalScore: 79 }),
+      auditText: () => createAudit(), now: () => 2_000,
+    })).rejects.toThrow('TREND_REVIEW_REQUEST_CONFLICT')
+  })
+
+  it('相同事实的成功快捷重放也会绑定新 requestId 并拒绝后续冲突', async () => {
+    const firstRequestId = randomUUID()
+    const replayRequestId = randomUUID()
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId: firstRequestId, tsCode: '600000.SH' }, dependencies)
+    const replay = await reviewStructure(db, { requestId: replayRequestId, tsCode: '600000.SH' }, dependencies)
+
+    expect(replay.review.revisionId).toBe(first.review.revisionId)
+    await expect(reviewStructure(db, { requestId: replayRequestId, tsCode: '600000.SH' }, {
+      ...dependencies,
+      getWorkbench: () => createSnapshot({ totalScore: 79 }),
+      now: () => 2_000,
+    })).rejects.toThrow('TREND_REVIEW_REQUEST_CONFLICT')
+    expect(callAI).toHaveBeenCalledTimes(1)
+  })
+
+  it('forceModelRefresh 时同 hash 仍调模型并产生新 revision', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '第二次意见。', focusPoints: ['再看量价'] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId: randomUUID(), tsCode: '600000.SH' }, dependencies)
+    const forced = await reviewStructure(db, {
+      requestId: randomUUID(),
+      tsCode: '600000.SH',
+      forceModelRefresh: true,
+    }, { ...dependencies, now: () => 2_000 })
+
+    expect(forced.review.revisionId).not.toBe(first.review.revisionId)
+    expect(forced.factsHash).toBe(first.factsHash)
+    expect(forced.review.rationale).toBe('第二次意见。')
+    expect(callAI).toHaveBeenCalledTimes(2)
+  })
+
+  it('forceModelRefresh=false 时同 hash 不调模型', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId: randomUUID(), tsCode: '600000.SH' }, dependencies)
+    const reused = await reviewStructure(db, {
+      requestId: randomUUID(),
+      tsCode: '600000.SH',
+      forceModelRefresh: false,
+    }, dependencies)
+
+    expect(reused.review.revisionId).toBe(first.review.revisionId)
+    expect(callAI).toHaveBeenCalledTimes(1)
+  })
+
+  it('forceModelRefresh 不能推翻门闸，仍不调 LLM', async () => {
+    const callAI = vi.fn()
+    await reviewStructure(db, {
+      requestId: randomUUID(),
+      tsCode: '600000.SH',
+      forceModelRefresh: true,
+    }, {
+      getWorkbench: () => createSnapshot({
+        totalScore: null,
+        validWeight: 0.5,
+        dataCoverage: { bars: 20, requiredBars: 60, latestTradeDate: '20260808', state: 'partial' },
+      }),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+    expect(callAI).not.toHaveBeenCalled()
+  })
+
+  it('同一 requestId 重放优先于 forceModelRefresh，不二次调模型', async () => {
+    const requestId = randomUUID()
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构完整。', focusPoints: [] }),
+    }))
+    const dependencies = {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    }
+    const first = await reviewStructure(db, { requestId, tsCode: '600000.SH', forceModelRefresh: true }, dependencies)
+    const replay = await reviewStructure(db, { requestId, tsCode: '600000.SH', forceModelRefresh: true }, dependencies)
+    expect(replay.review.revisionId).toBe(first.review.revisionId)
+    expect(callAI).toHaveBeenCalledTimes(1)
+  })
+
+  function bundleText(bundle: Partial<AiTrendReviewBundle> & { structure: AiTrendReviewBundle['structure'] }): string {
+    const score = bundle.scoreAssessment ?? null
+    return JSON.stringify({
+      structure: bundle.structure,
+      scoreAssessment: score,
+    })
+  }
+
+  it('AI 返回合法 bundle 时，结构成功且落库含 scored 偏差分与理由', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: bundleText({
+        structure: { verdict: 'agree', rationale: '结构仍完整。', focusPoints: ['关注量价背离'] },
+        scoreAssessment: { scoreDelta: -5, scoreRationale: '量价背离证据偏弱。' },
+      }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot({ totalScore: 78 }),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('agree')
+    expect(result.review.aiScoreStatus).toBe('scored')
+    expect(result.review.aiScoreDelta).toBe(-5)
+    expect(result.review.aiScoreRationale).toBe('量价背离证据偏弱。')
+  })
+
+  it('AI 返回旧扁平 JSON 时结构成功、偏差 skipped', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ verdict: 'agree', rationale: '结构仍完整。', focusPoints: [] }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('agree')
+    expect(result.review.aiScoreStatus).toBe('skipped')
+    expect(result.review.aiScoreDelta).toBeNull()
+    expect(result.review.aiScoreRationale).toBeNull()
+  })
+
+  it('数据不足路径：未调 AI，结构 need_more_data，偏差 skipped', async () => {
+    const callAI = vi.fn()
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot({
+        totalScore: null,
+        validWeight: 0.5,
+        dataCoverage: { bars: 20, requiredBars: 60, latestTradeDate: '20260808', state: 'partial' },
+      }),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('need_more_data')
+    expect(result.review.aiScoreStatus).toBe('skipped')
+    expect(callAI).not.toHaveBeenCalled()
+  })
+
+  it('模型返回 need_more_data 时偏差 skipped', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: bundleText({
+        structure: { verdict: 'need_more_data', rationale: '部分维度缺失。', focusPoints: ['补齐日线'] },
+        scoreAssessment: { scoreDelta: 3, scoreRationale: '不应被采用。' },
+      }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('need_more_data')
+    expect(result.review.aiScoreStatus).toBe('skipped')
+  })
+
+  it('delta 越界时 aiScoreStatus 为 invalid 且不把假分当 scored', async () => {
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: bundleText({
+        structure: { verdict: 'agree', rationale: '结构仍完整。', focusPoints: [] },
+        scoreAssessment: { scoreDelta: 16, scoreRationale: '偏高。' },
+      }),
+    }))
+    const result = await reviewStructure(db, {
+      requestId: randomUUID(), tsCode: '600000.SH',
+    }, {
+      getWorkbench: () => createSnapshot(),
+      callAI,
+      auditText: () => createAudit(),
+      now: () => 1_000,
+    })
+
+    expect(result.review.verdict).toBe('agree')
+    expect(result.review.aiScoreStatus).toBe('invalid')
+    expect(result.review.aiScoreDelta).toBeNull()
+    expect(result.review.aiScoreRationale).toBeNull()
+  })
+})

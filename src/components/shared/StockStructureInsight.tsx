@@ -87,13 +87,13 @@ export function StockStructureInsight({
   }
   const supportHint = insight.risk.supportDistancePercent == null ? undefined : `下方 ${insight.risk.supportDistancePercent.toFixed(1)}%`
   const resistanceHint = insight.risk.resistanceDistancePercent == null ? undefined : `上方 ${insight.risk.resistanceDistancePercent.toFixed(1)}%`
-  const amountLabel = insight.risk.amountChangePercent == null
+  const volumeLabel = insight.risk.volumeChangePercent == null
     ? '—'
-    : insight.risk.amountChangePercent > 5
-      ? `放量 ${formatPercent(insight.risk.amountChangePercent, 1, true)}`
-      : insight.risk.amountChangePercent < -5
-        ? `缩量 ${formatPercent(insight.risk.amountChangePercent)}`
-        : `量能接近 ${formatPercent(insight.risk.amountChangePercent, 1, true)}`
+    : insight.risk.volumeChangePercent > 5
+      ? `放量 ${formatPercent(insight.risk.volumeChangePercent, 1, true)}`
+      : insight.risk.volumeChangePercent < -5
+        ? `缩量 ${formatPercent(insight.risk.volumeChangePercent)}`
+        : `量能接近 ${formatPercent(insight.risk.volumeChangePercent, 1, true)}`
 
   return (
     <section data-testid="stock-structure-insight" className="border-t border-slate-700 bg-slate-900">
@@ -155,7 +155,7 @@ export function StockStructureInsight({
             <MetricRow label="压力候选" value={formatPrice(insight.risk.resistance)} hint={resistanceHint} />
             <MetricRow label="ATR14 / 现价" value={formatPercent(insight.risk.atrPercent)} />
             <MetricRow label={`${visibleRange}日最大回撤`} value={insight.risk.maxDrawdownPercent == null ? '—' : `-${insight.risk.maxDrawdownPercent.toFixed(1)}%`} />
-            <MetricRow label="近5日量能变化" value={amountLabel} />
+            <MetricRow label="近5日量能变化" value={volumeLabel} />
           </dl>
           <div className="mt-3 grid gap-1.5 md:grid-cols-2 xl:grid-cols-1">
             <p className="border-l-2 border-cyan-400/60 bg-slate-950/45 px-2.5 py-1.5 text-[10px] leading-4 text-slate-300"><span className="font-semibold text-cyan-200">观察：</span>{insight.risk.observation}</p>

@@ -1,8 +1,10 @@
 import Database from 'better-sqlite3'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createSession } from '../../electron/main/database/aiAnalysisSessionRepository'
+import { createSession, getSession, updateSessionMessages } from '../../electron/main/database/aiAnalysisSessionRepository'
 import { runMigrations } from '../../electron/main/database/db'
-import { createResearchDiscussionContext } from '../../electron/main/database/researchDiscussionRepository'
+import { archiveDiscussionMessages, loadFullDiscussionMessages } from '../../electron/main/database/discussionMessageArchiveRepository'
+import { insertDiscussionCompaction } from '../../electron/main/database/discussionCompactionRepository'
+import { createResearchDiscussionContext, getResearchDiscussionContext } from '../../electron/main/database/researchDiscussionRepository'
 import { prepareDiscussionChanges } from '../../electron/main/services/industryResearchChangeGenerationService'
 
 describe('讨论语义变更包生成服务', () => {
@@ -44,6 +46,97 @@ describe('讨论语义变更包生成服务', () => {
     expect(result.changeSets).toHaveLength(7)
     expect(result.batch).toMatchObject({ changeSetCount: 7, candidateCount: 50 })
     expect(result.changeSets.find((item) => item.title === '其他相关研究增量')).toMatchObject({ candidateCount: 20 })
+  })
+
+  it('按 message sequence 从归档和热尾部恢复完整原文，并只推进 sequence 游标', async () => {
+    const messages = [
+      { role: 'user' as const, content: '旧归档问题', sequence: 3 },
+      { role: 'assistant' as const, content: '旧归档回答', sequence: 4 },
+      { role: 'user' as const, content: '热问题', sequence: 5 },
+      { role: 'assistant' as const, content: '热回答', sequence: 6 },
+    ]
+    updateSessionMessages(db, sessionId, messages)
+    const stored = JSON.parse(getSession(db, sessionId)!.messages!) as Array<{ sequence: number; role: string; content: string }>
+    const compaction = insertDiscussionCompaction(db, {
+      sessionId,
+      requestId: '00000000-0000-4000-8000-000000000034',
+      sourceStartSequence: 3,
+      coveredThroughSequence: 4,
+      sourceMessagesHash: 'c'.repeat(64),
+      summary: '累计摘要',
+      summaryHash: 'd'.repeat(64),
+      provider: 'qwen',
+      model: 'test-model',
+    })
+    archiveDiscussionMessages(db, {
+      sessionId,
+      compactionId: compaction.id,
+      messages: stored.slice(0, 2),
+    })
+    updateSessionMessages(db, sessionId, stored.slice(2))
+    expect(JSON.parse(getSession(db, sessionId)!.messages!).map((item: { sequence: number }) => item.sequence)).toEqual([5, 6])
+    expect(loadFullDiscussionMessages(db, sessionId, JSON.parse(getSession(db, sessionId)!.messages!))
+      .map((item) => item.content)).toEqual(['旧归档问题', '旧归档回答', '热问题', '热回答'])
+
+    let prompt = ''
+    const callAI = vi.fn(async (_db: Database.Database, { prompt: value }: { prompt: string }) => {
+      prompt = value
+      return { provider: 'qwen' as const, model: 'test-model', text: JSON.stringify({ noMaterialChange: true, summary: '无变化', changeSets: [] }) }
+    })
+    await prepareDiscussionChanges(db, {
+      requestId: '00000000-0000-4000-8000-000000000035',
+      sessionId,
+      throughMessageSequence: 6,
+    }, callAI)
+
+    expect(prompt).toContain('旧归档问题')
+    expect(prompt).toContain('旧归档回答')
+    expect(prompt).toContain('热问题')
+    expect(prompt).toContain('热回答')
+    expect(getResearchDiscussionContext(db, sessionId)).toMatchObject({
+      summarized_through_message_sequence: 6,
+      summarized_through_message_index: null,
+    })
+  })
+
+  it('归档损坏时不调用模型、不生成不完整变更且不推进 sequence 游标', async () => {
+    updateSessionMessages(db, sessionId, [
+      { role: 'user', content: '归档问题', sequence: 1 },
+      { role: 'assistant', content: '热回答', sequence: 2 },
+    ])
+    const compaction = insertDiscussionCompaction(db, {
+      sessionId,
+      requestId: '00000000-0000-4000-8000-000000000036',
+      sourceStartSequence: 1,
+      coveredThroughSequence: 1,
+      sourceMessagesHash: 'e'.repeat(64),
+      summary: '累计摘要',
+      summaryHash: 'f'.repeat(64),
+      provider: 'qwen',
+      model: 'test-model',
+    })
+    db.prepare(`
+      INSERT INTO ai_discussion_message_archives
+        (session_id, message_sequence, message_json, compaction_id, archived_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionId, 1, JSON.stringify({ sequence: 1, content: '缺少 role' }), compaction.id, Date.now())
+    updateSessionMessages(db, sessionId, [{ role: 'assistant', content: '热回答', sequence: 2 }])
+    const callAI = vi.fn(async () => ({
+      provider: 'qwen' as const,
+      model: 'test-model',
+      text: JSON.stringify({ noMaterialChange: true, summary: '不应生成', changeSets: [] }),
+    }))
+
+    await expect(prepareDiscussionChanges(db, {
+      requestId: '00000000-0000-4000-8000-000000000037',
+      sessionId,
+      throughMessageSequence: 2,
+    }, callAI)).rejects.toMatchObject({ code: 'ARCHIVE_INTEGRITY_ERROR' })
+    expect(callAI).not.toHaveBeenCalled()
+    expect(getResearchDiscussionContext(db, sessionId)).toMatchObject({
+      summarized_through_message_sequence: null,
+      latest_batch_id: null,
+    })
   })
 
   it('相同消息范围和上下文哈希幂等复用结果', async () => {

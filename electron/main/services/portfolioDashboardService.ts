@@ -8,6 +8,7 @@ import { getConceptSource } from '../database/settingsRepository'
 import { getConceptsByStockRouted } from './conceptRouter'
 import { computeSectorFlowSnapshot } from './sectorFlowService'
 import { buildLatestChipSummaryMap, type ChipSummary } from './chipSummaryService'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 export type PortfolioPositionAdvice = 'HOLD' | 'WATCH' | 'TAKE_PROFIT' | 'STOP_LOSS'
 
@@ -303,9 +304,7 @@ function findByCode<T>(map: Map<string, T>, tsCode: string): T | undefined {
 }
 
 function codeKeys(tsCode: string): string[] {
-  const clean = tsCode.trim().toUpperCase()
-  const stripped = stripTsSuffix(clean)
-  return Array.from(new Set([clean, stripped]))
+  return tsCodeLookupCandidates(tsCode)
 }
 
 function stripTsSuffix(tsCode: string): string {

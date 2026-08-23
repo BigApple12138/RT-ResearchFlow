@@ -1,0 +1,57 @@
+# 标签元数据参照（供维护者在仓库 Settings → Labels 手动建标签时参照）。
+# 本文件不会被 GitHub 原生自动应用；如需同步可使用第三方 Action（如 micnncim/action-label-syncer）。
+# color 为 6 位十六进制，不带 #。
+labels:
+  # ── 类型类 ──────────────────────────────
+  - name: bug
+    description: 可复现的缺陷或异常行为
+    color: d73a4a
+  - name: enhancement
+    description: 新功能或既有能力的改进
+    color: a2eeef
+  - name: docs
+    description: 文档、README 或发版说明变更
+    color: 0075ca
+  - name: question
+    description: 使用疑问或讨论型问题
+    color: d876e3
+
+  # ── 状态类 ──────────────────────────────
+  - name: needs-triage
+    description: 待维护者分类与确认
+    color: ffffff
+  - name: good first issue
+    description: 适合新贡献者入手的问题（stale 豁免）
+    color: 7057ff
+  - name: help wanted
+    description: 欢迎社区认领（stale 豁免）
+    color: 008672
+  - name: stale
+    description: 长期无响应，将被自动关闭（回复可重开）
+    color: eeeeee
+  - name: security
+    description: 安全相关议题（stale 机器人豁免，不进自动关闭流程）
+    color: ee0701
+
+  # ── 领域类 ──────────────────────────────
+  - name: area:ui
+    description: 渲染层 / React 组件 / 交互与样式
+    color: 1d76db
+  - name: area:ipc-main
+    description: 主进程与 preload 窄 IPC 边界
+    color: 0e8a16
+  - name: area:database-migration
+    description: SQLite 结构与向前 Migration
+    color: b60205
+  - name: area:data-source
+    description: Tushare / 公共日线与行情数据源
+    color: 5319e7
+  - name: area:ai
+    description: AI 分析、深度研究、Agent 与讨论
+    color: fbca04
+  - name: area:e2e
+    description: Playwright E2E 与截图脚本
+    color: 0052cc
+  - name: area:ci-release
+    description: CI、发版、依赖升级与工程门禁
+    color: c5def5

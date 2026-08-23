@@ -11,6 +11,7 @@
 
 import type Database from 'better-sqlite3'
 import type { ThsConceptIndexRow, ThsConceptMembersRow } from './types'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 // ── 概念指数目录 ──────────────────────────────────────────
 
@@ -61,10 +62,15 @@ export function getThsConceptsByStock(
   db: Database.Database,
   tsCode: string
 ): ThsConceptMembersRow[] {
-  const rows = db
-    .prepare('SELECT ts_code, con_code, con_name FROM ths_concept_members WHERE ts_code = ?')
-    .all(tsCode) as Array<{ ts_code: string; con_code: string; con_name: string | null }>
-  return rows.map(r => ({ tsCode: r.ts_code, conCode: r.con_code, conName: r.con_name }))
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const rows = db
+      .prepare('SELECT ts_code, con_code, con_name FROM ths_concept_members WHERE ts_code = ?')
+      .all(code) as Array<{ ts_code: string; con_code: string; con_name: string | null }>
+    if (rows.length > 0) {
+      return rows.map(r => ({ tsCode: r.ts_code, conCode: r.con_code, conName: r.con_name }))
+    }
+  }
+  return []
 }
 
 /**

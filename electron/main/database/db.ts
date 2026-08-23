@@ -4557,8 +4557,727 @@ const MIGRATIONS: DatabaseMigration[] = [
         )
         BEGIN SELECT RAISE(ABORT, 'INDUSTRY_RESEARCH_FACT_IMMUTABLE'); END;
     `
+  },
+  {
+    // Trend AI review: one immutable-by-date result slot per workbench security and score date.
+    version: 136,
+    sql: `
+      CREATE TABLE trend_structure_reviews (
+        ts_code             TEXT NOT NULL CHECK (length(trim(ts_code)) BETWEEN 3 AND 20),
+        score_trade_date    TEXT NOT NULL CHECK (
+          (length(score_trade_date) = 8 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]')
+          OR
+          (length(score_trade_date) = 10 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+        ),
+        facts_hash          TEXT NOT NULL CHECK (length(facts_hash) = 64),
+        request_id          TEXT NOT NULL UNIQUE,
+        local_trend_state   TEXT NOT NULL CHECK (local_trend_state IN ('strengthening', 'strong', 'stable', 'weakening', 'broken', 'insufficient')),
+        local_total_score   REAL DEFAULT NULL,
+        ai_verdict          TEXT NOT NULL CHECK (ai_verdict IN ('trend_intact', 'trend_improving', 'trend_deteriorating', 'trend_broken', 'need_more_data')),
+        rationale           TEXT NOT NULL CHECK (length(trim(rationale)) BETWEEN 1 AND 16000),
+        focus_points_json   TEXT NOT NULL CHECK (json_valid(focus_points_json) AND json_type(focus_points_json) = 'array'),
+        provider            TEXT DEFAULT NULL,
+        model               TEXT DEFAULT NULL,
+        audit_json          TEXT NOT NULL CHECK (json_valid(audit_json) AND json_type(audit_json) = 'object'),
+        created_at          INTEGER NOT NULL CHECK (created_at > 0),
+        updated_at          INTEGER NOT NULL CHECK (updated_at > 0),
+        PRIMARY KEY (ts_code, score_trade_date)
+      );
+      CREATE INDEX idx_trend_structure_reviews_code_date
+        ON trend_structure_reviews(ts_code, score_trade_date DESC, updated_at DESC);
+    `
+  },
+  {
+    // Discussion compaction keeps a cumulative summary separate from the hot message tail.
+    version: 137,
+    sql: `
+      CREATE TABLE ai_discussion_context_compactions (
+        id                    TEXT PRIMARY KEY,
+        session_id            INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        request_id            TEXT NOT NULL UNIQUE,
+        source_start_sequence INTEGER NOT NULL CHECK (source_start_sequence >= 0),
+        covered_through_sequence INTEGER NOT NULL CHECK (covered_through_sequence >= source_start_sequence),
+        source_messages_hash  TEXT NOT NULL CHECK (length(source_messages_hash) = 64),
+        summary_text          TEXT NOT NULL CHECK (length(trim(summary_text)) > 0),
+        summary_hash          TEXT NOT NULL CHECK (length(summary_hash) = 64),
+        provider              TEXT NOT NULL,
+        model                 TEXT NOT NULL,
+        created_at            INTEGER NOT NULL CHECK (created_at > 0)
+      );
+      CREATE INDEX idx_ai_discussion_context_compactions_session_sequence
+        ON ai_discussion_context_compactions(session_id, covered_through_sequence DESC, id DESC);
+    `
+  },
+  {
+    // Archived messages are recoverable by stable sequence and belong to the compaction that moved them out of hot storage.
+    version: 138,
+    sql: `
+      CREATE TABLE ai_discussion_message_archives (
+        session_id       INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        message_sequence INTEGER NOT NULL CHECK (message_sequence >= 0),
+        message_json     TEXT NOT NULL CHECK (json_valid(message_json) AND json_type(message_json) = 'object'),
+        compaction_id    TEXT NOT NULL REFERENCES ai_discussion_context_compactions(id) ON DELETE CASCADE,
+        archived_at      INTEGER NOT NULL CHECK (archived_at > 0),
+        PRIMARY KEY (session_id, message_sequence)
+      );
+      CREATE INDEX idx_ai_discussion_message_archives_session_sequence
+        ON ai_discussion_message_archives(session_id, message_sequence);
+      CREATE INDEX idx_ai_discussion_message_archives_compaction
+        ON ai_discussion_message_archives(compaction_id, message_sequence);
+    `
+  },
+  {
+    // Follow-up request receipts make retries safe and expose an opt-out for automatic discussion compaction.
+    version: 139,
+    sql: `
+      ALTER TABLE ai_config
+        ADD COLUMN autoCompactDiscussion INTEGER NOT NULL DEFAULT 1
+        CHECK (autoCompactDiscussion IN (0, 1));
+
+      CREATE TABLE ai_discussion_turn_requests (
+        request_id     TEXT PRIMARY KEY,
+        session_id     INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        status         TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+        user_message   TEXT NOT NULL CHECK (length(trim(user_message)) > 0),
+        response_text  TEXT DEFAULT NULL,
+        error_message  TEXT DEFAULT NULL,
+        created_at     INTEGER NOT NULL CHECK (created_at > 0),
+        updated_at     INTEGER NOT NULL CHECK (updated_at > 0),
+        completed_at   INTEGER DEFAULT NULL
+      );
+      CREATE INDEX idx_ai_discussion_turn_requests_session
+        ON ai_discussion_turn_requests(session_id, created_at DESC, request_id);
+    `
+  },
+  {
+    // Trend review revisions are immutable; the old projection is retained as an explicitly legacy table.
+    version: 140,
+    sql: `
+      ALTER TABLE trend_structure_reviews RENAME TO trend_structure_reviews_legacy;
+
+      CREATE TABLE trend_structure_review_revisions (
+        id                  TEXT PRIMARY KEY,
+        ts_code             TEXT NOT NULL CHECK (length(trim(ts_code)) BETWEEN 3 AND 20),
+        score_trade_date    TEXT NOT NULL CHECK (
+          (length(score_trade_date) = 8 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]')
+          OR
+          (length(score_trade_date) = 10 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+        ),
+        facts_hash          TEXT NOT NULL CHECK (length(facts_hash) = 64),
+        request_id          TEXT NOT NULL UNIQUE,
+        local_trend_state   TEXT NOT NULL CHECK (local_trend_state IN ('strengthening', 'strong', 'stable', 'weakening', 'broken', 'insufficient')),
+        local_total_score   REAL DEFAULT NULL,
+        ai_verdict          TEXT NOT NULL CHECK (ai_verdict IN ('agree', 'possible_false_break', 'possible_false_hold', 'evidence_weak', 'need_more_data')),
+        rationale           TEXT NOT NULL CHECK (length(trim(rationale)) BETWEEN 1 AND 120),
+        focus_points_json   TEXT NOT NULL CHECK (json_valid(focus_points_json) AND json_type(focus_points_json) = 'array'),
+        provider            TEXT DEFAULT NULL,
+        model               TEXT DEFAULT NULL,
+        audit_json          TEXT NOT NULL CHECK (json_valid(audit_json) AND json_type(audit_json) = 'object'),
+        created_at          INTEGER NOT NULL CHECK (created_at > 0)
+      );
+      CREATE UNIQUE INDEX idx_trend_structure_review_revisions_code_date_hash
+        ON trend_structure_review_revisions(ts_code, score_trade_date, facts_hash);
+      CREATE INDEX idx_trend_structure_review_revisions_code_date
+        ON trend_structure_review_revisions(ts_code, score_trade_date, created_at, id);
+
+      CREATE TABLE trend_structure_reviews (
+        ts_code             TEXT NOT NULL CHECK (length(trim(ts_code)) BETWEEN 3 AND 20),
+        score_trade_date    TEXT NOT NULL CHECK (
+          (length(score_trade_date) = 8 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]')
+          OR
+          (length(score_trade_date) = 10 AND score_trade_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
+        ),
+        revision_id         TEXT NOT NULL UNIQUE REFERENCES trend_structure_review_revisions(id),
+        facts_hash          TEXT NOT NULL CHECK (length(facts_hash) = 64),
+        request_id          TEXT NOT NULL UNIQUE,
+        local_trend_state   TEXT NOT NULL CHECK (local_trend_state IN ('strengthening', 'strong', 'stable', 'weakening', 'broken', 'insufficient')),
+        local_total_score   REAL DEFAULT NULL,
+        ai_verdict          TEXT NOT NULL CHECK (ai_verdict IN ('agree', 'possible_false_break', 'possible_false_hold', 'evidence_weak', 'need_more_data')),
+        rationale           TEXT NOT NULL CHECK (length(trim(rationale)) BETWEEN 1 AND 120),
+        focus_points_json   TEXT NOT NULL CHECK (json_valid(focus_points_json) AND json_type(focus_points_json) = 'array'),
+        provider            TEXT DEFAULT NULL,
+        model               TEXT DEFAULT NULL,
+        audit_json          TEXT NOT NULL CHECK (json_valid(audit_json) AND json_type(audit_json) = 'object'),
+        created_at          INTEGER NOT NULL CHECK (created_at > 0),
+        updated_at          INTEGER NOT NULL CHECK (updated_at > 0),
+        PRIMARY KEY (ts_code, score_trade_date)
+      );
+      CREATE INDEX idx_trend_structure_reviews_latest_code_date
+        ON trend_structure_reviews(ts_code, score_trade_date DESC, updated_at DESC);
+
+      CREATE TRIGGER trend_structure_review_revisions_no_update
+        BEFORE UPDATE ON trend_structure_review_revisions
+        BEGIN SELECT RAISE(ABORT, 'TREND_REVIEW_REVISION_IMMUTABLE'); END;
+      CREATE TRIGGER trend_structure_review_revisions_no_delete
+        BEFORE DELETE ON trend_structure_review_revisions
+        BEGIN SELECT RAISE(ABORT, 'TREND_REVIEW_REVISION_IMMUTABLE'); END;
+    `
+  },
+  {
+    // Stable message sequences are generated by the main process; legacy index cursors remain readable.
+    version: 141,
+    sql: `
+      ALTER TABLE ai_analysis_sessions
+        ADD COLUMN next_message_sequence INTEGER NOT NULL DEFAULT 0
+        CHECK (next_message_sequence >= 0);
+      ALTER TABLE ai_research_discussion_contexts
+        ADD COLUMN summarized_through_message_sequence INTEGER DEFAULT NULL
+        CHECK (summarized_through_message_sequence IS NULL OR summarized_through_message_sequence >= 0);
+      ALTER TABLE industry_research_candidate_batches
+        ADD COLUMN message_start_sequence INTEGER DEFAULT NULL
+        CHECK (message_start_sequence IS NULL OR message_start_sequence >= 0);
+      ALTER TABLE industry_research_candidate_batches
+        ADD COLUMN message_end_sequence INTEGER DEFAULT NULL
+        CHECK (message_end_sequence IS NULL OR message_end_sequence >= 0);
+      ALTER TABLE industry_research_change_sets
+        ADD COLUMN message_start_sequence INTEGER DEFAULT NULL
+        CHECK (message_start_sequence IS NULL OR message_start_sequence >= 0);
+      ALTER TABLE industry_research_change_sets
+        ADD COLUMN message_end_sequence INTEGER DEFAULT NULL
+        CHECK (message_end_sequence IS NULL OR message_end_sequence >= 0);
+      ALTER TABLE industry_research_change_candidates
+        ADD COLUMN message_start_sequence INTEGER DEFAULT NULL
+        CHECK (message_start_sequence IS NULL OR message_start_sequence >= 0);
+      ALTER TABLE industry_research_change_candidates
+        ADD COLUMN message_end_sequence INTEGER DEFAULT NULL
+        CHECK (message_end_sequence IS NULL OR message_end_sequence >= 0);
+      CREATE INDEX idx_industry_research_batches_session_sequence
+        ON industry_research_candidate_batches(source_session_id, message_start_sequence, message_end_sequence);
+      CREATE INDEX idx_industry_research_change_sets_session_sequence
+        ON industry_research_change_sets(source_session_id, message_start_sequence, message_end_sequence);
+      CREATE INDEX idx_industry_research_candidates_session_sequence
+        ON industry_research_change_candidates(batch_id, message_start_sequence, message_end_sequence);
+    `
+  },
+  {
+    // Guard the cross-table ownership relationship introduced before sequence values became strictly positive.
+    version: 142,
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_compaction_positive_sequences_insert
+        BEFORE INSERT ON ai_discussion_context_compactions
+        WHEN NEW.source_start_sequence <= 0 OR NEW.covered_through_sequence < NEW.source_start_sequence
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SEQUENCE_MUST_BE_POSITIVE'); END;
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_compaction_positive_sequences_update
+        BEFORE UPDATE OF source_start_sequence, covered_through_sequence ON ai_discussion_context_compactions
+        WHEN NEW.source_start_sequence <= 0 OR NEW.covered_through_sequence < NEW.source_start_sequence
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SEQUENCE_MUST_BE_POSITIVE'); END;
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_archive_session_match_insert
+        BEFORE INSERT ON ai_discussion_message_archives
+        WHEN NEW.message_sequence <= 0
+          OR NOT EXISTS (
+            SELECT 1 FROM ai_discussion_context_compactions c
+            WHERE c.id = NEW.compaction_id AND c.session_id = NEW.session_id
+          )
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SESSION_MISMATCH'); END;
+      CREATE TRIGGER IF NOT EXISTS ai_discussion_archive_session_match_update
+        BEFORE UPDATE OF session_id, message_sequence, compaction_id ON ai_discussion_message_archives
+        WHEN NEW.message_sequence <= 0
+          OR NOT EXISTS (
+            SELECT 1 FROM ai_discussion_context_compactions c
+            WHERE c.id = NEW.compaction_id AND c.session_id = NEW.session_id
+          )
+        BEGIN SELECT RAISE(ABORT, 'COMPACTION_SESSION_MISMATCH'); END;
+    `
+  },
+  {
+    // Successful trend-review replays retain immutable request identity; busy checks use all session rows.
+    version: 143,
+    sql: `
+      CREATE INDEX idx_research_agent_runs_discussion_status
+        ON research_agent_runs(discussion_session_id, status);
+
+      CREATE UNIQUE INDEX idx_trend_structure_review_revisions_full_identity
+        ON trend_structure_review_revisions(id, ts_code, score_trade_date, facts_hash);
+      CREATE TABLE trend_structure_review_requests (
+        request_id          TEXT PRIMARY KEY,
+        ts_code             TEXT NOT NULL,
+        score_trade_date    TEXT NOT NULL,
+        facts_hash          TEXT NOT NULL CHECK (length(facts_hash) = 64),
+        revision_id         TEXT NOT NULL,
+        created_at          INTEGER NOT NULL CHECK (created_at > 0),
+        FOREIGN KEY (revision_id, ts_code, score_trade_date, facts_hash)
+          REFERENCES trend_structure_review_revisions(id, ts_code, score_trade_date, facts_hash)
+      );
+      CREATE INDEX idx_trend_structure_review_requests_revision
+        ON trend_structure_review_requests(revision_id, created_at, request_id);
+      INSERT INTO trend_structure_review_requests (
+        request_id, ts_code, score_trade_date, facts_hash, revision_id, created_at
+      )
+      SELECT request_id, ts_code, score_trade_date, facts_hash, id, created_at
+      FROM trend_structure_review_revisions;
+
+      CREATE TRIGGER trend_structure_review_requests_no_update
+        BEFORE UPDATE ON trend_structure_review_requests
+        BEGIN SELECT RAISE(ABORT, 'TREND_REVIEW_REQUEST_IMMUTABLE'); END;
+      CREATE TRIGGER trend_structure_review_requests_no_delete
+        BEFORE DELETE ON trend_structure_review_requests
+        BEGIN SELECT RAISE(ABORT, 'TREND_REVIEW_REQUEST_IMMUTABLE'); END;
+    `
+  },
+  {
+    // FR-164: 观察池分类东财映射规则（一期）；主题树仍读代码常量
+    version: 144,
+    sql: `
+      CREATE TABLE IF NOT EXISTS watchlist_category_map_rules (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        keyword      TEXT    NOT NULL CHECK (length(trim(keyword)) > 0),
+        match_field  TEXT    NOT NULL CHECK (match_field IN ('industry', 'concept', 'name')),
+        category     TEXT    NOT NULL CHECK (length(trim(category)) > 0),
+        sub_category TEXT    NOT NULL DEFAULT '',
+        priority     INTEGER NOT NULL DEFAULT 0,
+        enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_watchlist_category_map_rules_enabled_priority
+        ON watchlist_category_map_rules(enabled, priority DESC, id);
+
+      INSERT INTO watchlist_category_map_rules
+        (keyword, match_field, category, sub_category, priority, enabled, created_at, updated_at)
+      VALUES
+        ('覆铜板', 'industry', 'PCB', '覆铜板（CCL）', 95, 1, 1754755200000, 1754755200000),
+        ('覆铜板', 'concept', 'PCB', '覆铜板（CCL）', 95, 1, 1754755200000, 1754755200000),
+        ('铜箔', 'concept', 'PCB', '覆铜板（CCL）', 92, 1, 1754755200000, 1754755200000),
+        ('铜箔', 'name', 'PCB', '覆铜板（CCL）', 90, 1, 1754755200000, 1754755200000),
+        ('铜缆', 'concept', 'PCB', '通信/服务器PCB', 92, 1, 1754755200000, 1754755200000),
+        ('铜缆', 'name', 'PCB', '通信/服务器PCB', 88, 1, 1754755200000, 1754755200000),
+        ('印制电路', 'industry', 'PCB', '通信/服务器PCB', 90, 1, 1754755200000, 1754755200000),
+        ('印刷电路', 'industry', 'PCB', '通信/服务器PCB', 90, 1, 1754755200000, 1754755200000),
+        ('PCB', 'industry', 'PCB', '通信/服务器PCB', 88, 1, 1754755200000, 1754755200000),
+        ('PCB', 'concept', 'PCB', '通信/服务器PCB', 88, 1, 1754755200000, 1754755200000),
+        ('电路板', 'industry', 'PCB', '通信/服务器PCB', 82, 1, 1754755200000, 1754755200000),
+        ('服务器PCB', 'concept', 'PCB', '通信/服务器PCB', 96, 1, 1754755200000, 1754755200000),
+        ('光模块', 'industry', 'CPO', '光模块', 96, 1, 1754755200000, 1754755200000),
+        ('光模块', 'concept', 'CPO', '光模块', 96, 1, 1754755200000, 1754755200000),
+        ('光模块', 'name', 'CPO', '光模块', 94, 1, 1754755200000, 1754755200000),
+        ('光器件', 'concept', 'CPO', '光器件', 92, 1, 1754755200000, 1754755200000),
+        ('光通信', 'industry', 'CPO', '光模块', 85, 1, 1754755200000, 1754755200000),
+        ('CPO', 'concept', 'CPO', '光模块', 93, 1, 1754755200000, 1754755200000),
+        ('CPO', 'name', 'CPO', '光模块', 90, 1, 1754755200000, 1754755200000),
+        ('磷酸铁锂', 'concept', '锂电池', '磷酸铁锂正极', 96, 1, 1754755200000, 1754755200000),
+        ('三元材料', 'concept', '锂电池', '三元材料正极', 95, 1, 1754755200000, 1754755200000),
+        ('电解液', 'concept', '锂电池', '电解液', 95, 1, 1754755200000, 1754755200000),
+        ('隔膜', 'concept', '锂电池', '隔膜', 94, 1, 1754755200000, 1754755200000),
+        ('负极', 'concept', '锂电池', '负极材料', 90, 1, 1754755200000, 1754755200000),
+        ('锂电设备', 'concept', '锂电池', '锂电设备', 95, 1, 1754755200000, 1754755200000),
+        ('锂离子电池', 'industry', '锂电池', '磷酸铁锂正极', 80, 1, 1754755200000, 1754755200000),
+        ('锂电池', 'industry', '锂电池', '磷酸铁锂正极', 78, 1, 1754755200000, 1754755200000),
+        ('锂电池', 'concept', '锂电池', '磷酸铁锂正极', 78, 1, 1754755200000, 1754755200000),
+        ('算力', 'concept', 'AI算力', 'AI服务器', 96, 1, 1754755200000, 1754755200000),
+        ('AI服务器', 'concept', 'AI算力', 'AI服务器', 98, 1, 1754755200000, 1754755200000),
+        ('服务器', 'concept', 'AI算力', 'AI服务器', 84, 1, 1754755200000, 1754755200000),
+        ('计算机设备', 'industry', 'AI算力', 'AI服务器', 76, 1, 1754755200000, 1754755200000),
+        ('固态电池', 'concept', '固态电池', '固态电池（整体）', 96, 1, 1754755200000, 1754755200000),
+        ('固态电池', 'name', '固态电池', '固态电池（整体）', 90, 1, 1754755200000, 1754755200000),
+        ('储能', 'concept', '储能', '储能系统集成商', 90, 1, 1754755200000, 1754755200000),
+        ('储能', 'industry', '储能', '储能电池', 82, 1, 1754755200000, 1754755200000),
+        ('风电', 'industry', '绿色能源（风电）', '风电整机', 88, 1, 1754755200000, 1754755200000),
+        ('风电', 'concept', '绿色能源（风电）', '风电整机', 88, 1, 1754755200000, 1754755200000),
+        ('锂矿', 'concept', '能源金属', '锂矿', 95, 1, 1754755200000, 1754755200000),
+        ('钴', 'concept', '能源金属', '钴', 90, 1, 1754755200000, 1754755200000),
+        ('镍', 'concept', '能源金属', '镍', 90, 1, 1754755200000, 1754755200000),
+        ('光刻胶', 'concept', '半导体材料', '光刻胶（KrF/ArF高端）', 95, 1, 1754755200000, 1754755200000),
+        ('硅片', 'concept', '半导体材料', '半导体硅片', 90, 1, 1754755200000, 1754755200000),
+        ('刻蚀', 'concept', '半导体设备', '刻蚀设备', 94, 1, 1754755200000, 1754755200000),
+        ('薄膜沉积', 'concept', '半导体设备', '薄膜沉积设备', 94, 1, 1754755200000, 1754755200000);
+    `
+  },
+  {
+    // FR-164: 观察池主题树入库（二期）；种子等价 WATCHLIST_CATEGORY_TREE
+    version: 145,
+    sql: `
+      CREATE TABLE IF NOT EXISTS watchlist_category_nodes (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        category     TEXT    NOT NULL CHECK (length(trim(category)) > 0),
+        sub_category TEXT    NOT NULL DEFAULT '',
+        sort_order   INTEGER NOT NULL DEFAULT 0,
+        enabled      INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        UNIQUE (category, sub_category)
+      );
+      CREATE INDEX IF NOT EXISTS idx_watchlist_category_nodes_enabled_category
+        ON watchlist_category_nodes(enabled, category, sort_order, id);
+
+      INSERT INTO watchlist_category_nodes
+        (category, sub_category, sort_order, enabled, created_at, updated_at)
+      VALUES
+        ('AI算力', 'AI服务器', 0, 1, 1754755200000, 1754755200000),
+        ('半导体设备', '刻蚀设备', 1, 1, 1754755200000, 1754755200000),
+        ('半导体设备', '薄膜沉积设备', 2, 1, 1754755200000, 1754755200000),
+        ('半导体设备', '清洗设备', 3, 1, 1754755200000, 1754755200000),
+        ('半导体设备', '离子注入', 4, 1, 1754755200000, 1754755200000),
+        ('半导体材料', '光刻胶（KrF/ArF高端）', 5, 1, 1754755200000, 1754755200000),
+        ('半导体材料', '光刻胶（G/I线成熟）', 6, 1, 1754755200000, 1754755200000),
+        ('半导体材料', '半导体硅片', 7, 1, 1754755200000, 1754755200000),
+        ('半导体材料', '溅射靶材', 8, 1, 1754755200000, 1754755200000),
+        ('半导体材料', 'CMP抛光材料', 9, 1, 1754755200000, 1754755200000),
+        ('半导体材料', 'EDA软件', 10, 1, 1754755200000, 1754755200000),
+        ('半导体材料', '先进封装（封测）', 11, 1, 1754755200000, 1754755200000),
+        ('半导体材料', '测试板', 12, 1, 1754755200000, 1754755200000),
+        ('CPO', '光模块', 13, 1, 1754755200000, 1754755200000),
+        ('CPO', '光器件', 14, 1, 1754755200000, 1754755200000),
+        ('CPO', 'CPO交换机', 15, 1, 1754755200000, 1754755200000),
+        ('CPO', '封装/耦合设备', 16, 1, 1754755200000, 1754755200000),
+        ('PCB', '消费电子/FPC', 17, 1, 1754755200000, 1754755200000),
+        ('PCB', '通信/服务器PCB', 18, 1, 1754755200000, 1754755200000),
+        ('PCB', '汽车电子PCB', 19, 1, 1754755200000, 1754755200000),
+        ('PCB', 'IC封装基板', 20, 1, 1754755200000, 1754755200000),
+        ('PCB', '覆铜板（CCL）', 21, 1, 1754755200000, 1754755200000),
+        ('PCB', '显卡/新能源PCB', 22, 1, 1754755200000, 1754755200000),
+        ('锂电池', '磷酸铁锂正极', 23, 1, 1754755200000, 1754755200000),
+        ('锂电池', '三元材料正极', 24, 1, 1754755200000, 1754755200000),
+        ('锂电池', '负极材料', 25, 1, 1754755200000, 1754755200000),
+        ('锂电池', '电解液', 26, 1, 1754755200000, 1754755200000),
+        ('锂电池', '隔膜', 27, 1, 1754755200000, 1754755200000),
+        ('锂电池', '结构件', 28, 1, 1754755200000, 1754755200000),
+        ('锂电池', '锂电设备', 29, 1, 1754755200000, 1754755200000),
+        ('固态电池', '固态电池（整体）', 30, 1, 1754755200000, 1754755200000),
+        ('固态电池', '硫化物电解质', 31, 1, 1754755200000, 1754755200000),
+        ('固态电池', '氧化物电解质', 32, 1, 1754755200000, 1754755200000),
+        ('固态电池', '固态电池隔膜', 33, 1, 1754755200000, 1754755200000),
+        ('绿色能源（风电）', '风电整机', 34, 1, 1754755200000, 1754755200000),
+        ('绿色能源（风电）', '风电叶片', 35, 1, 1754755200000, 1754755200000),
+        ('储能', '储能系统集成商', 36, 1, 1754755200000, 1754755200000),
+        ('储能', '储能电池', 37, 1, 1754755200000, 1754755200000),
+        ('能源金属', '锂矿', 38, 1, 1754755200000, 1754755200000),
+        ('能源金属', '钴', 39, 1, 1754755200000, 1754755200000),
+        ('能源金属', '镍', 40, 1, 1754755200000, 1754755200000);
+    `
+  },
+  {
+    // Custom Tushare REST base URL (optional; null = official api.tushare.pro)
+    version: 146,
+    sql: `
+      ALTER TABLE data_source_config ADD COLUMN tushareApiUrl TEXT;
+    `
+  },
+  {
+    // Allow multiple model revisions for the same ts_code+score_date+facts_hash (force refresh).
+    version: 147,
+    sql: `
+      DROP INDEX IF EXISTS idx_trend_structure_review_revisions_code_date_hash;
+      CREATE INDEX idx_trend_structure_review_revisions_code_date_hash
+        ON trend_structure_review_revisions(ts_code, score_trade_date, facts_hash);
+    `
+  },
+  {
+    // Agent Hub 执行账本：turn / step / observation（独立于 ai_analysis_sessions.messages）
+    version: 148,
+    sql: `
+      CREATE TABLE IF NOT EXISTS agent_turns (
+        id                         TEXT PRIMARY KEY CHECK (length(trim(id)) BETWEEN 1 AND 64),
+        request_id                 TEXT NOT NULL UNIQUE CHECK (length(trim(request_id)) BETWEEN 1 AND 80),
+        request_fingerprint        TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+        session_id                 INTEGER NOT NULL CHECK (session_id > 0),
+        goal                       TEXT NOT NULL CHECK (length(trim(goal)) BETWEEN 1 AND 8000),
+        completion_criteria_json   TEXT NOT NULL CHECK (json_valid(completion_criteria_json) AND length(completion_criteria_json) <= 16384),
+        plan_revision              INTEGER NOT NULL DEFAULT 1 CHECK (plan_revision >= 1),
+        status                     TEXT NOT NULL CHECK (status IN (
+                                     'running', 'waiting_subagent', 'interrupted', 'done', 'error', 'cancelled'
+                                   )),
+        terminal                   TEXT DEFAULT NULL CHECK (terminal IS NULL OR terminal IN ('done', 'error', 'cancelled')),
+        error_code                 TEXT DEFAULT NULL CHECK (error_code IS NULL OR length(trim(error_code)) BETWEEN 1 AND 80),
+        error_message              TEXT DEFAULT NULL CHECK (error_message IS NULL OR length(error_message) <= 4000),
+        revision                   INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+        completed_at               INTEGER DEFAULT NULL,
+        CHECK (
+          (status IN ('done', 'error', 'cancelled') AND terminal = status AND completed_at IS NOT NULL)
+          OR (status NOT IN ('done', 'error', 'cancelled') AND terminal IS NULL AND completed_at IS NULL)
+        )
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_turns_session_status
+        ON agent_turns(session_id, status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_turns_status_updated
+        ON agent_turns(status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS agent_steps (
+        id                         TEXT PRIMARY KEY CHECK (length(trim(id)) BETWEEN 1 AND 80),
+        turn_id                    TEXT NOT NULL,
+        agent_id                   TEXT NOT NULL DEFAULT 'main'
+                                   CHECK (length(trim(agent_id)) BETWEEN 1 AND 80),
+        role                       TEXT NOT NULL DEFAULT 'planner_executor'
+                                   CHECK (length(trim(role)) BETWEEN 1 AND 80),
+        task_id                    TEXT DEFAULT NULL CHECK (task_id IS NULL OR length(trim(task_id)) BETWEEN 1 AND 80),
+        parent_task_id             TEXT DEFAULT NULL CHECK (parent_task_id IS NULL OR length(trim(parent_task_id)) BETWEEN 1 AND 80),
+        title                      TEXT NOT NULL DEFAULT '' CHECK (length(title) <= 500),
+        depends_on_json            TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(depends_on_json) AND length(depends_on_json) <= 8192),
+        capability_need_json       TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(capability_need_json) AND length(capability_need_json) <= 8192),
+        plan_revision              INTEGER NOT NULL DEFAULT 1 CHECK (plan_revision >= 1),
+        attempt                    INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+        status                     TEXT NOT NULL CHECK (status IN (
+                                     'pending', 'running', 'waiting_subagent', 'done', 'failed', 'skipped', 'cancelled'
+                                   )),
+        subagent_run_id            TEXT DEFAULT NULL CHECK (subagent_run_id IS NULL OR length(trim(subagent_run_id)) BETWEEN 1 AND 64),
+        intent_json                TEXT DEFAULT NULL
+                                   CHECK (intent_json IS NULL OR (json_valid(intent_json) AND length(intent_json) <= 65536)),
+        intent_sha256              TEXT DEFAULT NULL CHECK (intent_sha256 IS NULL OR length(intent_sha256) = 64),
+        outcome_json               TEXT DEFAULT NULL
+                                   CHECK (outcome_json IS NULL OR (json_valid(outcome_json) AND length(outcome_json) <= 65536)),
+        outcome_sha256             TEXT DEFAULT NULL CHECK (outcome_sha256 IS NULL OR length(outcome_sha256) = 64),
+        revision                   INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        error_code                 TEXT DEFAULT NULL,
+        error_message              TEXT DEFAULT NULL CHECK (error_message IS NULL OR length(error_message) <= 4000),
+        created_at                 INTEGER NOT NULL,
+        updated_at                 INTEGER NOT NULL,
+        started_at                 INTEGER DEFAULT NULL,
+        completed_at               INTEGER DEFAULT NULL,
+        CHECK ((intent_json IS NULL) = (intent_sha256 IS NULL)),
+        CHECK ((outcome_json IS NULL) = (outcome_sha256 IS NULL)),
+        CHECK (
+          (status = 'waiting_subagent' AND subagent_run_id IS NOT NULL)
+          OR (status <> 'waiting_subagent')
+        ),
+        UNIQUE (id, turn_id),
+        FOREIGN KEY (turn_id) REFERENCES agent_turns(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_steps_turn_status
+        ON agent_steps(turn_id, status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_agent_steps_subagent_run
+        ON agent_steps(subagent_run_id)
+        WHERE subagent_run_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS agent_observations (
+        id                         TEXT PRIMARY KEY CHECK (length(trim(id)) BETWEEN 1 AND 64),
+        turn_id                    TEXT NOT NULL,
+        step_id                    TEXT DEFAULT NULL,
+        summary                    TEXT NOT NULL CHECK (length(trim(summary)) BETWEEN 1 AND 4000),
+        evidence_refs_json         TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(evidence_refs_json) AND length(evidence_refs_json) <= 16384),
+        failure_category           TEXT DEFAULT NULL
+                                   CHECK (failure_category IS NULL OR failure_category IN ('retryable', 'replanable', 'blocked')),
+        remaining_gaps_json        TEXT NOT NULL DEFAULT '[]'
+                                   CHECK (json_valid(remaining_gaps_json) AND length(remaining_gaps_json) <= 16384),
+        content_hash               TEXT NOT NULL CHECK (length(content_hash) = 64),
+        created_at                 INTEGER NOT NULL,
+        FOREIGN KEY (turn_id) REFERENCES agent_turns(id) ON DELETE CASCADE,
+        FOREIGN KEY (step_id, turn_id) REFERENCES agent_steps(id, turn_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_observations_turn_created
+        ON agent_observations(turn_id, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_observations_turn_hash
+        ON agent_observations(turn_id, content_hash);
+    `
+  },
+  {
+    // Agent Hub：允许 Agent 联网（默认关闭；仅授权 sideEffect=network 的 Tool）
+    version: 149,
+    sql: `
+      ALTER TABLE app_settings ADD COLUMN ai_agent_network_enabled INTEGER NOT NULL DEFAULT 0
+        CHECK (ai_agent_network_enabled IN (0, 1));
+    `
+  },
+  {
+    // Agent Hub 第二期 M0：外部 MCP 客户端服务器配置（密钥整段加密；stdio + argv）
+    version: 150,
+    sql: `
+      CREATE TABLE IF NOT EXISTS external_mcp_servers (
+        id                  TEXT PRIMARY KEY NOT NULL,
+        name                TEXT NOT NULL CHECK (length(trim(name)) > 0 AND length(name) <= 120),
+        enabled             INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        transport           TEXT NOT NULL DEFAULT 'stdio' CHECK (transport = 'stdio'),
+        command             TEXT NOT NULL CHECK (length(trim(command)) > 0 AND length(command) <= 1024),
+        args_json           TEXT NOT NULL DEFAULT '[]'
+                            CHECK (json_valid(args_json) AND length(args_json) <= 8192),
+        env_encrypted       BLOB DEFAULT NULL,
+        cwd                 TEXT DEFAULT NULL CHECK (cwd IS NULL OR length(cwd) <= 1024),
+        last_tested_at      INTEGER DEFAULT NULL,
+        last_error_code     TEXT DEFAULT NULL CHECK (last_error_code IS NULL OR length(last_error_code) <= 64),
+        last_tools_json     TEXT DEFAULT NULL
+                            CHECK (last_tools_json IS NULL OR (json_valid(last_tools_json) AND length(last_tools_json) <= 65536)),
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_external_mcp_servers_updated
+        ON external_mcp_servers(updated_at DESC);
+    `
+  },
+  {
+    // FR-261: local-first daily archives for historical market resonance playback.
+    // Port from cao/dev (originally Migration 136); use 151 so local Agent Hub 148–150 can land first.
+    version: 151,
+    sql: `
+      CREATE TABLE market_resonance_daily_snapshots (
+        trade_date          TEXT PRIMARY KEY CHECK (length(trade_date) = 8),
+        data_mode           TEXT NOT NULL CHECK (data_mode IN ('archive', 'partial')),
+        source_label        TEXT NOT NULL,
+        coverage_available INTEGER NOT NULL CHECK (coverage_available >= 0),
+        coverage_total     INTEGER NOT NULL CHECK (coverage_total > 0),
+        snapshot_json      TEXT NOT NULL,
+        snapshot_sha256    TEXT NOT NULL CHECK (length(snapshot_sha256) = 64),
+        captured_at        INTEGER NOT NULL CHECK (captured_at > 0)
+      );
+      CREATE INDEX idx_market_resonance_snapshots_captured
+        ON market_resonance_daily_snapshots(captured_at DESC);
+    `
+  },
+  {
+    // 本应用联网搜索网关：扩展 provider + MCP 绑定列（重建表以放宽 CHECK）
+    // 152：避开已合入的市场共振快照 Migration 151
+    version: 152,
+    sql: `
+      CREATE TABLE research_web_search_config_v152 (
+        id                   INTEGER PRIMARY KEY CHECK (id = 1),
+        provider_id          TEXT NOT NULL CHECK (provider_id IN (
+                               'tavily', 'bing', 'custom_openai_compatible_search',
+                               'external_mcp', 'builtin_web'
+                             )),
+        enabled              INTEGER NOT NULL DEFAULT 0,
+        api_key_encrypted    BLOB DEFAULT NULL,
+        base_url             TEXT DEFAULT NULL,
+        mcp_server_id        TEXT DEFAULT NULL
+                             CHECK (mcp_server_id IS NULL OR (length(trim(mcp_server_id)) > 0 AND length(mcp_server_id) <= 64)),
+        mcp_tool_name        TEXT DEFAULT NULL
+                             CHECK (mcp_tool_name IS NULL OR (length(trim(mcp_tool_name)) > 0 AND length(mcp_tool_name) <= 128)),
+        last_validated_at    INTEGER DEFAULT NULL,
+        last_error_code      TEXT DEFAULT NULL,
+        updated_at           INTEGER NOT NULL
+      );
+
+      INSERT INTO research_web_search_config_v152 (
+        id, provider_id, enabled, api_key_encrypted, base_url,
+        mcp_server_id, mcp_tool_name, last_validated_at, last_error_code, updated_at
+      )
+      SELECT
+        id, provider_id, enabled, api_key_encrypted, base_url,
+        NULL, NULL, last_validated_at, last_error_code, updated_at
+      FROM research_web_search_config;
+
+      DROP TABLE research_web_search_config;
+      ALTER TABLE research_web_search_config_v152 RENAME TO research_web_search_config;
+    `
+  },
+  {
+    // 讨论压缩检查点：对齐 OpenClaw tokensBefore/After（本仓用字符启发式存储）
+    version: 153,
+    sql: `
+      ALTER TABLE ai_discussion_context_compactions ADD COLUMN tokens_before INTEGER;
+      ALTER TABLE ai_discussion_context_compactions ADD COLUMN tokens_after INTEGER;
+    `
+  },
+  {
+    // 压缩前研究笔记 flush（对照 OpenClaw memory flush，落本地表而非 ~/.openclaw）
+    version: 154,
+    sql: `
+      CREATE TABLE ai_discussion_research_flushes (
+        id                     TEXT PRIMARY KEY,
+        session_id             INTEGER NOT NULL,
+        request_id             TEXT NOT NULL UNIQUE,
+        source_start_sequence  INTEGER NOT NULL CHECK (source_start_sequence > 0),
+        source_end_sequence    INTEGER NOT NULL CHECK (source_end_sequence >= source_start_sequence),
+        note_text              TEXT NOT NULL CHECK (length(note_text) > 0),
+        note_hash              TEXT NOT NULL CHECK (length(note_hash) = 64),
+        compaction_id          TEXT DEFAULT NULL
+                               REFERENCES ai_discussion_context_compactions(id) ON DELETE SET NULL,
+        created_at             INTEGER NOT NULL CHECK (created_at > 0)
+      );
+      CREATE INDEX idx_ai_discussion_research_flushes_session
+        ON ai_discussion_research_flushes(session_id, created_at DESC);
+    `
+  },
+  {
+    // 趋势结构复核增加 AI 锚定偏差分（spec 2026-08-13）
+    version: 155,
+    sql: `
+      ALTER TABLE trend_structure_review_revisions
+        ADD COLUMN ai_score_status TEXT NOT NULL DEFAULT 'skipped'
+        CHECK (ai_score_status IN ('scored', 'skipped', 'invalid'));
+      ALTER TABLE trend_structure_review_revisions
+        ADD COLUMN ai_score_delta INTEGER DEFAULT NULL;
+      ALTER TABLE trend_structure_review_revisions
+        ADD COLUMN ai_score_rationale TEXT DEFAULT NULL;
+
+      ALTER TABLE trend_structure_reviews
+        ADD COLUMN ai_score_status TEXT NOT NULL DEFAULT 'skipped'
+        CHECK (ai_score_status IN ('scored', 'skipped', 'invalid'));
+      ALTER TABLE trend_structure_reviews
+        ADD COLUMN ai_score_delta INTEGER DEFAULT NULL;
+      ALTER TABLE trend_structure_reviews
+        ADD COLUMN ai_score_rationale TEXT DEFAULT NULL;
+    `
+  },
+  {
+    // Port from cao/dev FR-273 (originally Migration 137); use 156 — local 137 is discussion compaction.
+    version: 156,
+    sql: `
+      ALTER TABLE daily_close_cache ADD COLUMN amount REAL;
+      ALTER TABLE daily_close_cache ADD COLUMN data_source TEXT NOT NULL DEFAULT 'legacy';
+      ALTER TABLE daily_close_cache ADD COLUMN amount_source TEXT;
+      ALTER TABLE daily_close_cache ADD COLUMN turnover_source TEXT;
+      ALTER TABLE daily_close_cache ADD COLUMN fetched_at INTEGER;
+
+      CREATE TABLE public_market_request_global_state (
+        id                    INTEGER PRIMARY KEY CHECK (id = 1),
+        total_requests        INTEGER NOT NULL DEFAULT 0 CHECK (total_requests >= 0),
+        requests_in_batch     INTEGER NOT NULL DEFAULT 0 CHECK (requests_in_batch >= 0),
+        next_allowed_at       INTEGER NOT NULL DEFAULT 0 CHECK (next_allowed_at >= 0),
+        batch_blocked_until   INTEGER NOT NULL DEFAULT 0 CHECK (batch_blocked_until >= 0),
+        updated_at            INTEGER NOT NULL CHECK (updated_at > 0)
+      );
+      INSERT INTO public_market_request_global_state (id, updated_at) VALUES (1, unixepoch('subsec') * 1000);
+
+      CREATE TABLE public_market_provider_states (
+        provider              TEXT PRIMARY KEY,
+        request_count         INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+        success_count         INTEGER NOT NULL DEFAULT 0 CHECK (success_count >= 0),
+        failure_count         INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+        rate_limit_count      INTEGER NOT NULL DEFAULT 0 CHECK (rate_limit_count >= 0),
+        consecutive_failures  INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+        blocked_until         INTEGER NOT NULL DEFAULT 0 CHECK (blocked_until >= 0),
+        block_reason          TEXT,
+        last_status           INTEGER,
+        last_request_at       INTEGER,
+        updated_at            INTEGER NOT NULL CHECK (updated_at > 0)
+      );
+
+      CREATE TABLE public_market_sync_jobs (
+        job_key          TEXT PRIMARY KEY,
+        status           TEXT NOT NULL CHECK (status IN ('idle', 'running', 'success', 'partial', 'failed', 'cooldown')),
+        total_items      INTEGER NOT NULL DEFAULT 0 CHECK (total_items >= 0),
+        processed_items  INTEGER NOT NULL DEFAULT 0 CHECK (processed_items >= 0),
+        written_rows     INTEGER NOT NULL DEFAULT 0 CHECK (written_rows >= 0),
+        current_item     TEXT,
+        message          TEXT,
+        started_at       INTEGER,
+        completed_at     INTEGER,
+        updated_at       INTEGER NOT NULL CHECK (updated_at > 0)
+      );
+
+      CREATE TABLE stock_basic_identity_provenance (
+        ts_code      TEXT PRIMARY KEY,
+        data_source  TEXT NOT NULL CHECK (data_source IN ('legacy', 'tushare', 'sina')),
+        observed_at  INTEGER NOT NULL CHECK (observed_at > 0)
+      );
+
+      CREATE TABLE public_daily_sync_checkpoints (
+        ts_code           TEXT PRIMARY KEY,
+        primary_provider  TEXT NOT NULL CHECK (primary_provider IN ('sina', 'tencent')),
+        status            TEXT NOT NULL CHECK (status IN ('pending', 'running', 'success', 'partial', 'failed', 'cooldown')),
+        target_end_date   TEXT NOT NULL CHECK (length(target_end_date) = 8),
+        last_success_date TEXT CHECK (last_success_date IS NULL OR length(last_success_date) = 8),
+        written_rows      INTEGER NOT NULL DEFAULT 0 CHECK (written_rows >= 0),
+        last_error        TEXT,
+        attempts          INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        updated_at        INTEGER NOT NULL CHECK (updated_at > 0)
+      );
+      CREATE INDEX idx_public_daily_checkpoint_status
+        ON public_daily_sync_checkpoints(status, updated_at);
+    `
+  },
+  {
+    // FR-274 起板块资金只走 sector_flow_observations；废弃无人写入的 sector_flow_daily
+    version: 157,
+    sql: `
+      DROP INDEX IF EXISTS idx_sector_flow_daily_date_source;
+      DROP TABLE IF EXISTS sector_flow_daily;
+    `
   }
 ]
+
 
 export const DATABASE_MIGRATIONS: readonly DatabaseMigration[] = MIGRATIONS
 

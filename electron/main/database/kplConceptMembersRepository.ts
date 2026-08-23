@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { KplConceptMembersRow } from './types'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 function mapRow(r: Record<string, unknown>): KplConceptMembersRow {
   return {
@@ -36,10 +37,13 @@ export function getMembersByConcept(db: Database.Database, tsCode: string): KplC
 }
 
 export function getConceptsByStock(db: Database.Database, conCode: string): KplConceptMembersRow[] {
-  const rows = db
-    .prepare('SELECT * FROM kpl_concept_members WHERE con_code = ? ORDER BY hot_num DESC')
-    .all(conCode) as Record<string, unknown>[]
-  return rows.map(mapRow)
+  for (const code of tsCodeLookupCandidates(conCode)) {
+    const rows = db
+      .prepare('SELECT * FROM kpl_concept_members WHERE con_code = ? ORDER BY hot_num DESC')
+      .all(code) as Record<string, unknown>[]
+    if (rows.length > 0) return rows.map(mapRow)
+  }
+  return []
 }
 
 /**

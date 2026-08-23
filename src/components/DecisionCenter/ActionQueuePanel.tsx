@@ -29,7 +29,7 @@ function priorityClass(priority: number): string {
 
 function actionLabel(action: DecisionActionKind, judgmentMode = false): string {
   return {
-    read: '标记已读',
+    read: '处理完',
     watch: '关注',
     dismiss: '忽略',
     lifecycle: judgmentMode ? '研判' : '事件明细',

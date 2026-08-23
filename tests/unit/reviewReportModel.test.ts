@@ -149,7 +149,74 @@ describe('buildDailyReviewReport', () => {
     const text = formatDailyReviewReportText(report)
     expect(text).toContain('今日复盘报告')
     expect(text).toContain('## 已处理')
+    expect(text).toContain('## 市场环境')
+    expect(text).toContain('## 持仓走势')
     expect(text).toContain('辅助复盘')
+  })
+
+  it('日结：接入市场/持仓看板/关注中，emptyDay 仍展示日结节', () => {
+    const report = buildDailyReviewReport({
+      holdings: [{ tsCode: '600000.SH', stockName: '浦发银行', addedAt: 1, costPrice: 10 }],
+      signals: [
+        signal({
+          id: 99,
+          tsCode: '300750.SZ',
+          stockName: '宁德时代',
+          status: 'WATCHING',
+          sourceModule: 'news',
+          title: '关注中的资讯',
+          reasonJson: JSON.stringify({ isPortfolio: false }),
+        }),
+      ],
+      dayContext: {
+        marketOverview: {
+          distribution: [
+            { label: '≥7%', count: 10, isPositive: true },
+            { label: '=0%', count: 5, isPositive: null },
+            { label: '≤-7%', count: 20, isPositive: false },
+          ],
+          conceptHeat: [
+            { conName: '逆变器', avgChange: 3.2, limitUpCount: 2, limitDownCount: 0, memberCount: 40 },
+          ],
+          generatedAt: 1,
+          resonance: {
+            benchmarks: [{ name: '上证指数', change: -0.5 }],
+            sectors: [{ name: '电力设备', change: 1.2, mainNetInflow: 1.5e8, mainNetInflowRate: 0.8 }],
+          },
+        },
+        dashboardItems: [{
+          tsCode: '600000.SH',
+          stockName: '浦发银行',
+          costPrice: 10,
+          price: 10.5,
+          change: 1.2,
+          profitPct: 5,
+          positionAdvice: 'HOLD',
+          positionAdviceReason: '趋势未坏',
+          trend: { totalScore: 72, maAbove60: true },
+          todaySignals: { count: 0 },
+          sectorFlow: { conceptName: '银行', mainNetInflow: -2e8, mainNetInflowRate: -0.3 },
+        }],
+      },
+    })
+    expect(report.emptyDay).toBe(true)
+    expect(report.summary.watchingCount).toBe(1)
+    expect(report.marketEnvironment?.available).toBe(true)
+    expect(report.marketEnvironment?.oneLiner).toContain('涨')
+    expect(report.capitalHighlights?.items.some((item) => item.name === '逆变器')).toBe(true)
+    expect(report.holdingMoves?.items[0]).toMatchObject({
+      stockName: '浦发银行',
+      price: 10.5,
+      changePct: 1.2,
+      trendScore: 72,
+      positionAdvice: 'HOLD',
+    })
+    expect(report.watchedSignals?.[0]?.title).toContain('关注中的资讯')
+    const text = formatDailyReviewReportText(report)
+    expect(text).toContain('## 今日关注')
+    expect(text).toContain('宁德时代')
+    expect(text).toContain('浦发银行')
+    expect(text).toContain('逆变器')
   })
 })
 
@@ -203,5 +270,26 @@ describe('buildWeeklyReviewReport', () => {
     expect(report.openRisks.some((item) => item.title === '今日仍开放风险')).toBe(true)
     expect(report.followUps.some((item) => item.tagLabel === '信息不足')).toBe(true)
     expect(formatDailyReviewReportText(report)).toContain('近 7 个自然日')
+  })
+})
+
+describe('formatReviewReportText AI 节', () => {
+  it('成功时包含 AI 研判正文，失败时写明未生成原因', () => {
+    const base = buildDailyReviewReport({
+      holdings: [{ tsCode: '600000.SH', stockName: '浦发银行', addedAt: 1, costPrice: 10 }],
+      signals: [],
+    })
+    const ready = formatDailyReviewReportText({
+      ...base,
+      aiNarrative: { status: 'ready', text: '证据仍不足，需继续验证持仓风险。', generatedAt: 1, provider: 'qwen', model: 'x' },
+    })
+    expect(ready).toContain('## AI 研判')
+    expect(ready).toContain('证据仍不足，需继续验证持仓风险。')
+
+    const failed = formatDailyReviewReportText({
+      ...base,
+      aiNarrative: { status: 'error', text: null, errorCode: 'AI_NOT_CONFIGURED', errorMessage: '尚未配置可用的 AI' },
+    })
+    expect(failed).toContain('AI 研判未生成：尚未配置可用的 AI')
   })
 })

@@ -1,4 +1,9 @@
-export type ResearchSearchProviderId = 'tavily' | 'bing' | 'custom_openai_compatible_search'
+export type ResearchSearchProviderId =
+  | 'tavily'
+  | 'bing'
+  | 'custom_openai_compatible_search'
+  | 'external_mcp'
+  | 'builtin_web'
 
 export type ResearchRetrievalMode = 'strong' | 'mixed' | 'weak' | 'offline'
 

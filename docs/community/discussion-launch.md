@@ -2,6 +2,8 @@
 
 本文档保存 RT-ResearchFlow GitHub Discussions 的三篇首发文章。三篇文章均应在仓库完成社区与安全设置后发布并置顶，正文只描述公开仓库和当前公开测试版真实具备的能力。
 
+> 本 fork 社区以 `BigApple12138/RT-ResearchFlow` 仓库为准，本文所有链接均指向该仓库。
+
 ## 发布前置条件
 
 发布前逐项确认：
@@ -10,13 +12,13 @@
 - `Announcements` 仅允许维护者创建讨论。
 - Private vulnerability reporting 已开启，Security 页面能够看到 **Report a vulnerability**。
 - Issue 模板中的 Q&A、Ideas 和私密安全报告链接均能正常打开。
-- `v0.1.0-beta.1` Release 仍然公开可下载，安装包和 `SHA256SUMS.txt` 均可访问。
+- 当前公开测试版的 Release 仍然公开可下载，安装包和 `SHA256SUMS.txt` 均可访问。
 
 建议发布顺序：
 
 1. 《欢迎来到 RT-ResearchFlow》
 2. 《社区版能力与项目边界》
-3. 《v0.1.0-beta.1 使用反馈集中帖》
+3. 《v<version> 使用反馈集中帖》（每版从文章三模板复制并更新版本号；首发为《v0.1.0-beta.1 使用反馈集中帖》）
 
 三篇文章发布后全部置顶。首篇作为社区总入口，第二篇作为长期边界说明，第三篇只服务当前版本反馈，后续版本发布新的集中反馈帖。
 
@@ -54,7 +56,7 @@ RT-ResearchFlow 是一个本地优先、证据可追溯、能够持续复盘的 
 
 ## 从哪里开始
 
-1. 前往 [Releases](https://github.com/caoritian002-wq/RT-ResearchFlow/releases) 下载最新 Windows x64 测试版。
+1. 前往 [Releases](https://github.com/BigApple12138/RT-ResearchFlow/releases) 下载最新 Windows x64 测试版。
 2. 同时下载 `SHA256SUMS.txt`，安装前核对文件哈希。
 3. 首次启动不必配置 AI Key 或 Tushare Token，先完成零 Key 基础体验。
 4. 需要更完整的数据或 AI 研究时，再按需配置自己的 Tushare 和兼容 AI Provider。
@@ -68,11 +70,11 @@ RT-ResearchFlow 是一个本地优先、证据可追溯、能够持续复盘的 
 
 | 你的内容 | 正确入口 |
 | --- | --- |
-| 安装、配置、数据覆盖和使用问题 | [Q&A](https://github.com/caoritian002-wq/RT-ResearchFlow/discussions/categories/q-a) |
-| 新功能、交互改进和产品方向建议 | [Ideas](https://github.com/caoritian002-wq/RT-ResearchFlow/discussions/categories/ideas) |
-| 研究方法、使用流程和脱敏案例分享 | [Show and tell](https://github.com/caoritian002-wq/RT-ResearchFlow/discussions/categories/show-and-tell) |
-| 可以稳定复现的软件缺陷 | [Issue](https://github.com/caoritian002-wq/RT-ResearchFlow/issues/new/choose) |
-| 漏洞、凭据暴露或其他敏感安全问题 | [私密安全报告](https://github.com/caoritian002-wq/RT-ResearchFlow/security/advisories/new) |
+| 安装、配置、数据覆盖和使用问题 | [Q&A](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/q-a) |
+| 新功能、交互改进和产品方向建议 | [Ideas](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/ideas) |
+| 研究方法、使用流程和脱敏案例分享 | [Show and tell](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/show-and-tell) |
+| 可以稳定复现的软件缺陷 | [Issue](https://github.com/BigApple12138/RT-ResearchFlow/issues/new/choose) |
+| 漏洞、凭据暴露或其他敏感安全问题 | [私密安全报告](https://github.com/BigApple12138/RT-ResearchFlow/security/advisories/new) |
 
 Issue 不用于一般咨询，也不要使用公开 Issue 或 Discussion 报告尚未修复的安全漏洞。较大的功能建议请先进入 Ideas，把用户问题、使用场景和替代方案说清楚，再决定是否进入开发任务。
 
@@ -190,7 +192,7 @@ RT-ResearchFlow 是本地优先、证据可追溯、能够持续复盘的 A 股�
 - 模型请求结果未知时，同一研究账本不会自动重放，以避免重复费用和重复写入。
 - 用户仍需自行判断所使用 Provider、数据源和网络服务的隐私政策与计费规则。
 
-发现可能导致凭据泄露、任意文件或网络访问、数据库破坏、权限绕过的问题时，请使用 [私密安全报告](https://github.com/caoritian002-wq/RT-ResearchFlow/security/advisories/new)，不要公开披露复现细节。
+发现可能导致凭据泄露、任意文件或网络访问、数据库破坏、权限绕过的问题时，请使用 [私密安全报告](https://github.com/BigApple12138/RT-ResearchFlow/security/advisories/new)，不要公开披露复现细节。
 
 ## 明确不做什么
 
@@ -216,32 +218,32 @@ RT-ResearchFlow 是本地优先、证据可追溯、能够持续复盘的 A 股�
 5. 怎样通过测试或用户旅程验证它，而不是只看演示截图？
 6. 它是否仍然遵守本地优先、证据可追溯、用户显式触发和不越过交易边界？
 
-符合这些条件的建议，请发布到 [Ideas](https://github.com/caoritian002-wq/RT-ResearchFlow/discussions/categories/ideas)。可复现缺陷请使用 [Issue 模板](https://github.com/caoritian002-wq/RT-ResearchFlow/issues/new/choose)。
+符合这些条件的建议，请发布到 [Ideas](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/ideas)。可复现缺陷请使用 [Issue 模板](https://github.com/BigApple12138/RT-ResearchFlow/issues/new/choose)。
 
 ## 版本与支持预期
 
 社区版使用 `AGPL-3.0-only` 许可证。当前仍处于公开测试阶段，接口、数据覆盖和交互可能调整；维护者会优先处理安全问题、数据破坏、无法安装启动以及可以稳定复现的主流程缺陷，但不承诺服务等级、数据源可用性或投资结果。
 
-完整安装包、版本说明和已知限制以 [Releases](https://github.com/caoritian002-wq/RT-ResearchFlow/releases) 为准。
+完整安装包、版本说明和已知限制以 [Releases](https://github.com/BigApple12138/RT-ResearchFlow/releases) 为准。
 
 ---
 
-## 文章三：《v0.1.0-beta.1 使用反馈集中帖》
+## 文章三：使用反馈集中帖（每版复制此模板并更新版本号）
 
 - 建议分类：`Announcements`
-- 建议置顶：是
+- 建议置顶：是（发布下一测试版后取消置顶，并在帖首链接到新版本反馈帖）
 - 建议锁定：否
-- 生命周期：发布下一测试版后取消置顶，并在帖首链接到新版本反馈帖
+- 使用方法：每个新版本发布时，复制下方正文创建新帖，把全部 `<version>` 占位符替换为该版本号（含 Release 标签、下载链接与安装包文件名），并按本版实际能力调整导语；首发示例为《v0.1.0-beta.1 使用反馈集中帖》
 
 ### 正文
 
-# v0.1.0-beta.1 使用反馈集中帖
+# v<version> 使用反馈集中帖
 
-`v0.1.0-beta.1` 是 RT-ResearchFlow 的首个公开测试版本。本帖集中收集安装、首次启动、零 Key 体验、数据覆盖和核心研究工作流反馈。
+`v<version>` 是（此处写本版定位，首发示例表述为「RT-ResearchFlow 的首个公开测试版本」）。本帖集中收集安装、首次启动、零 Key 体验、数据覆盖和核心研究工作流反馈。
 
-- [查看完整 Release 说明](https://github.com/caoritian002-wq/RT-ResearchFlow/releases/tag/v0.1.0-beta.1)
-- [下载 Windows 10/11 x64 安装包](https://github.com/caoritian002-wq/RT-ResearchFlow/releases/download/v0.1.0-beta.1/RT-ResearchFlow-Setup-0.1.0-beta.1-x64.exe)
-- [下载 SHA256SUMS.txt](https://github.com/caoritian002-wq/RT-ResearchFlow/releases/download/v0.1.0-beta.1/SHA256SUMS.txt)
+- [查看完整 Release 说明](https://github.com/BigApple12138/RT-ResearchFlow/releases/tag/v<version>)
+- [下载 Windows 10/11 x64 安装包](https://github.com/BigApple12138/RT-ResearchFlow/releases/download/v<version>/RT-ResearchFlow-Setup-<version>-x64.exe)
+- [下载 SHA256SUMS.txt](https://github.com/BigApple12138/RT-ResearchFlow/releases/download/v<version>/SHA256SUMS.txt)
 
 > 这是预发布测试版，不是稳定版。项目不构成投资建议，不承诺收益，也不提供自动交易。
 
@@ -253,7 +255,7 @@ RT-ResearchFlow 是本地优先、证据可追溯、能够持续复盘的 A 股�
 - 下载后在 PowerShell 执行以下命令，并与 `SHA256SUMS.txt` 对照：
 
 ```powershell
-Get-FileHash .\RT-ResearchFlow-Setup-0.1.0-beta.1-x64.exe -Algorithm SHA256
+Get-FileHash .\RT-ResearchFlow-Setup-<version>-x64.exe -Algorithm SHA256
 ```
 
 如果文件名、版本或 SHA256 不一致，请停止安装并提交 Issue；不要通过关闭系统安全功能继续运行未知文件。
@@ -306,7 +308,7 @@ Get-FileHash .\RT-ResearchFlow-Setup-0.1.0-beta.1-x64.exe -Algorithm SHA256
 ```markdown
 ### 环境
 
-- RT-ResearchFlow 版本：v0.1.0-beta.1
+- RT-ResearchFlow 版本：v<version>
 - Windows 版本：
 - 系统缩放比例：
 - 安装方式：默认目录 / 自选目录 / 从源码运行
@@ -335,11 +337,11 @@ Get-FileHash .\RT-ResearchFlow-Setup-0.1.0-beta.1-x64.exe -Algorithm SHA256
 
 ## 什么时候应当另开入口
 
-- **安装或使用疑问**：发布到 [Q&A](https://github.com/caoritian002-wq/RT-ResearchFlow/discussions/categories/q-a)。
-- **产品建议**：发布到 [Ideas](https://github.com/caoritian002-wq/RT-ResearchFlow/discussions/categories/ideas)。
-- **稳定复现的 Bug**：创建 [Issue](https://github.com/caoritian002-wq/RT-ResearchFlow/issues/new/choose)，再把链接回复到本帖。
-- **研究工作流分享**：发布到 [Show and tell](https://github.com/caoritian002-wq/RT-ResearchFlow/discussions/categories/show-and-tell)。
-- **漏洞、凭据暴露和敏感安全问题**：使用 [私密安全报告](https://github.com/caoritian002-wq/RT-ResearchFlow/security/advisories/new)，不要在本帖公开细节。
+- **安装或使用疑问**：发布到 [Q&A](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/q-a)。
+- **产品建议**：发布到 [Ideas](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/ideas)。
+- **稳定复现的 Bug**：创建 [Issue](https://github.com/BigApple12138/RT-ResearchFlow/issues/new/choose)，再把链接回复到本帖。
+- **研究工作流分享**：发布到 [Show and tell](https://github.com/BigApple12138/RT-ResearchFlow/discussions/categories/show-and-tell)。
+- **漏洞、凭据暴露和敏感安全问题**：使用 [私密安全报告](https://github.com/BigApple12138/RT-ResearchFlow/security/advisories/new)，不要在本帖公开细节。
 
 ## 隐私提醒
 

@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../../store/appStore'
 import type { AppSettingsRow } from '../../../electron/main/database/types'
 import { SupplyChainSettingsPanel } from '../SupplyChain/SupplyChainSettingsPanel'
-import { ResearchAccessSettings } from './ResearchAccessSettings'
 import { PremarketCaptureSettings } from './PremarketCaptureSettings'
+import { DataRootSettings } from './DataRootSettings'
 
 const INTERVALS: { value: AppSettingsRow['scanIntervalMinutes']; label: string }[] = [
   { value: 5, label: '5 分钟' },
@@ -278,6 +278,8 @@ export function Settings() {
 
       <PremarketCaptureSettings />
 
+      <DataRootSettings />
+
       {/* Cache management */}
       <section className="mb-6 border-t border-gray-100 dark:border-gray-700 pt-6">
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">详情缓存管理</label>
@@ -327,8 +329,6 @@ export function Settings() {
           <p className="text-xs text-green-600 mt-2">{clearResult}</p>
         )}
       </section>
-
-      <ResearchAccessSettings />
 
       {/* ── 产业链传导分析 ──────────────────────────────────── */}
       <section className="border-t border-gray-200 dark:border-gray-700 pt-5">

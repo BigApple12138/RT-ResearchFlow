@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react'
 
 type ValidateStatus = 'idle' | 'validating' | 'valid' | 'invalid'
 
+const DEFAULT_API_URL_PLACEHOLDER = 'https://api.tushare.pro'
+
 export function DataSource() {
   const [tushareToken, setTushareToken] = useState('')
+  const [tushareApiUrl, setTushareApiUrl] = useState('')
   const [tushareEnabled, setTushareEnabled] = useState(false)
   const [hasSavedToken, setHasSavedToken] = useState(false)
   const [validateStatus, setValidateStatus] = useState<ValidateStatus>('idle')
@@ -12,9 +15,14 @@ export function DataSource() {
   const [saveMsg, setSaveMsg] = useState('')
 
   useEffect(() => {
-    window.api.datasource.getConfig().then((cfg: { tushareEnabled: boolean; hasTushareToken: boolean }) => {
+    window.api.datasource.getConfig().then((cfg: {
+      tushareEnabled: boolean
+      hasTushareToken: boolean
+      tushareApiUrl?: string
+    }) => {
       setTushareEnabled(cfg.tushareEnabled)
       setHasSavedToken(cfg.hasTushareToken)
+      setTushareApiUrl(cfg.tushareApiUrl ?? '')
     })
   }, [])
 
@@ -22,7 +30,10 @@ export function DataSource() {
     if (!tushareToken.trim()) return
     setValidateStatus('validating')
     setValidateMsg('')
-    const result = await window.api.datasource.validateTushare(tushareToken.trim())
+    const result = await window.api.datasource.validateTushare(
+      tushareToken.trim(),
+      tushareApiUrl.trim()
+    )
     setValidateStatus(result.valid ? 'valid' : 'invalid')
     setValidateMsg(result.message)
   }
@@ -30,11 +41,16 @@ export function DataSource() {
   async function handleSave() {
     setSaving(true)
     setSaveMsg('')
-    await window.api.datasource.saveConfig({
+    const result = await window.api.datasource.saveConfig({
       tushareToken: tushareToken.trim() || undefined,
-      tushareEnabled
+      tushareEnabled,
+      tushareApiUrl: tushareApiUrl.trim()
     })
     setSaving(false)
+    if (result && 'ok' in result && result.ok === false) {
+      setSaveMsg(result.message)
+      return
+    }
     setSaveMsg('已保存')
     if (tushareToken.trim()) setHasSavedToken(true)
     setTimeout(() => setSaveMsg(''), 2000)
@@ -63,6 +79,23 @@ export function DataSource() {
         <div className="text-xs text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-800 rounded p-3 leading-relaxed">
           获取步骤：①&nbsp;注册 Tushare 账号并完成邮箱验证 &nbsp;②&nbsp;登录后进入个人中心获取 Token &nbsp;③&nbsp;粘贴至下方输入框&nbsp;
           <span className="text-gray-500 dark:text-gray-400 dark:text-gray-500">（免费用户有调用频率限制，积分升级可获更高权限）</span>
+          <br />
+          若 Token 需经自定义网关访问，请填写下方 API 地址（对应 Python SDK 的&nbsp;
+          <code className="text-[10px]">_DataApi__http_url</code>
+          ）；留空则使用官方默认地址。
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+            API 地址
+          </label>
+          <input
+            type="text"
+            value={tushareApiUrl}
+            onChange={(e) => { setTushareApiUrl(e.target.value); setValidateStatus('idle') }}
+            placeholder={`留空默认 ${DEFAULT_API_URL_PLACEHOLDER}`}
+            className="w-full text-xs border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
         </div>
 
         <div>
@@ -100,7 +133,11 @@ export function DataSource() {
           >
             {saving ? '保存中…' : '保存配置'}
           </button>
-          {saveMsg && <span className="text-xs text-green-600">{saveMsg}</span>}
+          {saveMsg && (
+            <span className={`text-xs ${saveMsg === '已保存' ? 'text-green-600' : 'text-red-500'}`}>
+              {saveMsg}
+            </span>
+          )}
         </div>
       </div>
     </div>

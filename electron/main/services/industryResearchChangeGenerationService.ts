@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'crypto'
 import type Database from 'better-sqlite3'
-import { getSession } from '../database/aiAnalysisSessionRepository'
+import { getSession, getSessionMessages } from '../database/aiAnalysisSessionRepository'
+import {
+  DiscussionArchiveIntegrityError,
+  loadFullDiscussionMessages,
+} from '../database/discussionMessageArchiveRepository'
 import {
   getCandidateBatch,
   getCandidateBatchByIdempotencyKey,
@@ -68,7 +72,9 @@ interface ModelOutput {
 export interface PrepareDiscussionChangesInput {
   requestId: string
   sessionId: number
-  throughMessageIndex: number
+  throughMessageSequence?: number
+  /** Legacy renderer/index callers are accepted only as a compatibility boundary. */
+  throughMessageIndex?: number
   projectId?: string | null
   baseSnapshotId?: string | null
 }
@@ -211,6 +217,8 @@ export function candidateBatchSummary(row: IndustryResearchCandidateBatchRow) {
     baseSnapshotId: row.base_snapshot_id,
     messageStartIndex: row.message_start_index,
     messageEndIndex: row.message_end_index,
+    messageStartSequence: row.message_start_sequence,
+    messageEndSequence: row.message_end_sequence,
     status: row.status,
     changeSetCount: row.change_set_count,
     candidateCount: row.candidate_count,
@@ -241,6 +249,8 @@ export function changeSetSummary(row: IndustryResearchChangeSetRow) {
     sourceSessionId: row.source_session_id,
     messageStartIndex: row.message_start_index,
     messageEndIndex: row.message_end_index,
+    messageStartSequence: row.message_start_sequence,
+    messageEndSequence: row.message_end_sequence,
   }
 }
 
@@ -272,11 +282,47 @@ export async function prepareDiscussionChanges(
   if (!context) throw new ResearchDiscussionError('NOT_FOUND', '研究讨论不存在')
   const session = getSession(db, input.sessionId)
   if (!session) throw new ResearchDiscussionError('NOT_FOUND', 'AI 会话不存在')
-  const messages = session.messages ? safeJson<Array<{ role: string; content: string }>>(session.messages, []) : []
-  if (!Number.isInteger(input.throughMessageIndex) || input.throughMessageIndex < 0 || input.throughMessageIndex >= messages.length) {
+  const hotMessages = getSessionMessages(db, input.sessionId)
+  let messages: ReturnType<typeof loadFullDiscussionMessages>
+  try {
+    messages = loadFullDiscussionMessages(db, input.sessionId, hotMessages)
+  } catch (error) {
+    if (error instanceof DiscussionArchiveIntegrityError) {
+      throw new ResearchDiscussionError(
+        error.code,
+        `讨论归档第 ${error.messageSequence} 条消息损坏，请修复归档后重试`,
+      )
+    }
+    throw error
+  }
+  if (!messages.length) throw new ResearchDiscussionError('MESSAGE_RANGE_INVALID', '讨论暂无可整理消息')
+
+  let throughMessageSequence = input.throughMessageSequence
+  if (throughMessageSequence == null && input.throughMessageIndex != null) {
+    if (!Number.isInteger(input.throughMessageIndex) || input.throughMessageIndex < 0 || input.throughMessageIndex >= messages.length) {
+      throw new ResearchDiscussionError('MESSAGE_RANGE_INVALID', '整理消息范围无效')
+    }
+    throughMessageSequence = messages[input.throughMessageIndex].sequence
+  }
+  const resolvedThroughMessageSequence = typeof throughMessageSequence === 'number'
+    && Number.isInteger(throughMessageSequence)
+    && throughMessageSequence >= 0
+    ? throughMessageSequence
+    : null
+  if (resolvedThroughMessageSequence == null) {
     throw new ResearchDiscussionError('MESSAGE_RANGE_INVALID', '整理消息范围无效')
   }
-  if (context.summarized_through_message_index != null && input.throughMessageIndex <= context.summarized_through_message_index) {
+  const throughIndex = messages.findIndex((message) => message.sequence === resolvedThroughMessageSequence)
+  if (throughIndex < 0) throw new ResearchDiscussionError('MESSAGE_RANGE_INVALID', '整理消息范围无效')
+
+  const legacySummarizedSequence = context.summarized_through_message_sequence == null
+    && context.summarized_through_message_index != null
+    && context.summarized_through_message_index >= 0
+    && context.summarized_through_message_index < messages.length
+    ? messages[context.summarized_through_message_index].sequence
+    : null
+  const summarizedThroughSequence = context.summarized_through_message_sequence ?? legacySummarizedSequence
+  if (summarizedThroughSequence != null && resolvedThroughMessageSequence <= summarizedThroughSequence) {
     const existing = context.latest_batch_id ? getCandidateBatch(db, context.latest_batch_id) : null
     if (!existing) {
       return {
@@ -301,15 +347,20 @@ export async function prepareDiscussionChanges(
   }
   const project = projectId ? getResearchProject(db, projectId) : null
   if (projectId && !project) throw new ResearchDiscussionError('NOT_FOUND', '目标研究项目不存在')
-  const messageStartIndex = context.summarized_through_message_index == null
-    ? 0
-    : Math.min(context.summarized_through_message_index + 1, input.throughMessageIndex)
-  const selectedMessages = messages.slice(messageStartIndex, input.throughMessageIndex + 1)
+  const messageStartSequence = summarizedThroughSequence == null
+    ? messages[0].sequence
+    : summarizedThroughSequence + 1
+  const selectedMessages = messages.filter((message) => (
+    message.sequence >= messageStartSequence && message.sequence <= resolvedThroughMessageSequence
+  ))
+  if (!selectedMessages.length) throw new ResearchDiscussionError('MESSAGE_RANGE_INVALID', '整理消息范围无效')
+  const messageStartIndex = messages.findIndex((message) => message.sequence === selectedMessages[0].sequence)
+  const messageEndIndex = throughIndex
   const baseSnapshotId = input.baseSnapshotId === undefined ? context.base_snapshot_id : input.baseSnapshotId
   const key = createHash('sha256').update(JSON.stringify({
     sessionId: input.sessionId,
-    messageStartIndex,
-    messageEndIndex: input.throughMessageIndex,
+    messageStartSequence: selectedMessages[0].sequence,
+    messageEndSequence: resolvedThroughMessageSequence,
     contextHash: context.origin_content_hash,
     projectId,
     baseSnapshotId,
@@ -333,7 +384,7 @@ export async function prepareDiscussionChanges(
     result = await callAI(db, {
       prompt: buildPrompt({
         context: safeJson(context.context_snapshot_json, {}),
-        messages: selectedMessages,
+        messages: selectedMessages.map((message) => ({ role: message.role, content: message.content })),
         project,
       }),
     })
@@ -349,7 +400,7 @@ export async function prepareDiscussionChanges(
     : []
   if (parsed.noMaterialChange === true || normalized.length === 0) {
     updateResearchDiscussionProgress(db, input.sessionId, {
-      summarizedThroughMessageIndex: input.throughMessageIndex,
+      summarizedThroughMessageSequence: resolvedThroughMessageSequence,
       degradedReason: null,
     })
     return {
@@ -369,7 +420,9 @@ export async function prepareDiscussionChanges(
     projectId: projectId ?? null,
     baseSnapshotId: baseSnapshotId ?? null,
     messageStartIndex,
-    messageEndIndex: input.throughMessageIndex,
+    messageEndIndex,
+    messageStartSequence: selectedMessages[0].sequence,
+    messageEndSequence: resolvedThroughMessageSequence,
     contextHash: context.origin_content_hash,
     provider: result.provider,
     model: result.model,
@@ -380,7 +433,7 @@ export async function prepareDiscussionChanges(
     status: 'changes_ready',
     projectId: projectId ?? null,
     baseSnapshotId: baseSnapshotId ?? null,
-    summarizedThroughMessageIndex: input.throughMessageIndex,
+    summarizedThroughMessageSequence: resolvedThroughMessageSequence,
     latestBatchId: batch.id,
     degradedReason: null,
   })

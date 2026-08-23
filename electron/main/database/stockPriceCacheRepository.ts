@@ -99,6 +99,31 @@ export function insertPricesIfMissing(db: Database.Database, rows: StockPriceCac
   insertMany(rows)
 }
 
+/**
+ * 仅补写 amount IS NULL 的行（不覆盖已有成交额）。
+ * 用于日线同步已写入 OHLCV、但先前 INSERT OR IGNORE / 分时回填留下空额的情况。
+ */
+export function patchMissingAmounts(
+  db: Database.Database,
+  rows: Array<{ stockCode: string; tradeDate: string; amount: number; fetchedAt?: number }>,
+): number {
+  const stmt = db.prepare(`
+    UPDATE stock_price_cache
+       SET amount = ?, fetchedAt = COALESCE(?, fetchedAt)
+     WHERE stockCode = ? AND tradeDate = ? AND amount IS NULL
+  `)
+  let patched = 0
+  const run = db.transaction((items: typeof rows) => {
+    for (const r of items) {
+      if (!(r.amount > 0)) continue
+      const result = stmt.run(r.amount, r.fetchedAt ?? null, r.stockCode, r.tradeDate)
+      patched += Number(result.changes ?? 0)
+    }
+  })
+  run(rows)
+  return patched
+}
+
 /** Returns true if any cached row for this stock within the given date range is missing amount data */
 export function hasMissingAmount(db: Database.Database, stockCode: string, startDate: string): boolean {
   const row = db

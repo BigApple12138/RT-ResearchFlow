@@ -12,14 +12,39 @@
  */
 
 import { ipcMain, BrowserWindow } from 'electron'
+import type Database from 'better-sqlite3'
 import { getDb } from '../database/db'
 import {
   batchAddTrendWatchStocks,
+  clearTrendWatchlist,
   removeTrendWatchStock,
   getAllTrendWatchStocks,
   updateTrendWatchGroupTag,
   updateTrendWatchNotes,
 } from '../database/trendWatchlistRepository'
+import {
+  deleteWatchlistCategoryMapRule,
+  listWatchlistCategoryMapRules,
+  upsertWatchlistCategoryMapRule,
+  type UpsertWatchlistCategoryMapRuleInput,
+} from '../database/watchlistCategoryMapRepository'
+import {
+  deleteWatchlistCategoryNode,
+  listWatchlistCategoryNodes,
+  listWatchlistCategoryTree,
+  renameWatchlistCategoryNode,
+  upsertWatchlistCategoryNode,
+} from '../database/watchlistCategoryTreeRepository'
+import { suggestWatchlistCategoryFromDb } from '../services/watchlistCategorySuggestService'
+import {
+  listTrackedTsCodes,
+  listWatchlistCandidates,
+} from '../services/watchlistCandidateBridgeService'
+import {
+  adoptWebCategorySuggestion,
+  webSuggestWatchlistCategory,
+} from '../services/watchlistCategoryWebSuggestService'
+import type { WatchlistCategoryMatchField } from '../services/watchlistCategoryMap'
 import {
   getTrendScoreSnapshot,
   getTrendAlerts,
@@ -31,11 +56,235 @@ import {
   isTrendSyncRunning,
   syncTrendDailyData,
 } from '../services/trendSyncService'
-import { getTrendWorkbench } from '../services/trendWorkbenchService'
+import { getTrendWorkbench, type TrendWorkbenchSnapshot } from '../services/trendWorkbenchService'
+import {
+  reviewStructure,
+  type TrendStructureReviewDependencies,
+  type TrendStructureReviewResult,
+} from '../services/trendStructureReviewService'
+import {
+  deriveTrendReviewSource,
+  normalizeTrendTsCode,
+  type AiTrendVerdict,
+} from '../services/trendStructureReviewTypes'
+import {
+  startTrendReviewDiscussion,
+  type StartTrendReviewDiscussionInput,
+} from '../services/trendReviewDiscussionBridge'
+import { ResearchDiscussionError, type ResearchDiscussionReturnTarget } from '../services/researchDiscussionContextService'
 import { getDataSourceConfig } from '../database/dataSourceRepository'
 import { decryptApiKey } from '../utils/apiKeyEncryption'
 import { getLastNTradingDays } from '../database/tradeCalRepository'
 import { searchStockBasicByKeyword } from '../database/stockBasicCacheRepository'
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const TS_CODE_PATTERN = /^\d{6}(?:\.(?:SH|SZ|BJ))?$/i
+
+export interface TrendReviewDto {
+  verdict: AiTrendVerdict
+  rationale: string
+  focusPoints: string[]
+  stale: boolean
+  scoreDate: string
+  factsHash: string
+  createdAt: number
+  source: 'gate' | 'model'
+}
+
+export interface TrendReviewBatchResult {
+  tsCode: string
+  ok: boolean
+  review?: TrendReviewDto
+  error?: string
+}
+
+export interface TrendReviewBatchPayload {
+  requestId: string
+  tsCodes: string[]
+  forceModelRefresh?: boolean
+}
+
+export type TrendReviewProgressStatus = 'running' | 'succeeded' | 'failed'
+
+export interface TrendReviewProgress {
+  batchRequestId: string
+  tsCode: string
+  index: number
+  total: number
+  status: TrendReviewProgressStatus
+  review?: TrendReviewDto
+  error?: string
+}
+
+interface TrendReviewBatchDependencies {
+  getWorkbench?: (db: Database.Database) => TrendWorkbenchSnapshot
+  reviewStructure?: typeof reviewStructure
+  reviewDependencies?: Omit<TrendStructureReviewDependencies, 'getWorkbench'>
+  onProgress?: (progress: TrendReviewProgress) => void
+}
+
+export async function runTrendReviewStructureBatch(
+  db: Database.Database,
+  payload: unknown,
+  dependencies: TrendReviewBatchDependencies = {},
+): Promise<TrendReviewBatchResult[]> {
+  const { requestId, tsCodes, forceModelRefresh } = validateBatchPayload(payload)
+  const snapshot = (dependencies.getWorkbench ?? getTrendWorkbench)(db)
+  const workbenchCodes = new Set(snapshot.items.map((item) => normalizeTrendTsCode(item.tsCode)))
+  const runReview = dependencies.reviewStructure ?? reviewStructure
+  const results: TrendReviewBatchResult[] = []
+
+  for (const [index, rawCode] of tsCodes.entries()) {
+    const tsCode = normalizeTrendTsCode(rawCode)
+    dependencies.onProgress?.({
+      batchRequestId: requestId,
+      tsCode,
+      index,
+      total: tsCodes.length,
+      status: 'running',
+    })
+    if (!workbenchCodes.has(tsCode)) {
+      const error = 'NOT_IN_WORKBENCH'
+      results.push({ tsCode, ok: false, error })
+      dependencies.onProgress?.({
+        batchRequestId: requestId,
+        tsCode,
+        index,
+        total: tsCodes.length,
+        status: 'failed',
+        error,
+      })
+      continue
+    }
+
+    try {
+      const result = await runReview(
+        db,
+        { requestId: `${requestId}:${tsCode}`, tsCode, forceModelRefresh },
+        {
+          ...(dependencies.reviewDependencies ?? {}),
+          getWorkbench: () => snapshot,
+        },
+      )
+      const review = toTrendReviewDto(result)
+      results.push({ tsCode, ok: true, review })
+      dependencies.onProgress?.({
+        batchRequestId: requestId,
+        tsCode,
+        index,
+        total: tsCodes.length,
+        status: 'succeeded',
+        review,
+      })
+    } catch (error) {
+      const message = errorMessage(error)
+      results.push({ tsCode, ok: false, error: message })
+      dependencies.onProgress?.({
+        batchRequestId: requestId,
+        tsCode,
+        index,
+        total: tsCodes.length,
+        status: 'failed',
+        error: message,
+      })
+    }
+  }
+
+  return results
+}
+
+function validateBatchPayload(payload: unknown): TrendReviewBatchPayload {
+  if (!isRecord(payload)
+    || typeof payload.requestId !== 'string'
+    || !UUID_PATTERN.test(payload.requestId)
+    || !Array.isArray(payload.tsCodes)
+    || payload.tsCodes.length < 1
+    || payload.tsCodes.length > 20
+    || payload.tsCodes.some((value) => typeof value !== 'string' || !TS_CODE_PATTERN.test(value.trim()))
+    || (payload.forceModelRefresh !== undefined && typeof payload.forceModelRefresh !== 'boolean')) {
+    throw new Error('INVALID_PARAM')
+  }
+  return {
+    requestId: payload.requestId,
+    tsCodes: payload.tsCodes.map((value) => value.trim().toUpperCase()),
+    forceModelRefresh: payload.forceModelRefresh === true,
+  }
+}
+
+function validateSinglePayload(payload: unknown): { requestId: string; tsCode: string; forceModelRefresh?: boolean } {
+  if (!isRecord(payload)
+    || typeof payload.requestId !== 'string'
+    || !UUID_PATTERN.test(payload.requestId)
+    || typeof payload.tsCode !== 'string'
+    || !TS_CODE_PATTERN.test(payload.tsCode.trim())
+    || (payload.forceModelRefresh !== undefined && typeof payload.forceModelRefresh !== 'boolean')) {
+    throw new Error('INVALID_PARAM')
+  }
+  return {
+    requestId: payload.requestId,
+    tsCode: normalizeTrendTsCode(payload.tsCode),
+    forceModelRefresh: payload.forceModelRefresh === true,
+  }
+}
+
+function toTrendReviewDto(result: TrendStructureReviewResult): TrendReviewDto {
+  return {
+    verdict: result.review.verdict,
+    rationale: result.review.rationale,
+    focusPoints: [...result.review.focusPoints],
+    stale: result.stale,
+    scoreDate: result.review.scoreDate,
+    factsHash: result.review.factsHash,
+    createdAt: result.review.createdAt,
+    source: deriveTrendReviewSource(result.review.provider, result.review.model),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function validateTrendReviewDiscussionPayload(payload: unknown): StartTrendReviewDiscussionInput {
+  if (!isRecord(payload)
+    || typeof payload.requestId !== 'string'
+    || !UUID_PATTERN.test(payload.requestId)
+    || typeof payload.tsCode !== 'string'
+    || !TS_CODE_PATTERN.test(payload.tsCode.trim())
+    || typeof payload.scoreDate !== 'string'
+    || !/^\d{8}$/.test(payload.scoreDate)
+    || typeof payload.factsHash !== 'string'
+    || !/^[a-f0-9]{64}$/i.test(payload.factsHash)
+    || !isRecord(payload.returnTarget)
+    || typeof payload.returnTarget.tab !== 'string'
+    || !payload.returnTarget.tab.trim()
+    || payload.returnTarget.tab.length > 80) {
+    throw new Error('INVALID_PARAM')
+  }
+  return {
+    requestId: payload.requestId,
+    tsCode: payload.tsCode.trim().toUpperCase(),
+    scoreDate: payload.scoreDate,
+    factsHash: payload.factsHash.toLowerCase(),
+    initialQuestion: typeof payload.initialQuestion === 'string' ? payload.initialQuestion.slice(0, 4_000) : undefined,
+    returnTarget: sanitizeReturnTarget(payload.returnTarget),
+  }
+}
+
+function sanitizeReturnTarget(value: Record<string, unknown>): ResearchDiscussionReturnTarget {
+  return {
+    tab: String(value.tab).trim().slice(0, 80),
+    subTab: typeof value.subTab === 'string' ? value.subTab.slice(0, 80) : undefined,
+    entityId: typeof value.entityId === 'string' ? value.entityId.slice(0, 128) : undefined,
+    stateKey: typeof value.stateKey === 'string' ? value.stateKey.slice(0, 128) : undefined,
+    scrollTop: typeof value.scrollTop === 'number' && Number.isFinite(value.scrollTop) && value.scrollTop >= 0
+      ? Math.min(10_000_000, Math.trunc(value.scrollTop))
+      : undefined,
+  }
+}
 
 export function registerTrendHandlers(): void {
   // 启动时清理 trend_watchlist 中的脏 tsCode（含非 ASCII 字符如 U+2019 右单引号）
@@ -111,6 +360,28 @@ export function registerTrendHandlers(): void {
     }
   )
 
+  ipcMain.handle('trend:listTrackedTsCodes', () => {
+    try {
+      return { ok: true, codes: listTrackedTsCodes(getDb()) }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:listWatchlistCandidates', (_event, payload?: { limit?: number; lookbackDays?: number }) => {
+    try {
+      const candidates = listWatchlistCandidates(getDb(), {
+        limit: payload?.limit,
+        lookbackDays: payload?.lookbackDays,
+      })
+      return { ok: true, candidates }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
   // ──────────────────────────────────────────────────────────────────────
   // trend:removeStock — 移除股票（若指定 subCategory 则只删该赛道条目）
   // ──────────────────────────────────────────────────────────────────────
@@ -127,6 +398,19 @@ export function registerTrendHandlers(): void {
       }
     }
   )
+
+  // ──────────────────────────────────────────────────────────────────────
+  // trend:clearWatchlist — 清空观察池全部登记
+  // ──────────────────────────────────────────────────────────────────────
+  ipcMain.handle('trend:clearWatchlist', () => {
+    try {
+      const result = clearTrendWatchlist(getDb())
+      return { ok: true, ...result }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
 
   // ──────────────────────────────────────────────────────────────────────
   // trend:updateNotes — 更新指定 (tsCode, subCategory) 条目的备注
@@ -186,6 +470,72 @@ export function registerTrendHandlers(): void {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:reviewStructure', async (_event, payload: unknown) => {
+    try {
+      const input = validateSinglePayload(payload)
+      const db = getDb()
+      const snapshot = getTrendWorkbench(db)
+      const belongsToWorkbench = snapshot.items.some((item) => normalizeTrendTsCode(item.tsCode) === input.tsCode)
+      if (!belongsToWorkbench) return { ok: false, error: 'NOT_IN_WORKBENCH' }
+      const result = await reviewStructure(db, input, { getWorkbench: () => snapshot })
+      return { ok: true, data: toTrendReviewDto(result) }
+    } catch (error) {
+      const message = errorMessage(error)
+      return {
+        ok: false,
+        error: message === 'INVALID_PARAM' ? 'INVALID_PARAM' : 'AI_ERROR',
+        message,
+      }
+    }
+  })
+
+  ipcMain.handle('trend:reviewStructureBatch', async (_event, payload: unknown) => {
+    try {
+      const sender = _event.sender
+      return {
+        ok: true,
+        data: await runTrendReviewStructureBatch(getDb(), payload, {
+          onProgress: (progress) => {
+            if (!sender.isDestroyed()) sender.send('trend:reviewProgress', progress)
+          },
+        }),
+      }
+    } catch (error) {
+      const message = errorMessage(error)
+      return { ok: false, error: message === 'INVALID_PARAM' ? 'INVALID_PARAM' : 'DB_ERROR', message }
+    }
+  })
+
+  ipcMain.handle('trend:openStructureReviewDiscussion', (_event, payload: unknown) => {
+    try {
+      const result = startTrendReviewDiscussion(getDb(), validateTrendReviewDiscussionPayload(payload))
+      const row = result.session
+      return {
+        ok: true,
+        data: {
+          ...result,
+          session: {
+            id: row.id,
+            createdAt: new Date(row.createdAt).toISOString(),
+            provider: row.provider,
+            model: row.model,
+            articleUrls: JSON.parse(row.articleUrls) as string[],
+            promptSent: row.promptSent,
+            response: row.response,
+            responseRound2: row.responseRound2 ?? null,
+            messages: row.messages ? JSON.parse(row.messages) : [],
+            isError: row.isError === 1,
+            scanRunId: row.scanRunId,
+          },
+        },
+      }
+    } catch (error) {
+      if (error instanceof ResearchDiscussionError) return { ok: false, code: error.code, message: error.message }
+      const message = errorMessage(error)
+      return { ok: false, code: message === 'INVALID_PARAM' ? 'INVALID_PARAM' : 'DB_ERROR', message }
     }
   })
 
@@ -272,4 +622,199 @@ export function registerTrendHandlers(): void {
       }
     }
   })
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 观察池分类：东财映射 suggest + 规则维护（一期）
+  // ──────────────────────────────────────────────────────────────────────
+  ipcMain.handle('trend:suggestWatchlistCategory', async (_event, payload: { tsCode?: string } = {}) => {
+    try {
+      const tsCode = typeof payload.tsCode === 'string' ? payload.tsCode.trim() : ''
+      if (!tsCode) return { ok: false, error: 'INVALID_PARAM', message: 'tsCode required' }
+      const data = await suggestWatchlistCategoryFromDb(getDb(), tsCode)
+      return { ok: true, data }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'SUGGEST_FAILED', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:listCategoryMapRules', () => {
+    try {
+      return { ok: true, data: listWatchlistCategoryMapRules(getDb()) }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:upsertCategoryMapRule', (_event, payload: UpsertWatchlistCategoryMapRuleInput) => {
+    try {
+      const matchField = payload?.matchField as WatchlistCategoryMatchField
+      const result = upsertWatchlistCategoryMapRule(getDb(), {
+        id: payload?.id,
+        keyword: payload?.keyword,
+        matchField,
+        category: payload?.category,
+        subCategory: payload?.subCategory ?? '',
+        priority: payload?.priority,
+        enabled: payload?.enabled,
+      })
+      if (!result.ok) return { ok: false, error: result.code, message: result.message }
+      return { ok: true, data: result.rule }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle('trend:deleteCategoryMapRule', (_event, payload: { id?: number } = {}) => {
+    try {
+      const result = deleteWatchlistCategoryMapRule(getDb(), Number(payload.id))
+      if (!result.ok) return { ok: false, error: result.code, message: result.message }
+      return { ok: true }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 观察池分类：主题树维护 + 联网补充（二期）
+  // ──────────────────────────────────────────────────────────────────────
+  ipcMain.handle('trend:listCategoryTree', () => {
+    try {
+      const db = getDb()
+      return {
+        ok: true,
+        data: {
+          tree: listWatchlistCategoryTree(db, { enabledOnly: true }),
+          nodes: listWatchlistCategoryNodes(db),
+        },
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: 'DB_ERROR', message: msg }
+    }
+  })
+
+  ipcMain.handle(
+    'trend:upsertCategoryNode',
+    (_event, payload: { category?: string; subCategory?: string; sortOrder?: number; enabled?: boolean } = {}) => {
+      try {
+        const result = upsertWatchlistCategoryNode(getDb(), {
+          category: payload.category ?? '',
+          subCategory: payload.subCategory ?? '',
+          sortOrder: payload.sortOrder,
+          enabled: payload.enabled,
+        })
+        if (!result.ok) return { ok: false, error: result.code, message: result.message }
+        return { ok: true, data: result.node }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:deleteCategoryNode',
+    (_event, payload: { category?: string; subCategory?: string; clearReferences?: boolean } = {}) => {
+      try {
+        const result = deleteWatchlistCategoryNode(getDb(), {
+          category: payload.category ?? '',
+          subCategory: payload.subCategory,
+          clearReferences: payload.clearReferences === true,
+        })
+        if (!result.ok) {
+          return {
+            ok: false,
+            error: result.code,
+            message: result.message,
+            refs: result.refs,
+          }
+        }
+        return { ok: true }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:renameCategoryNode',
+    (
+      _event,
+      payload: {
+        from?: { category?: string; subCategory?: string }
+        to?: { category?: string; subCategory?: string }
+      } = {},
+    ) => {
+      try {
+        const fromCategory = payload.from?.category ?? ''
+        const toCategory = payload.to?.category ?? ''
+        const fromHasSub = payload.from != null && 'subCategory' in payload.from
+        const toHasSub = payload.to != null && 'subCategory' in payload.to
+        const result = renameWatchlistCategoryNode(getDb(), {
+          from: fromHasSub
+            ? { category: fromCategory, subCategory: payload.from?.subCategory }
+            : { category: fromCategory },
+          to: toHasSub
+            ? { category: toCategory, subCategory: payload.to?.subCategory }
+            : { category: toCategory },
+        })
+        if (!result.ok) return { ok: false, error: result.code, message: result.message }
+        return { ok: true }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:webSuggestWatchlistCategory',
+    async (_event, payload: { tsCode?: string; name?: string } = {}) => {
+      try {
+        const data = await webSuggestWatchlistCategory(getDb(), {
+          tsCode: payload.tsCode ?? '',
+          name: payload.name,
+        })
+        if (data.status === 'error') {
+          return { ok: false, error: 'WEB_SUGGEST_FAILED', message: data.error ?? '联网补充失败', data }
+        }
+        return { ok: true, data }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'WEB_SUGGEST_FAILED', message: msg }
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'trend:adoptWebCategorySuggestion',
+    (
+      _event,
+      payload: {
+        category?: string
+        subCategory?: string
+        createMapRule?: boolean
+        keyword?: string
+      } = {},
+    ) => {
+      try {
+        const result = adoptWebCategorySuggestion(getDb(), {
+          category: payload.category ?? '',
+          subCategory: payload.subCategory ?? '',
+          createMapRule: payload.createMapRule === true,
+          keyword: payload.keyword,
+        })
+        if (!result.ok) return { ok: false, error: result.code, message: result.message }
+        return { ok: true, data: { category: result.category, subCategory: result.subCategory } }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { ok: false, error: 'DB_ERROR', message: msg }
+      }
+    },
+  )
 }

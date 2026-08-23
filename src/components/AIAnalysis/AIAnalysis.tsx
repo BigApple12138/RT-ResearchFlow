@@ -23,7 +23,30 @@ import { prepareRound2MarketMarkdown } from './round2MarketVisualModel'
 import { AppConfirmDialog } from '../shared/AppConfirmDialog'
 import { publishAppToast } from '../shared/appToastBus'
 import { ResearchAuditTrace, type ResearchAuditTraceView } from '../shared/ResearchAuditTrace'
-import { ResearchAgentPanel } from './ResearchAgentPanel'
+import { ResearchAgentPanel, type ResearchAgentTimelineContext } from './ResearchAgentPanel'
+import { DeepResearchTurnView } from './DeepResearchTurnView'
+import { detectResearchAgentIntent } from './researchAgentIntent'
+import {
+  buildAgentTimelineModel,
+  deriveAgentStatusScroll,
+  type AgentTimelineEvent,
+} from './agentTimelineModel'
+import { AgentStatusScroll } from './AgentStatusScroll'
+import {
+  buildCompactionCheckpointListModel,
+  type CompactionCheckpointItem,
+} from './compactionCheckpointListModel'
+import { loadSessionDrawerPrefs, saveSessionDrawerPrefs, type SessionDrawerKind } from './sessionDrawerPrefs'
+import { normalizeAshareTsCode } from '../../utils/normalizeAshareTsCode'
+
+/** 探测 preload 是否暴露 agentTurn；有则走 Agent 主路径。 */
+function isAgentTurnAvailable(): boolean {
+  try {
+    return typeof (window.api?.ai as { agentTurn?: unknown } | undefined)?.agentTurn === 'function'
+  } catch {
+    return false
+  }
+}
 
 function extractStockCodes(text: string): string[] {
   const codes: string[] = []
@@ -86,6 +109,8 @@ function MarkdownComponents() {
 interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
+  sequence?: number
+  requestId?: string
   researchAgentRunId?: string
   webSearchTrace?: ConversationWebSearchTrace
   researchTrace?: ResearchAuditTraceView | null
@@ -434,6 +459,14 @@ export function AIAnalysis() {
   const [portfolioByCode, setPortfolioByCode] = useState<Map<string, string>>(new Map())
   const [followUpInput, setFollowUpInput] = useState('')
   const [sendingFollowUp, setSendingFollowUp] = useState(false)
+  const [followUpDraft, setFollowUpDraft] = useState<{
+    requestId: string
+    sessionId: number
+    accumulated: string
+    streaming: boolean
+    reason?: 'web_search' | 'buffered'
+  } | null>(null)
+  const followUpRequestRef = useRef<string | null>(null)
   const [showIndustryAnalysis, setShowIndustryAnalysis] = useState(false)
   const [industryAnalysisText, setIndustryAnalysisText] = useState('')
   const [industryChainId, setIndustryChainId] = useState<string | undefined>()
@@ -443,8 +476,49 @@ export function AIAnalysis() {
   const [sessionQuery, setSessionQuery] = useState('')
   const [newDiscussionOpen, setNewDiscussionOpen] = useState(false)
   const [updatingContext, setUpdatingContext] = useState(false)
+  const [compactingContext, setCompactingContext] = useState(false)
+  const [restoringCompaction, setRestoringCompaction] = useState(false)
+  const [restoreCompactionDialogOpen, setRestoreCompactionDialogOpen] = useState(false)
+  const [compactionCheckpoints, setCompactionCheckpoints] = useState<CompactionCheckpointItem[]>([])
+  const [trackedTsCodes, setTrackedTsCodes] = useState<Set<string>>(() => new Set())
+  const [watchlistAddingCode, setWatchlistAddingCode] = useState<string | null>(null)
+  const [agentSuggest, setAgentSuggest] = useState<null | { intent: 'deep_research' | 'industry_research'; question: string }>(null)
+  const [agentOpenSignal, setAgentOpenSignal] = useState(0)
+  const [preferredAgentQuestion, setPreferredAgentQuestion] = useState<string | null>(null)
+  const [sessionAgentBusy, setSessionAgentBusy] = useState(false)
+  const [researchAgentTimeline, setResearchAgentTimeline] = useState<ResearchAgentTimelineContext | null>(null)
+  const handleResearchAgentTimeline = useCallback((ctx: ResearchAgentTimelineContext | null) => {
+    setResearchAgentTimeline(ctx)
+  }, [])
+  const [agentEvents, setAgentEvents] = useState<AgentTimelineEvent[]>([])
+  const [agentRequestId, setAgentRequestId] = useState<string | null>(null)
+  const [confirmingHitl, setConfirmingHitl] = useState(false)
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(() => loadSessionDrawerPrefs('discussion').leftOpen)
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(() => loadSessionDrawerPrefs('discussion').rightOpen)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const agentRequestIdRef = useRef<string | null>(null)
+  const detailIdRef = useRef<number | null>(null)
+  const agentPathEnabled = isAgentTurnAvailable()
+  const agentTimeline = useMemo(
+    () => buildAgentTimelineModel(agentEvents, agentRequestId ? { requestId: agentRequestId } : {}),
+    [agentEvents, agentRequestId],
+  )
+  const agentStatusScroll = useMemo(
+    () => deriveAgentStatusScroll(agentTimeline),
+    [agentTimeline],
+  )
+
+  const sessionDrawerKind: SessionDrawerKind | null = detail
+    ? (detail.discussion ? 'discussion' : 'article')
+    : null
+
+  useEffect(() => {
+    if (!sessionDrawerKind) return
+    const prefs = loadSessionDrawerPrefs(sessionDrawerKind)
+    setLeftDrawerOpen(prefs.leftOpen)
+    setRightDrawerOpen(prefs.rightOpen)
+  }, [sessionDrawerKind, detail?.id])
 
   const insight = useMemo(() => deriveInsight(detail), [detail])
   const round2Segments = useMemo(() => {
@@ -479,7 +553,19 @@ export function AIAnalysis() {
       if (!result.ok || !result.data) return
       setPortfolioByCode(new Map(result.data.map((item) => [stockKey(item.tsCode), item.stockName])))
     })
+    void window.api.trend.listTrackedTsCodes().then((response) => {
+      if (!response.ok || !response.codes) return
+      setTrackedTsCodes(new Set(response.codes.map((code) => normalizeAshareTsCode(code))))
+    }).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    if (!detail?.discussion) {
+      setCompactionCheckpoints([])
+      return
+    }
+    void refreshCompactionCheckpoints(detail.id)
+  }, [detail?.id, detail?.discussion?.contextCompaction?.id, detail?.discussion?.contextCompaction?.coveredThroughSequence])
 
   useEffect(() => {
     const unsubscribe = window.api.ai.onTushareNotConfigured(() => {
@@ -489,20 +575,98 @@ export function AIAnalysis() {
   }, [])
 
   useEffect(() => {
-    if (pendingDiscussionSessionId != null) {
-      if (!sessionsReady) return
-      if (aiSessions.some((session) => session.id === pendingDiscussionSessionId)) {
-        void handleSelectSession(pendingDiscussionSessionId)
-        clearPendingDiscussion()
+    if (!window.api.ai.onFollowUpDelta) return
+    const unsubscribe = window.api.ai.onFollowUpDelta((event) => {
+      const activeId = followUpRequestRef.current
+      if (!activeId || event.requestId !== activeId) return
+      if (event.type === 'start') {
+        setFollowUpDraft({
+          requestId: event.requestId,
+          sessionId: event.sessionId,
+          accumulated: '',
+          streaming: event.streaming !== false,
+          reason: event.reason,
+        })
         return
       }
-      clearPendingDiscussion()
-      showToast('来源讨论已删除，已接受的研究版本仍然保留。')
+      if (event.type === 'reset') {
+        setFollowUpDraft((prev) => prev && prev.requestId === event.requestId
+          ? { ...prev, accumulated: '' }
+          : prev)
+        return
+      }
+      if (event.type === 'delta' && typeof event.accumulated === 'string') {
+        setFollowUpDraft((prev) => prev && prev.requestId === event.requestId
+          ? { ...prev, accumulated: event.accumulated!, streaming: true }
+          : prev)
+        window.requestAnimationFrame(() => {
+          scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+        })
+        return
+      }
+      if (event.type === 'error') {
+        setFollowUpDraft(null)
+      }
+    })
+    return () => { unsubscribe() }
+  }, [])
+
+  useEffect(() => {
+    agentRequestIdRef.current = agentRequestId
+  }, [agentRequestId])
+
+  useEffect(() => {
+    detailIdRef.current = detail?.id ?? null
+  }, [detail?.id])
+
+  useEffect(() => {
+    const api = window.api.ai as {
+      onAgentEvent?: (listener: (data: AgentTimelineEvent) => void) => () => void
     }
-    if (aiSessions.length > 0 && selectedId === null) {
-      handleSelectSession(aiSessions[0].id)
+    if (!api.onAgentEvent) return
+    const unsubscribe = api.onAgentEvent((event) => {
+      const currentRequestId = agentRequestIdRef.current
+      if (
+        currentRequestId
+        && event.requestId !== currentRequestId
+        && !String(event.requestId).startsWith('bridge:')
+      ) {
+        return
+      }
+      const currentDetailId = detailIdRef.current
+      if (currentDetailId != null && event.sessionId > 0 && event.sessionId !== currentDetailId) return
+      setAgentEvents((prev) => [...prev, event].slice(-200))
+    })
+    return () => { unsubscribe() }
+  }, [])
+
+  useEffect(() => {
+    if (pendingDiscussionSessionId == null || !sessionsReady) return
+    let cancelled = false
+    const selectIfPresent = () => {
+      const pending = useAppStore.getState().pendingResearchDiscussionSessionId
+      if (pending == null || cancelled) return true
+      if (useAppStore.getState().aiSessions.some((session) => session.id === pending)) {
+        void handleSelectSession(pending)
+        clearPendingDiscussion()
+        return true
+      }
+      return false
     }
-  }, [aiSessions, pendingDiscussionSessionId, sessionsReady])
+    if (selectIfPresent()) return
+    // 新建会话可能尚未进入列表：刷新后再选；仍没有才视为已删除。
+    void loadAISessions().then(() => {
+      if (cancelled || selectIfPresent()) return
+      window.setTimeout(() => {
+        if (cancelled || selectIfPresent()) return
+        if (useAppStore.getState().pendingResearchDiscussionSessionId != null) {
+          clearPendingDiscussion()
+          showToast('来源讨论已删除，已接受的研究版本仍然保留。')
+        }
+      }, 250)
+    })
+    return () => { cancelled = true }
+  }, [pendingDiscussionSessionId, sessionsReady, loadAISessions, clearPendingDiscussion])
 
   useEffect(() => {
     if (!isAnalyzing) {
@@ -528,11 +692,28 @@ export function AIAnalysis() {
     publishAppToast(message, 'info')
   }
 
+  async function refreshCompactionCheckpoints(sessionId: number) {
+    try {
+      const response = await window.api.ai.listDiscussionCompactionCheckpoints({
+        sessionId,
+        limit: 5,
+      })
+      if (!response.ok || !response.checkpoints) {
+        setCompactionCheckpoints([])
+        return
+      }
+      setCompactionCheckpoints(buildCompactionCheckpointListModel(response.checkpoints))
+    } catch {
+      setCompactionCheckpoints([])
+    }
+  }
+
   const refreshAfterResearchAgent = useCallback(async () => {
     if (selectedId == null) return
     const latest = await window.api.ai.getSession(selectedId)
     if (latest) setDetail(latest)
     await loadAISessions()
+    await refreshCompactionCheckpoints(selectedId)
   }, [loadAISessions, selectedId])
 
   async function handleSelectSession(id: number) {
@@ -543,6 +724,11 @@ export function AIAnalysis() {
       const sessionDetail = await window.api.ai.getSession(id)
       setDetail(sessionDetail)
       setActiveTab(sessionDetail?.discussion ? 'chat' : sessionDetail?.responseRound2 ? 'round2' : 'analysis')
+      if (sessionDetail?.discussion) {
+        await refreshCompactionCheckpoints(id)
+      } else {
+        setCompactionCheckpoints([])
+      }
     } finally {
       setLoadingDetail(false)
     }
@@ -651,32 +837,129 @@ export function AIAnalysis() {
   async function handleFollowUp() {
     const message = followUpInput.trim()
     if (!message || !detail) return
+    if (sessionAgentBusy) {
+      showToast('当前会话有深度研究进行中，请等待完成或取消后再追问。')
+      return
+    }
+    if (await captureResearchIntent(message)) return
     setSendingFollowUp(true)
     setFollowUpInput('')
     setActiveTab('chat')
+    const requestId = crypto.randomUUID()
+    followUpRequestRef.current = requestId
+    setFollowUpDraft(null)
 
     const optimisticMessages: ConversationMessage[] = [
       ...(detail.messages ?? []),
-      { role: 'user', content: message }
+      { role: 'user', content: message, requestId }
     ]
     setDetail((prev) => prev ? { ...prev, messages: optimisticMessages } : prev)
     setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 50)
 
     try {
-      const result = await window.api.ai.followUp(detail.id, message)
+      const result = await sendSessionMessage(detail.id, message, requestId)
       if (result?.messages) {
         const latest = await window.api.ai.getSession(detail.id)
         setDetail(latest ?? ((prev) => prev ? { ...prev, messages: result.messages } : prev))
         await loadAISessions()
+        if (result?.warning) showToast(result.warning)
         if (detail.discussion) clearResearchDiscussionDraft(detail.id)
       } else if (result?.error) {
         showToast(`追问失败：${result.error}`)
         setDetail((prev) => prev ? { ...prev, messages: detail.messages } : prev)
         setFollowUpInput(message)
       }
+    } catch (error) {
+      showToast(`追问失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setDetail((prev) => prev ? { ...prev, messages: detail.messages } : prev)
+      setFollowUpInput(message)
     } finally {
+      followUpRequestRef.current = null
+      setFollowUpDraft(null)
       setSendingFollowUp(false)
       setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 100)
+    }
+  }
+
+  async function handleAddCandidateToWatchlist(stock: { code: string; name?: string | null }) {
+    const tsCode = normalizeAshareTsCode(stock.code)
+    if (trackedTsCodes.has(tsCode) || watchlistAddingCode) return
+    setWatchlistAddingCode(stock.code)
+    try {
+      const result = await window.api.trend.addStocks([{
+        tsCode,
+        stockName: stock.name || portfolioByCode.get(stockKey(stock.code)) || tsCode,
+      }])
+      if (!result.ok) {
+        showToast(result.message || result.error || '加入观察池失败')
+        return
+      }
+      setTrackedTsCodes((prev) => new Set([...prev, tsCode]))
+      showToast(`已加入观察池：${stock.name || tsCode}`)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '加入观察池失败')
+    } finally {
+      setWatchlistAddingCode(null)
+    }
+  }
+
+  async function handleCompactDiscussionContext() {
+    if (!detail?.discussion || compactingContext || sendingFollowUp) return
+    setCompactingContext(true)
+    try {
+      const response = await window.api.ai.compactDiscussionContext({
+        requestId: crypto.randomUUID(),
+        sessionId: detail.id,
+        mode: 'manual',
+      })
+      if (!response.ok) {
+        showToast(response.message || response.error || '整理聊天上下文失败')
+        return
+      }
+      const latest = await window.api.ai.getSession(detail.id)
+      if (latest) setDetail(latest)
+      await refreshCompactionCheckpoints(detail.id)
+      await loadAISessions()
+      showToast(response.skippedReason
+        ? '当前没有足够的完整对话可整理。'
+        : `已整理 ${response.archivedCount ?? 0} 条聊天消息，保留最近对话。`)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '整理聊天上下文失败')
+    } finally {
+      setCompactingContext(false)
+    }
+  }
+
+  function handleRestoreLatestCompaction() {
+    if (!detail?.discussion || restoringCompaction || compactingContext || sendingFollowUp || sessionAgentBusy) return
+    if (compactionCheckpoints.length === 0) return
+    setRestoreCompactionDialogOpen(true)
+  }
+
+  async function confirmRestoreLatestCompaction() {
+    if (!detail?.discussion) return
+    setRestoringCompaction(true)
+    try {
+      const response = await window.api.ai.restoreDiscussionCompaction({
+        requestId: crypto.randomUUID(),
+        sessionId: detail.id,
+      })
+      if (!response.ok) {
+        showToast(response.message || '恢复检查点失败')
+        return
+      }
+      const latest = await window.api.ai.getSession(detail.id)
+      if (latest) setDetail(latest)
+      await refreshCompactionCheckpoints(detail.id)
+      await loadAISessions()
+      showToast(
+        `已恢复 ${response.restoredCount ?? 0} 条归档消息。若上下文仍过大，下次发送前可能再次整理。`,
+      )
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '恢复检查点失败')
+    } finally {
+      setRestoringCompaction(false)
+      setRestoreCompactionDialogOpen(false)
     }
   }
 
@@ -705,13 +988,308 @@ export function AIAnalysis() {
     if (!result) return
     setNewDiscussionOpen(false)
     await loadAISessions()
+    const sessionId = result.discussion.sessionId
+    await handleSelectSession(sessionId)
+    clearResearchDiscussionDraft(sessionId)
+    if (value.question.trim()) {
+      setSendingFollowUp(true)
+      try {
+        const follow = await window.api.ai.followUp({
+          requestId: crypto.randomUUID(), sessionId, message: value.question.trim(),
+        })
+        if (follow?.messages) {
+          const latest = await window.api.ai.getSession(sessionId)
+          setDetail(latest)
+          await loadAISessions()
+          if (follow.warning) showToast(follow.warning)
+        } else if (follow?.error) {
+          showToast(`发送失败：${follow.error}`)
+          setFollowUpInput(value.question)
+        }
+      } finally {
+        setSendingFollowUp(false)
+      }
+    }
+  }
+
+  function startNewConversation() {
+    setSelectedId(null)
+    setDetail(null)
+    setFollowUpInput('')
+    setActiveTab('chat')
+  }
+
+  async function runQuickChip(mode: 'analyze' | 'list' | 'checkConfig') {
+    if (sendingFollowUp || startingDiscussion || sessionAgentBusy) return
+    setSendingFollowUp(true)
+    try {
+      const initialQuestion = mode === 'list'
+        ? '我有哪些持仓'
+        : mode === 'checkConfig'
+          ? '检查 AI 配置'
+          : '请基于下列持仓事实简要研判'
+      let sessionId = detail?.discussion ? detail.id : null
+      // 先建会话并立刻跳转，避免等 AI 返回期间仍停在「新对话」空态。
+      if (sessionId == null) {
+        const created = await startDiscussion({
+          origin: { type: 'manual', id: null },
+          initialQuestion,
+          mode: 'new',
+          returnTarget: { tab: 'ai-analysis', subTab: 'records' },
+        })
+        if (!created) {
+          showToast('无法创建分析会话')
+          return
+        }
+        sessionId = created.discussion.sessionId
+        await loadAISessions()
+        await handleSelectSession(sessionId)
+        clearResearchDiscussionDraft(sessionId)
+        setFollowUpInput('')
+        setActiveTab('chat')
+      }
+      const result = await window.api.ai.runPortfolioBrief({
+        requestId: crypto.randomUUID(),
+        sessionId,
+        mode,
+      })
+      const targetId = result.sessionId ?? sessionId
+      await loadAISessions()
+      if (targetId != null) {
+        await handleSelectSession(targetId)
+        setActiveTab('chat')
+      }
+      if (!result.ok) {
+        showToast(result.message || '操作失败')
+      }
+    } finally {
+      setSendingFollowUp(false)
+    }
+  }
+
+  async function ensureDiscussionSession(question: string): Promise<number | null> {
+    if (detail?.discussion) return detail.id
+    const created = await startDiscussion({
+      origin: { type: 'manual', id: null },
+      initialQuestion: question,
+      mode: 'new',
+      returnTarget: { tab: 'ai-analysis', subTab: 'records' },
+    })
+    if (!created) return null
+    const sessionId = created.discussion.sessionId
+    await loadAISessions()
+    await handleSelectSession(sessionId)
+    clearResearchDiscussionDraft(sessionId)
+    setActiveTab('chat')
+    return sessionId
+  }
+
+  async function captureResearchIntent(message: string): Promise<boolean> {
+    // Agent 主路径：深挖由 research.deep_start 自主编排；suggest 卡仅作手动兜底，发送时不拦截
+    if (agentPathEnabled) return false
+    const intent = detectResearchAgentIntent(message)
+    if (!intent) return false
+    const sessionId = await ensureDiscussionSession(message)
+    if (sessionId == null) return true
+    setFollowUpInput('')
+    setAgentSuggest({ intent, question: message })
+    setPreferredAgentQuestion(message)
+    if (intent === 'industry_research') {
+      showToast('产业研究将作为聊天 subagent 接入（下一期）；深度研究可先用「启动深度研究」。')
+    }
+    return true
+  }
+
+  async function sendSessionMessage(sessionId: number, message: string, requestId: string): Promise<{
+    text?: string
+    messages?: SessionDetail['messages']
+    error?: string
+    code?: string
+    warning?: string
+  }> {
+    if (agentPathEnabled) {
+      setAgentRequestId(requestId)
+      setAgentEvents([])
+      const agentApi = window.api.ai as {
+        agentTurn: (payload: { requestId: string; sessionId: number; message: string }) => Promise<{
+          text?: string
+          messages?: SessionDetail['messages']
+          error?: string
+          code?: string
+        }>
+      }
+      return agentApi.agentTurn({ requestId, sessionId, message })
+    }
+    return window.api.ai.followUp({ requestId, sessionId, message })
+  }
+
+  async function resolveHitl(approved: boolean) {
+    const hitl = agentTimeline.pendingHitl?.hitl
+    if (!hitl || !agentRequestId || confirmingHitl) return
+    setConfirmingHitl(true)
+    try {
+      const api = window.api.ai as {
+        agentConfirm: (payload: { requestId: string; hitlId: string; approved: boolean }) => Promise<{
+          ok: boolean
+          error?: string
+        }>
+      }
+      const result = await api.agentConfirm({
+        requestId: agentRequestId,
+        hitlId: hitl.hitlRequestId,
+        approved,
+      })
+      if (!result.ok) showToast(result.error || '确认失败')
+    } finally {
+      setConfirmingHitl(false)
+    }
+  }
+
+  async function handleComposerSend() {
+    const message = followUpInput.trim()
+    if (!message || sendingFollowUp || startingDiscussion) return
+    if (sessionAgentBusy) {
+      showToast('当前会话有深度研究进行中，请等待完成或取消后再追问。')
+      return
+    }
+    if (await captureResearchIntent(message)) return
+
+    if (detail) {
+      await handleFollowUp()
+      return
+    }
+    setSendingFollowUp(true)
+    setFollowUpInput('')
+    const requestId = crypto.randomUUID()
+    followUpRequestRef.current = requestId
+    setFollowUpDraft(null)
+    try {
+      const created = await startDiscussion({
+        origin: { type: 'manual', id: null },
+        initialQuestion: message,
+        mode: 'new',
+        returnTarget: { tab: 'ai-analysis', subTab: 'records' },
+      })
+      if (!created) {
+        setFollowUpInput(message)
+        return
+      }
+      const sessionId = created.discussion.sessionId
+      await loadAISessions()
+      await handleSelectSession(sessionId)
+      clearResearchDiscussionDraft(sessionId)
+      setActiveTab('chat')
+      // 乐观插入 user，保证首轮也能进「有消息」分支并展示 Agent 过程滚动
+      setDetail((prev) => prev ? {
+        ...prev,
+        messages: [...(prev.messages ?? []), { role: 'user', content: message, requestId }],
+      } : prev)
+      const result = await sendSessionMessage(sessionId, message, requestId)
+      if (result?.messages) {
+        const latest = await window.api.ai.getSession(sessionId)
+        setDetail(latest)
+        await loadAISessions()
+        if (result?.warning) showToast(result.warning)
+      } else if (result?.error) {
+        showToast(`发送失败：${result.error}`)
+        setFollowUpInput(message)
+        setDetail((prev) => prev ? {
+          ...prev,
+          messages: (prev.messages ?? []).filter((item) => item.requestId !== requestId),
+        } : prev)
+      }
+    } catch (error) {
+      showToast(`发送失败：${error instanceof Error ? error.message : '未知错误'}`)
+      setFollowUpInput(message)
+      setDetail((prev) => prev ? {
+        ...prev,
+        messages: (prev.messages ?? []).filter((item) => item.requestId !== requestId),
+      } : prev)
+    } finally {
+      followUpRequestRef.current = null
+      setFollowUpDraft(null)
+      setSendingFollowUp(false)
+    }
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      handleFollowUp()
+      void handleComposerSend()
     }
+  }
+
+  function renderQuickChips() {
+    return (
+      <div className="mb-2 flex flex-wrap gap-1.5" data-testid="research-quick-chips">
+        <button type="button" data-testid="chip-analyze-portfolio" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('analyze') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">分析我的持仓</button>
+        <button type="button" data-testid="chip-list-portfolio" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('list') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">我有哪些持仓</button>
+        <button type="button" data-testid="chip-check-ai-config" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('checkConfig') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">检查 AI 配置</button>
+      </div>
+    )
+  }
+
+  function renderAgentSuggestCard() {
+    if (!agentSuggest) return null
+    return (
+      <div data-testid="research-agent-suggest" className="mb-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2.5 text-xs text-cyan-950 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-100">
+        <div className="font-semibold">
+          {agentSuggest.intent === 'deep_research' ? '手动启动深度研究（兜底）' : '产业研究 subagent（下一期）'}
+        </div>
+        <div className="mt-1 line-clamp-3 text-[11px] opacity-90">{agentSuggest.question}</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {agentSuggest.intent === 'deep_research' ? (
+            <button
+              type="button"
+              data-testid="research-agent-suggest-confirm"
+              className="rounded-md bg-cyan-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-cyan-800"
+              onClick={() => {
+                setPreferredAgentQuestion(agentSuggest.question)
+                setAgentOpenSignal((value) => value + 1)
+                setAgentSuggest(null)
+              }}
+            >
+              启动深度研究
+            </button>
+          ) : (
+            <button type="button" disabled className="rounded-md bg-slate-300 px-2.5 py-1 text-[11px] font-semibold text-white dark:bg-slate-700">产业研究即将接入</button>
+          )}
+          <button
+            type="button"
+            data-testid="research-agent-suggest-chat"
+            className="rounded-md border border-cyan-300 bg-white px-2.5 py-1 text-[11px] text-cyan-800 dark:border-cyan-800 dark:bg-slate-900 dark:text-cyan-100"
+            onClick={() => {
+              const question = agentSuggest.question
+              setAgentSuggest(null)
+              setFollowUpInput(question)
+              window.setTimeout(() => {
+                void (async () => {
+                  if (!detail) return
+                  setSendingFollowUp(true)
+                  try {
+                    const result = await sendSessionMessage(detail.id, question, crypto.randomUUID())
+                    if (result?.messages) {
+                      const latest = await window.api.ai.getSession(detail.id)
+                      setDetail(latest)
+                      await loadAISessions()
+                      if ('warning' in result && result.warning) showToast(String(result.warning))
+                      setFollowUpInput('')
+                    } else if (result?.error) {
+                      showToast(`追问失败：${result.error}`)
+                    }
+                  } finally {
+                    setSendingFollowUp(false)
+                  }
+                })()
+              }, 0)
+            }}
+          >
+            改为普通追问
+          </button>
+          <button type="button" className="rounded-md px-2.5 py-1 text-[11px] text-slate-500" onClick={() => setAgentSuggest(null)}>关闭</button>
+        </div>
+      </div>
+    )
   }
 
   async function handleGenerateStructuredResult(force = true) {
@@ -740,21 +1318,86 @@ export function AIAnalysis() {
     setShowIndustryAnalysis(true)
   }
 
-  if (aiSessions.length === 0 && !isAnalyzing) {
+  function toggleLeftDrawer() {
+    setLeftDrawerOpen((prev) => {
+      const next = !prev
+      saveSessionDrawerPrefs({ leftOpen: next }, undefined, { kind: sessionDrawerKind ?? 'discussion' })
+      return next
+    })
+  }
+
+  function toggleRightDrawer() {
+    setRightDrawerOpen((prev) => {
+      const next = !prev
+      saveSessionDrawerPrefs({ rightOpen: next }, undefined, { kind: sessionDrawerKind ?? 'discussion' })
+      return next
+    })
+  }
+
+  const agentStreamingText =
+    agentPathEnabled && sendingFollowUp && !agentTimeline.terminal
+      ? agentTimeline.streamingMessage
+      : ''
+
+  function renderResearchIncrementPanel() {
+    if (!detail?.discussion) return null
     return (
-      <div className="flex flex-1 items-center justify-center bg-slate-50 px-6 text-center dark:bg-slate-950">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">开始一次 AI 讨论</h2>
-          <p className="mt-2 text-sm text-slate-500">可以直接提出研究问题，也可以稍后从复盘、信号或产业研究进入。</p>
-          <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="mt-4 rounded-md bg-cyan-700 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-800">发起研究讨论</button>
-        </div>
-        <NewResearchDiscussionDialog
-          open={newDiscussionOpen}
-          submitting={startingDiscussion}
-          error={startDiscussionError}
-          onClose={() => setNewDiscussionOpen(false)}
-          onSubmit={(value) => { void createManualDiscussion(value) }}
-        />
+      <ResearchDiscussionChangePanel
+        discussion={detail.discussion}
+        throughMessageSequence={detail.messages?.at(-1)?.sequence ?? null}
+        onChanged={async () => {
+          const latest = await window.api.ai.getSession(detail.id)
+          if (latest) setDetail(latest)
+          await loadAISessions()
+        }}
+      />
+    )
+  }
+
+  /** 过程在上、正文草稿在下；空消息与有消息分支共用，避免首轮只剩「思考中…」。 */
+  function renderAgentTurnLive() {
+    if (!agentPathEnabled && !sendingFollowUp) return null
+    const showScroll = agentPathEnabled && agentTimeline.steps.length > 0
+    const showStreaming = Boolean(agentStreamingText)
+    const showDegradedHint =
+      agentPathEnabled && sendingFollowUp && showScroll && !showStreaming && !agentTimeline.terminal
+    const showThinking =
+      sendingFollowUp && !followUpDraft && !showStreaming && !showScroll
+
+    if (!showScroll && !showStreaming && !showThinking && !showDegradedHint) return null
+
+    return (
+      <div className="mt-2 space-y-1.5" data-testid="ai-agent-turn-live">
+        {showScroll && (
+          <>
+            <AgentStatusScroll
+              scroll={agentStatusScroll}
+              steps={agentTimeline.steps}
+              networkDisabledHint={agentTimeline.networkDisabledHint}
+            />
+            {agentTimeline.pendingHitl?.hitl && (
+              <div data-testid="agent-hitl-bar" className="flex flex-wrap items-center gap-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-800 dark:bg-amber-950/40">
+                <span className="text-[11px] text-amber-950 dark:text-amber-100">{agentTimeline.pendingHitl.detail || '需要确认写操作'}</span>
+                <button type="button" disabled={confirmingHitl} className="rounded bg-cyan-700 px-2 py-0.5 text-[11px] font-semibold text-white disabled:opacity-40" onClick={() => { void resolveHitl(true) }}>确认</button>
+                <button type="button" disabled={confirmingHitl} className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900" onClick={() => { void resolveHitl(false) }}>拒绝</button>
+              </div>
+            )}
+          </>
+        )}
+        {showDegradedHint && (
+          <div className="text-[11px] text-amber-700 dark:text-amber-300">
+            本轮助手正文将整段返回（动作协议流式中不展示半截 JSON）…
+          </div>
+        )}
+        {showStreaming && (
+          <div data-testid="ai-agent-streaming" className="flex justify-start">
+            <div className="max-w-[85%] whitespace-pre-wrap rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs leading-relaxed text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+              {agentStreamingText}
+              <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" />
+            </div>
+          </div>
+        )}
+        {showThinking && <div className="text-xs text-slate-400">思考中...</div>}
       </div>
     )
   }
@@ -762,6 +1405,21 @@ export function AIAnalysis() {
   return (
     <div className="relative flex h-full flex-1 overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
 
+      {!leftDrawerOpen && (
+        <button
+          type="button"
+          data-testid="ai-drawer-toggle-left-expand"
+          aria-label="展开分析记录"
+          title="展开分析记录"
+          onClick={toggleLeftDrawer}
+          className="flex w-8 flex-shrink-0 flex-col items-center gap-1 border-r border-slate-200 bg-white pt-3 text-[11px] font-medium text-slate-500 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800"
+        >
+          <span aria-hidden>›</span>
+          <span className="text-[10px] tracking-wide">记录</span>
+        </button>
+      )}
+
+      {leftDrawerOpen && (
       <aside className="flex w-64 flex-shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <div className="border-b border-slate-200 px-3 py-3 dark:border-slate-800">
           <div className="flex items-center justify-between gap-2">
@@ -770,7 +1428,9 @@ export function AIAnalysis() {
               <div className="mt-0.5 text-[11px] text-slate-500">{aiSessions.length} 条会话</div>
             </div>
             <div className="flex gap-1">
-              <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="rounded-md bg-cyan-700 px-2 py-1 text-[11px] font-semibold text-white">讨论</button>
+              <button type="button" data-testid="ai-drawer-toggle-left-collapse" aria-label="收起分析记录" onClick={toggleLeftDrawer} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">‹</button>
+              <button type="button" data-testid="new-conversation" onClick={startNewConversation} className={`rounded-md px-2 py-1 text-[11px] font-semibold ${selectedId == null ? 'bg-cyan-700 text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300'}`}>新对话</button>
+              <button type="button" data-testid="new-research-discussion" onClick={() => { clearStartDiscussionError(); setNewDiscussionOpen(true) }} className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">高级</button>
               <button onClick={requestDeleteAll} disabled={deleting || aiSessions.length === 0} className="rounded-md border border-red-200 px-2 py-1 text-[11px] text-red-500 transition-colors hover:bg-red-50 disabled:opacity-30 dark:border-red-900 dark:hover:bg-red-950/40">清除</button>
             </div>
           </div>
@@ -845,6 +1505,7 @@ export function AIAnalysis() {
           ))}
         </div>
       </aside>
+      )}
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {loadingDetail ? (
@@ -1095,7 +1756,73 @@ export function AIAnalysis() {
               {activeTab === 'chat' && (
                 <section className="space-y-4">
                   <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-                    <h3 className="text-sm font-semibold">{detail.discussion ? '讨论记录' : '追问记录'}</h3>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-semibold">{detail.discussion ? '讨论记录' : '追问记录'}</h3>
+                        {detail.discussion?.contextCompaction && (
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            聊天上下文已整理至消息序号 {detail.discussion.contextCompaction.coveredThroughSequence}，历史原文仍可追溯。
+                          </p>
+                        )}
+                      </div>
+                      {detail.discussion && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            data-testid="ai-compact-discussion-context"
+                            onClick={() => { void handleCompactDiscussionContext() }}
+                            disabled={compactingContext || restoringCompaction || sendingFollowUp || sessionAgentBusy}
+                            className="rounded-md border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-[11px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+                          >
+                            {compactingContext ? '正在整理聊天上下文…' : '整理聊天上下文'}
+                          </button>
+                          {compactionCheckpoints.length > 0 && (
+                            <button
+                              type="button"
+                              data-testid="ai-restore-discussion-compaction"
+                              onClick={handleRestoreLatestCompaction}
+                              disabled={restoringCompaction || compactingContext || sendingFollowUp || sessionAgentBusy}
+                              className="rounded-md border border-slate-300 bg-slate-50 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                            >
+                              {restoringCompaction ? '正在恢复…' : '恢复最近整理'}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {detail.discussion && compactionCheckpoints.length > 0 && (
+                      <div
+                        data-testid="ai-compaction-checkpoints"
+                        className="mt-3 space-y-1.5 rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 dark:border-slate-700 dark:bg-slate-950/40"
+                      >
+                        <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">上下文检查点</p>
+                        <ul className="space-y-1.5">
+                          {compactionCheckpoints.map((checkpoint) => (
+                            <li
+                              key={checkpoint.id}
+                              className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-[11px] text-slate-600 dark:text-slate-400"
+                            >
+                              <span>
+                                序号 {checkpoint.sourceStartSequence}–{checkpoint.coveredThroughSequence}
+                                {checkpoint.isLatest ? (
+                                  <span className="ml-1.5 rounded bg-violet-100 px-1 py-0.5 text-[10px] font-semibold text-violet-800 dark:bg-violet-950/50 dark:text-violet-200">
+                                    可恢复
+                                  </span>
+                                ) : (
+                                  <span className="ml-1.5 text-[10px] text-slate-400">请先恢复更新的检查点</span>
+                                )}
+                              </span>
+                              <span className="shrink-0 text-slate-400">
+                                {new Date(checkpoint.createdAt).toLocaleString()}
+                                {checkpoint.tokensBefore != null && checkpoint.tokensAfter != null
+                                  ? ` · ${checkpoint.tokensBefore}→${checkpoint.tokensAfter}`
+                                  : ''}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {detail.messages && detail.messages.length > 0 ? (
                       <div className="mt-4 space-y-3">
                         {detail.messages.map((message, index) => (
@@ -1116,16 +1843,16 @@ export function AIAnalysis() {
                                   <ResearchAuditTrace
                                     trace={message.researchTrace}
                                     variant="compact"
-                                    onCompareCurrent={() => window.api.researchEvidence.compareSnapshot({
+                                    onCompareCurrent={message.sequence == null ? undefined : () => window.api.researchEvidence.compareSnapshot({
                                       sourceKind: 'discussion_message',
                                       sessionId: detail.id,
-                                      messageIndex: index,
+                                      messageSequence: message.sequence!,
                                     })}
-                                    onDiscussChanges={() => startEvidenceDiscussion({
+                                    onDiscussChanges={message.sequence == null ? undefined : () => startEvidenceDiscussion({
                                       source: {
                                         sourceKind: 'discussion_message',
                                         sessionId: detail.id,
-                                        messageIndex: index,
+                                        messageSequence: message.sequence!,
                                       },
                                       returnTarget: {
                                         tab: 'ai-analysis',
@@ -1142,22 +1869,106 @@ export function AIAnalysis() {
                             </div>
                           </div>
                         ))}
-                        {sendingFollowUp && <div className="text-xs text-slate-400">思考中...</div>}
+                        {followUpDraft && followUpDraft.sessionId === detail.id && (
+                          <div data-testid="ai-followup-streaming" className="flex justify-start">
+                            <div className="max-w-[85%] rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                              {!followUpDraft.streaming && (
+                                <div className="mb-1 text-[11px] text-amber-700 dark:text-amber-300">
+                                  {followUpDraft.reason === 'web_search'
+                                    ? '本轮含网页搜索，整段返回中…'
+                                    : '本轮整段生成中…'}
+                                </div>
+                              )}
+                              {followUpDraft.accumulated ? (
+                                <div className="whitespace-pre-wrap leading-relaxed">{followUpDraft.accumulated}<span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" /></div>
+                              ) : (
+                                <div className="text-slate-400">{followUpDraft.streaming ? '生成中…' : '思考中…'}</div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {renderAgentTurnLive()}
                       </div>
                     ) : (
-                      <div className="mt-4 rounded-lg bg-slate-50 px-3 py-8 text-center text-sm text-slate-400 dark:bg-slate-950/60">{detail.discussion ? '输入问题开始讨论' : '暂无追问记录'}</div>
+                      <div className="mt-4 space-y-3">
+                        {followUpDraft && followUpDraft.sessionId === detail.id ? (
+                          <div data-testid="ai-followup-streaming" className="flex justify-start">
+                            <div className="max-w-[85%] rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+                              {!followUpDraft.streaming && (
+                                <div className="mb-1 text-[11px] text-amber-700 dark:text-amber-300">
+                                  {followUpDraft.reason === 'web_search'
+                                    ? '本轮含网页搜索，整段返回中…'
+                                    : '本轮整段生成中…'}
+                                </div>
+                              )}
+                              {followUpDraft.accumulated ? (
+                                <div className="whitespace-pre-wrap leading-relaxed">{followUpDraft.accumulated}<span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" /></div>
+                              ) : (
+                                <div className="text-slate-400">{followUpDraft.streaming ? '生成中…' : '思考中…'}</div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="rounded-lg bg-slate-50 px-3 py-8 text-center text-sm text-slate-400 dark:bg-slate-950/60">
+                            {sendingFollowUp ? '正在发送…' : (detail.discussion ? '输入问题开始讨论' : '暂无追问记录')}
+                          </div>
+                        )}
+                        {renderAgentTurnLive()}
+                      </div>
                     )}
                   </div>
-                  {detail.discussion && (
-                    <ResearchDiscussionChangePanel
-                      discussion={detail.discussion}
-                      messageCount={detail.messages?.length ?? 0}
-                      onChanged={async () => {
-                        const latest = await window.api.ai.getSession(detail.id)
-                        if (latest) setDetail(latest)
-                        await loadAISessions()
-                      }}
-                    />
+                  {detail.discussion && !rightDrawerOpen && (
+                    <div className="border-t border-slate-200 px-5 py-2 dark:border-slate-800">
+                      <button
+                        type="button"
+                        data-testid="ai-research-increment-open"
+                        onClick={toggleRightDrawer}
+                        className="text-[11px] font-medium text-cyan-700 hover:underline dark:text-cyan-300"
+                      >
+                        查看研究增量
+                      </button>
+                    </div>
+                  )}
+                  {detail.discussion && rightDrawerOpen && (
+                    <div
+                      data-testid="ai-research-increment-inline"
+                      className="space-y-2 border-t border-slate-200 px-5 py-3 xl:hidden dark:border-slate-800"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">研究增量</div>
+                        <button
+                          type="button"
+                          data-testid="ai-research-increment-collapse"
+                          onClick={toggleRightDrawer}
+                          className="text-[11px] text-slate-500 hover:underline"
+                        >
+                          收起
+                        </button>
+                      </div>
+                      {renderResearchIncrementPanel()}
+                    </div>
+                  )}
+                  {detail.discussion && researchAgentTimeline && researchAgentTimeline.runs.length > 0 && (
+                    <div data-testid="deep-research-timeline" className="space-y-3 border-t border-slate-200 px-5 py-4 dark:border-slate-800">
+                      {researchAgentTimeline.error && (
+                        <div role="alert" className="border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+                          {researchAgentTimeline.error}
+                        </div>
+                      )}
+                      {[...researchAgentTimeline.runs].reverse().map((run) => (
+                        <DeepResearchTurnView
+                          key={run.id}
+                          run={run}
+                          detail={researchAgentTimeline.detail?.run.id === run.id ? researchAgentTimeline.detail : null}
+                          liveProgress={researchAgentTimeline.liveProgress}
+                          streamDraft={researchAgentTimeline.streamDraft}
+                          busy={researchAgentTimeline.busy}
+                          onResume={() => researchAgentTimeline.onResume(run.id)}
+                          onCancel={() => researchAgentTimeline.onCancel(run.id)}
+                          onStartReview={() => researchAgentTimeline.onStartReview(run.id)}
+                        />
+                      ))}
+                    </div>
                   )}
                 </section>
               )}
@@ -1167,11 +1978,40 @@ export function AIAnalysis() {
               <ResearchAgentPanel
                 sessionId={detail.id}
                 draftQuestion={followUpInput}
+                preferredQuestion={preferredAgentQuestion}
+                openSignal={agentOpenSignal}
+                onTimelineContextChange={handleResearchAgentTimeline}
+                contextHints={{
+                  stockLabels: insight.candidateStocks.map((stock) => (
+                    stock.name ? `${stock.name}(${stock.code})` : stock.code
+                  )),
+                  recentUserMessages: (detail.messages ?? [])
+                    .filter((message) => message.role === 'user')
+                    .slice(-4)
+                    .map((message) => message.content),
+                  corpusTexts: [
+                    detail.discussion?.origin.title ?? '',
+                    detail.promptSent ?? '',
+                    detail.response ?? '',
+                    detail.responseRound2 ?? '',
+                    detail.content ?? '',
+                    ...(detail.messages ?? []).slice(-8).map((message) => message.content),
+                    ...insight.candidateCodes,
+                  ],
+                }}
+                onSessionBusyChange={setSessionAgentBusy}
                 onCompleted={refreshAfterResearchAgent}
               />
             )}
 
-            <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900" data-testid="research-composer">
+              {renderAgentSuggestCard()}
+              {sessionAgentBusy && (
+                <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                  深度研究进行中：已暂停追问，避免与研究运行争写同一会话。
+                </div>
+              )}
+              {renderQuickChips()}
               <div className="flex gap-2">
                 <textarea
                   ref={inputRef}
@@ -1181,14 +2021,14 @@ export function AIAnalysis() {
                     if (detail.discussion) setResearchDiscussionDraft(detail.id, event.target.value)
                   }}
                   onKeyDown={handleInputKeyDown}
-                  disabled={sendingFollowUp}
-                  placeholder={detail.discussion ? '继续讨论…' : '继续追问... (Enter 发送, Shift+Enter 换行)'}
+                  disabled={sendingFollowUp || sessionAgentBusy}
+                  placeholder={sessionAgentBusy ? '深度研究进行中…' : detail.discussion ? '继续讨论…' : '继续追问... (Enter 发送, Shift+Enter 换行)'}
                   rows={2}
                   className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
                 />
                 <button
-                  onClick={handleFollowUp}
-                  disabled={!followUpInput.trim() || sendingFollowUp}
+                  onClick={() => { void handleComposerSend() }}
+                  disabled={!followUpInput.trim() || sendingFollowUp || sessionAgentBusy}
                   className="h-[52px] flex-shrink-0 rounded-lg bg-blue-600 px-4 text-xs text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700"
                 >
                   发送
@@ -1197,16 +2037,80 @@ export function AIAnalysis() {
             </div>
           </>
         ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-slate-400">选择左侧记录查看详情</div>
+          <div className="flex flex-1 flex-col">
+            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">新对话</h2>
+              <p className="mt-2 max-w-md text-sm text-slate-500">直接提问即可开始。持仓分析不会把成本价发给模型；已缓存个股不等于持仓。</p>
+              <p className="mt-1 max-w-md text-xs text-slate-400">说「深挖…」会建议启动深度研究；确认后在上下文充足时自动开跑。</p>
+            </div>
+            <div className="flex-shrink-0 border-t border-slate-200 bg-white px-5 py-3 dark:border-slate-800 dark:bg-slate-900" data-testid="research-composer">
+              {renderAgentSuggestCard()}
+              {renderQuickChips()}
+              <div className="flex gap-2">
+                <textarea
+                  ref={inputRef}
+                  value={followUpInput}
+                  onChange={(event) => setFollowUpInput(event.target.value)}
+                  onKeyDown={handleInputKeyDown}
+                  disabled={sendingFollowUp || startingDiscussion}
+                  placeholder="提出研究问题或说「深挖…」调度深度研究… (Enter 发送)"
+                  rows={2}
+                  className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
+                />
+                <button
+                  type="button"
+                  onClick={() => { void handleComposerSend() }}
+                  disabled={!followUpInput.trim() || sendingFollowUp || startingDiscussion}
+                  className="h-[52px] flex-shrink-0 rounded-lg bg-blue-600 px-4 text-xs text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700"
+                >
+                  发送
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </main>
 
-      {!detail?.discussion && <aside className="hidden w-80 flex-shrink-0 flex-col border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 xl:flex">
+      {detail && !rightDrawerOpen && (
+        <button
+          type="button"
+          data-testid="ai-drawer-toggle-right-expand"
+          aria-label="展开研判侧栏"
+          onClick={toggleRightDrawer}
+          className="hidden w-8 flex-shrink-0 flex-col items-center border-l border-slate-200 bg-white pt-3 text-[11px] text-slate-500 hover:bg-slate-50 xl:flex dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800"
+        >
+          <span>研判</span>
+          <span className="mt-2 text-slate-400">‹</span>
+        </button>
+      )}
+
+      {detail && rightDrawerOpen && <aside className="hidden w-80 flex-shrink-0 flex-col border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 xl:flex">
         <div className="border-b border-slate-200 px-4 py-4 dark:border-slate-800">
-          <div className="text-sm font-semibold">研判侧栏</div>
-          <div className="mt-1 text-xs text-slate-500">基于现有会话文本派生, 不代表交易指令</div>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="text-sm font-semibold">{detail?.discussion ? '研究侧栏' : '研判侧栏'}</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {detail?.discussion ? '研究增量与讨论附属信息' : '基于现有会话文本派生, 不代表交易指令'}
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="ai-drawer-toggle-right-collapse"
+              aria-label="收起研判侧栏"
+              onClick={toggleRightDrawer}
+              className="rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800"
+            >
+              ›
+            </button>
+          </div>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 text-xs">
+          {detail?.discussion ? (
+            <section className="rounded-xl border border-slate-200 p-1 dark:border-slate-800">
+              {renderResearchIncrementPanel()}
+            </section>
+          ) : (
+            <>
           <section className="rounded-xl border border-slate-200 p-3 dark:border-slate-800">
             <div className="font-medium text-slate-700 dark:text-slate-200">模型与来源</div>
             <div className="mt-3 space-y-2 text-slate-500">
@@ -1228,28 +2132,47 @@ export function AIAnalysis() {
               {insight.candidateStocks.length > 0 ? insight.candidateStocks.map((stock) => {
                 const direction = candidateDirectionMeta[stock.direction]
                 const isPortfolio = portfolioByCode.has(stockKey(stock.code))
+                const tsCode = normalizeAshareTsCode(stock.code)
+                const inWatchlist = trackedTsCodes.has(tsCode)
                 return (
-                  <button
+                  <div
                     key={stock.code}
-                    type="button"
                     data-testid={`ai-candidate-${stock.code}`}
-                    onClick={() => navigateToStock(stock.code, stock.name ?? portfolioByCode.get(stockKey(stock.code)))}
-                    className="block w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-left text-slate-700 transition-colors hover:border-blue-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-400 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-200 dark:hover:border-blue-700 dark:hover:bg-slate-800"
+                    className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-left text-slate-700 dark:border-slate-700 dark:bg-slate-950/40 dark:text-slate-200"
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <span className="min-w-0 font-medium">
-                        <span className="block truncate">{stock.name ?? portfolioByCode.get(stockKey(stock.code)) ?? '名称待补全'}</span>
-                        <span className="mt-0.5 block text-[10px] font-normal text-slate-400">{stock.code}</span>
-                      </span>
-                      {stock.confidence > 0 && <span className="text-[10px] text-slate-400">{formatConfidence(stock.confidence)}</span>}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => navigateToStock(stock.code, stock.name ?? portfolioByCode.get(stockKey(stock.code)))}
+                      className="block w-full text-left transition-colors hover:text-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:hover:text-blue-300"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="min-w-0 font-medium">
+                          <span className="block truncate">{stock.name ?? portfolioByCode.get(stockKey(stock.code)) ?? '名称待补全'}</span>
+                          <span className="mt-0.5 block text-[10px] font-normal text-slate-400">{stock.code}</span>
+                        </span>
+                        {stock.confidence > 0 && <span className="text-[10px] text-slate-400">{formatConfidence(stock.confidence)}</span>}
+                      </div>
+                    </button>
+                    <div className="mt-2 flex flex-wrap items-center gap-1">
                       <span className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${direction.className}`}>{direction.label}</span>
                       <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">{candidateEvidenceLabel[stock.evidenceLevel]}</span>
                       {isPortfolio && <span className="rounded border border-cyan-200 bg-cyan-50 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 dark:border-cyan-800 dark:bg-cyan-950/30 dark:text-cyan-300">我的持仓</span>}
+                      {inWatchlist ? (
+                        <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">已在池</span>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid={`ai-candidate-add-to-watchlist-${stock.code}`}
+                          disabled={watchlistAddingCode === stock.code}
+                          onClick={() => { void handleAddCandidateToWatchlist(stock) }}
+                          className="rounded border border-violet-300 bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+                        >
+                          {watchlistAddingCode === stock.code ? '加入中…' : '+观察池'}
+                        </button>
+                      )}
                     </div>
                     {stock.reason && <div className="mt-2 line-clamp-3 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{stock.reason}</div>}
-                  </button>
+                  </div>
                 )
               }) : (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
@@ -1318,6 +2241,8 @@ export function AIAnalysis() {
               </button>
             </div>
           </section>
+            </>
+          )}
         </div>
       </aside>}
 
@@ -1382,6 +2307,17 @@ export function AIAnalysis() {
           </dl>
         )}
       </AppConfirmDialog>
+      <AppConfirmDialog
+        open={restoreCompactionDialogOpen}
+        title="恢复最近整理"
+        message="将恢复最近一次整理：把该次归档消息拼回当前对话，并删除该检查点。是否继续？"
+        tone="warning"
+        confirmLabel="恢复"
+        busy={restoringCompaction}
+        testId="ai-restore-compaction-dialog"
+        onCancel={() => setRestoreCompactionDialogOpen(false)}
+        onConfirm={() => { void confirmRestoreLatestCompaction() }}
+      />
     </div>
   )
 }

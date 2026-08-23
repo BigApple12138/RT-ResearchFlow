@@ -9,6 +9,23 @@ import type {
 } from '../../../electron/main/services/researchAgentRunManager'
 import { ResearchAuditTrace } from '../shared/ResearchAuditTrace'
 import { AppConfirmDialog } from '../shared/AppConfirmDialog'
+import { publishAppToast } from '../shared/appToastBus'
+import {
+  buildAutoDeepResearchQuestion,
+  decideAutoDeepResearchStart,
+  resolveAutoDeepResearchStocks,
+} from './researchAgentIntent'
+import {
+  researchConclusionMeta,
+  researchPhaseLabel,
+  researchRunStatusMeta,
+} from './deepResearchTurnModel'
+
+export {
+  researchConclusionMeta,
+  researchPhaseLabel,
+  researchRunStatusMeta,
+} from './deepResearchTurnModel'
 
 const BUTTON = 'min-h-11 rounded-md border px-3 text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/40 disabled:cursor-not-allowed disabled:opacity-45 motion-reduce:transition-none'
 const SECONDARY = `${BUTTON} border-slate-300 bg-white text-slate-700 hover:border-cyan-500 hover:text-cyan-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-cyan-600 dark:hover:text-cyan-200`
@@ -19,50 +36,44 @@ interface Props {
   sessionId: number
   draftQuestion: string
   onCompleted: () => Promise<void> | void
+  /** 递增时打开启动对话框（主聊天 suggest→确认） */
+  openSignal?: number
+  preferredQuestion?: string | null
+  /** 用于短问题扩写与股票抽取的会话线索 */
+  contextHints?: {
+    stockLabels?: string[]
+    recentUserMessages?: string[]
+    corpusTexts?: string[]
+  }
+  onSessionBusyChange?: (busy: boolean) => void
+  /** One-page：向父级同步时间线上下文（父级渲染 DeepResearchTurnView，本组件不占底部半屏） */
+  onTimelineContextChange?: (ctx: ResearchAgentTimelineContext | null) => void
 }
 
-const BASE_STATUS_META: Record<ResearchAgentRunSummaryView['status'], { label: string; tone: string }> = {
-  queued: { label: '等待启动', tone: 'text-slate-600 dark:text-slate-300' },
-  running: { label: '运行中', tone: 'text-cyan-700 dark:text-cyan-300' },
-  paused: { label: '已暂停', tone: 'text-amber-700 dark:text-amber-300' },
-  needs_attention: { label: '需处理', tone: 'text-red-700 dark:text-red-300' },
-  succeeded: { label: '已完成', tone: 'text-emerald-700 dark:text-emerald-300' },
-  failed: { label: '失败', tone: 'text-red-700 dark:text-red-300' },
-  cancelled: { label: '已取消', tone: 'text-slate-500 dark:text-slate-400' },
+export interface ResearchAgentTimelineContext {
+  runs: ResearchAgentRunSummaryView[]
+  selectedRunId: string | null
+  detail: ResearchAgentRunDetailView | null
+  busy: string | null
+  error: string | null
+  liveProgress: { runId: string; message: string; phase: string } | null
+  streamDraft: { runId: string; phase: string; accumulated: string } | null
+  selectRun: (runId: string) => void
+  onResume: (runId: string) => void
+  onCancel: (runId: string) => void
+  onStartReview: (runId: string) => void
 }
 
-export function researchRunStatusMeta(run: Pick<ResearchAgentRunSummaryView, 'status' | 'resultSemantics'>): { label: string; tone: string } {
-  return { ...BASE_STATUS_META[run.status], label: run.resultSemantics.executionLabel }
-}
-
-function researchConclusionMeta(run: Pick<ResearchAgentRunSummaryView, 'resultSemantics'>): { label: string; tone: string } {
-  const tone = {
-    pending: 'text-slate-500 dark:text-slate-400',
-    complete: 'text-emerald-700 dark:text-emerald-300',
-    limited: 'text-amber-700 dark:text-amber-300',
-    blocked: 'text-red-700 dark:text-red-300',
-    unavailable: 'text-slate-500 dark:text-slate-400',
-  }[run.resultSemantics.conclusionCoverage]
-  return { label: run.resultSemantics.conclusionLabel, tone }
-}
-
-const PHASE_LABEL: Record<ResearchAgentRunSummaryView['phase'], string> = {
-  planning: '研究计划',
-  tooling: '本地事实',
-  synthesis: '证据门禁 / 综合',
-  audit: '确定性审计',
-  persist: '本地写回',
-}
-
-const MULTI_PERSPECTIVE_PHASE_LABEL: Record<ResearchAgentRunSummaryView['phase'], string> = {
-  planning: '锁定证据',
-  tooling: '正反研判',
-  synthesis: '中立主持',
-  audit: '引用审计',
-  persist: '讨论写回',
-}
-
-export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Props) {
+export function ResearchAgentPanel({
+  sessionId,
+  draftQuestion,
+  onCompleted,
+  openSignal = 0,
+  preferredQuestion = null,
+  contextHints,
+  onSessionBusyChange,
+  onTimelineContextChange,
+}: Props) {
   const [runs, setRuns] = useState<ResearchAgentRunSummaryView[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [detail, setDetail] = useState<ResearchAgentRunDetailView | null>(null)
@@ -73,9 +84,13 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
   const [error, setError] = useState<string | null>(null)
   const [pendingCancelRunId, setPendingCancelRunId] = useState<string | null>(null)
   const [pendingReviewRunId, setPendingReviewRunId] = useState<string | null>(null)
+  const [dialogQuestion, setDialogQuestion] = useState(draftQuestion)
+  const [streamDraft, setStreamDraft] = useState<{ runId: string; phase: string; accumulated: string } | null>(null)
+  const [liveProgress, setLiveProgress] = useState<{ runId: string; message: string; phase: string } | null>(null)
   const previousStatuses = useRef(new Map<string, ResearchAgentRunSummaryView['status']>())
   const selectedRunIdRef = useRef<string | null>(null)
   const openButtonRef = useRef<HTMLButtonElement>(null)
+  const lastOpenSignal = useRef(0)
 
   const loadRuns = useCallback(async () => {
     const result = await window.api.researchAgent.listRuns(sessionId)
@@ -89,8 +104,9 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
     ))
     previousStatuses.current = new Map(next.map((run) => [run.id, run.status]))
     setRuns(next)
+    onSessionBusyChange?.(next.some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'paused'))
     if (completed) await onCompleted()
-  }, [onCompleted, sessionId])
+  }, [onCompleted, onSessionBusyChange, sessionId])
 
   useEffect(() => {
     setSelectedRunId(null)
@@ -101,6 +117,7 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
   }, [loadRuns, sessionId])
 
   useEffect(() => window.api.researchAgent.onProgress((event) => {
+    setLiveProgress({ runId: event.runId, message: event.message, phase: event.phase })
     void loadRuns()
     if (event.runId === selectedRunIdRef.current) {
       void window.api.researchAgent.getRun(event.runId).then((result) => {
@@ -115,10 +132,35 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
     }
   }), [loadRuns])
 
-  async function openDialog() {
+  useEffect(() => {
+    if (!window.api.researchAgent.onDelta) return
+    return window.api.researchAgent.onDelta((event) => {
+      if (event.type === 'start') {
+        setStreamDraft({ runId: event.runId, phase: event.phase, accumulated: '' })
+        return
+      }
+      if (event.type === 'delta' && typeof event.accumulated === 'string') {
+        setStreamDraft({ runId: event.runId, phase: event.phase, accumulated: event.accumulated })
+        return
+      }
+      if (event.type === 'done' || event.type === 'reset') {
+        setStreamDraft((prev) => (prev?.runId === event.runId ? null : prev))
+      }
+    })
+  }, [])
+
+  async function openDialog(questionOverride?: string | null) {
+    const nextQuestion = expandLaunchQuestion(questionOverride ?? preferredQuestion ?? draftQuestion)
+    setDialogQuestion(nextQuestion)
     setDialogOpen(true)
     setLoading(true)
     setError(null)
+    const globalRuns = await window.api.researchAgent.listRuns(null)
+    if (globalRuns.ok && globalRuns.data.some((run) => run.status === 'queued' || run.status === 'running')) {
+      setLoading(false)
+      setError('已有其他深度研究正在执行。请等待完成或取消后再启动。')
+      return
+    }
     const result = await window.api.researchAgent.preflight(sessionId)
     setLoading(false)
     if (!result.ok) {
@@ -127,6 +169,113 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
     }
     setPreflight(result.data)
   }
+
+  /** 建议卡确认 = 调度 skill：自动 startRun，失败只 toast，不弹窗。 */
+  async function launchFromSuggest(questionOverride?: string | null) {
+    const seed = (questionOverride ?? preferredQuestion ?? draftQuestion).trim()
+    setError(null)
+    setDialogOpen(false)
+    setBusy('autostart')
+    try {
+      const globalRuns = await window.api.researchAgent.listRuns(null)
+      if (globalRuns.ok && globalRuns.data.some((run) => run.status === 'queued' || run.status === 'running')) {
+        const message = '已有其他深度研究正在执行。请等待完成或取消后再启动。'
+        setError(message)
+        publishAppToast(message, 'warning')
+        return
+      }
+      const result = await window.api.researchAgent.preflight(sessionId)
+      if (!result.ok) {
+        const message = result.message || '预检失败，深度研究未能启动'
+        setError(message)
+        publishAppToast(message, 'error')
+        return
+      }
+      const nextPreflight = result.data
+      const preflightStocks = nextPreflight.suggestedSubjects
+        .filter((subject): subject is Extract<ResearchAgentSubjectView, { kind: 'stock' }> => subject.kind === 'stock')
+        .map((subject) => ({ kind: 'stock' as const, tsCode: subject.tsCode, label: subject.label }))
+      const project = nextPreflight.suggestedSubjects.find(
+        (subject): subject is Extract<ResearchAgentSubjectView, { kind: 'industry_project' }> => subject.kind === 'industry_project',
+      )
+      const corpusTexts = [
+        seed,
+        ...(contextHints?.stockLabels ?? []),
+        ...(contextHints?.recentUserMessages ?? []),
+        ...(contextHints?.corpusTexts ?? []),
+      ]
+      const stockSubjects = resolveAutoDeepResearchStocks({
+        preflightStocks,
+        corpusTexts,
+      })
+      const decision = decideAutoDeepResearchStart({
+        preflightReady: nextPreflight.ready,
+        stockCount: stockSubjects.length,
+        projectCount: project ? 1 : 0,
+      })
+      const stockLabels = [
+        ...(contextHints?.stockLabels ?? []),
+        ...stockSubjects.map((subject) => subject.label ? `${subject.label}(${subject.tsCode})` : subject.tsCode),
+      ]
+      const question = buildAutoDeepResearchQuestion({
+        seedQuestion: seed,
+        stockLabels,
+        recentUserMessages: contextHints?.recentUserMessages,
+        corpusTexts,
+      })
+      if (!decision.auto) {
+        setError(decision.reason)
+        publishAppToast(decision.reason, 'warning')
+        return
+      }
+      if (!nextPreflight.ready) {
+        const message = nextPreflight.unavailableReason || '预检未就绪，深度研究未能启动'
+        setError(message)
+        publishAppToast(message, 'error')
+        return
+      }
+      const subjects: ResearchAgentSubjectView[] = stockSubjects.length > 0
+        ? stockSubjects.slice(0, 5)
+        : (project ? [{ ...project }] : [])
+      const started = await window.api.researchAgent.startRun({
+        requestId: crypto.randomUUID(),
+        sessionId,
+        question,
+        subjects,
+        includePortfolio: false,
+        confirmedBudgetVersion: 'single-agent-unrestricted-v3',
+        parentRunId: null,
+      })
+      if (!started.ok) {
+        setError(started.message)
+        publishAppToast(started.message || '深度研究启动失败', 'error')
+        return
+      }
+      setPreflight(null)
+      publishAppToast('深度研究已自动启动')
+      setSelectedRunId(started.data.run.id)
+      selectedRunIdRef.current = started.data.run.id
+      await loadRuns()
+      await selectRun(started.data.run.id)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  function expandLaunchQuestion(raw: string | null | undefined): string {
+    return buildAutoDeepResearchQuestion({
+      seedQuestion: raw ?? '',
+      stockLabels: contextHints?.stockLabels ?? [],
+      recentUserMessages: contextHints?.recentUserMessages,
+    })
+  }
+
+  useEffect(() => {
+    if (!openSignal || openSignal === lastOpenSignal.current) return
+    lastOpenSignal.current = openSignal
+    void launchFromSuggest(preferredQuestion)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open only on signal edges
+  }, [openSignal])
 
   async function selectRun(runId: string) {
     setSelectedRunId(runId)
@@ -177,61 +326,51 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
     window.setTimeout(() => openButtonRef.current?.focus(), 0)
   }, [busy])
 
+  useEffect(() => {
+    if (!onTimelineContextChange) return
+    onTimelineContextChange({
+      runs,
+      selectedRunId,
+      detail,
+      busy,
+      error,
+      liveProgress,
+      streamDraft,
+      selectRun: (runId) => { void selectRun(runId) },
+      onResume: (runId) => { void mutate(runId, 'resume') },
+      onCancel: (runId) => setPendingCancelRunId(runId),
+      onStartReview: (runId) => setPendingReviewRunId(runId),
+    })
+  }, [busy, detail, error, liveProgress, onTimelineContextChange, runs, selectedRunId, streamDraft])
+
+  useEffect(() => () => {
+    onTimelineContextChange?.(null)
+  }, [onTimelineContextChange])
+
   return (
-    <section data-testid="research-agent-panel" className="max-h-[40vh] flex-shrink-0 overflow-y-auto border-t border-slate-200 bg-slate-50/70 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/35">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">深度研究</div>
-          <div className="mt-0.5 text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
-            {runs.length > 0 ? `${runs.length} 次运行 · ${researchRunStatusMeta(runs[0]).label}${runs[0].status === 'succeeded' ? ` · ${researchConclusionMeta(runs[0]).label}` : ''}` : '尚无运行'}
-          </div>
-        </div>
-        <button ref={openButtonRef} type="button" data-testid="research-agent-open" className={PRIMARY} onClick={() => { void openDialog() }}>
-          新建深度研究
-        </button>
-      </div>
+    <>
+      {/* E2E / 程序化预检：不对用户展示「新建」入口；主路径为聊天 suggest→确认 */}
+      <button
+        ref={openButtonRef}
+        type="button"
+        data-testid="research-agent-open"
+        className="sr-only"
+        tabIndex={-1}
+        onClick={() => { void openDialog() }}
+      >
+        打开深度研究预检
+      </button>
 
-      {error && <div role="alert" className="mt-3 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">{error}</div>}
-
-      {runs.length > 0 && (
-        <div className="mt-3 grid gap-3 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <div className="max-h-72 space-y-1 overflow-y-auto pr-1" aria-label="深度研究运行列表">
-            {runs.map((run) => {
-              const meta = researchRunStatusMeta(run)
-              const conclusion = researchConclusionMeta(run)
-              return (
-                <button
-                  key={run.id}
-                  type="button"
-                  data-testid={`research-agent-run-${run.id}`}
-                  onClick={() => { void selectRun(run.id) }}
-                  className={`min-h-11 w-full border-l-2 px-3 py-2 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/40 motion-reduce:transition-none ${selectedRunId === run.id ? 'border-cyan-600 bg-white dark:bg-slate-900' : 'border-transparent hover:bg-white dark:hover:bg-slate-900'}`}
-                >
-                  <div className="flex items-center justify-between gap-2"><span className={`font-semibold ${meta.tone}`}>{meta.label}</span><span className="text-slate-400">{phaseLabel(run.runKind, run.phase)}</span></div>
-                  {run.status === 'succeeded' && <div className={`mt-0.5 text-[11px] ${conclusion.tone}`}>{conclusion.label} · {run.runKind === 'multi_perspective' ? '多视角' : '单 Agent'}</div>}
-                  <div className="mt-1 truncate text-slate-600 dark:text-slate-300">{run.question}</div>
-                </button>
-              )
-            })}
-          </div>
-          <div className="min-w-0 border-l border-slate-200 pl-3 dark:border-slate-800">
-            {detail ? (
-              <ResearchAgentRunDetail
-                detail={detail}
-                busy={busy}
-                onResume={() => { void mutate(detail.run.id, 'resume') }}
-                onCancel={() => setPendingCancelRunId(detail.run.id)}
-                onStartReview={() => setPendingReviewRunId(detail.run.id)}
-              />
-            ) : <div className="flex min-h-24 items-center justify-center text-xs text-slate-400">选择一次运行查看账本</div>}
-          </div>
+      {error && runs.length === 0 && (
+        <div role="alert" className="mx-5 mb-2 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
+          {error}
         </div>
       )}
 
       {dialogOpen && (
         <ResearchAgentStartDialog
           sessionId={sessionId}
-          initialQuestion={draftQuestion}
+          initialQuestion={dialogQuestion}
           preflight={preflight}
           loading={loading}
           error={error}
@@ -240,6 +379,7 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
             setDialogOpen(false)
             setPreflight(null)
             setSelectedRunId(run.id)
+            selectedRunIdRef.current = run.id
             await loadRuns()
             await selectRun(run.id)
           }}
@@ -276,7 +416,7 @@ export function ResearchAgentPanel({ sessionId, draftQuestion, onCompleted }: Pr
           void startReview(pendingReviewRunId)
         }}
       />
-    </section>
+    </>
   )
 }
 
@@ -306,6 +446,10 @@ function ResearchAgentStartDialog({
   const project = preflight?.suggestedSubjects.find((subject) => subject.kind === 'industry_project') ?? null
   const suggestedStocks = preflight?.suggestedSubjects.filter((subject): subject is Extract<ResearchAgentSubjectView, { kind: 'stock' }> => subject.kind === 'stock') ?? []
   const suggestedStockCodes = suggestedStocks.map((subject) => subject.tsCode).join(' ')
+
+  useEffect(() => {
+    setQuestion(initialQuestion)
+  }, [initialQuestion])
 
   useEffect(() => {
     if (suggestedStockCodes) setStockCodes((current) => current || suggestedStockCodes)
@@ -412,9 +556,13 @@ function ResearchAgentStartDialog({
   )
 }
 
-export function ResearchAgentRunDetail({ detail, busy, onResume, onCancel, onRetry, onDelete, onStartReview, onOpenDiscussion }: {
+export function ResearchAgentRunDetail({ detail, busy, liveProgress = null, streamDraft = null, embedded = false, onResume, onCancel, onRetry, onDelete, onStartReview, onOpenDiscussion }: {
   detail: ResearchAgentRunDetailView
   busy: string | null
+  liveProgress?: { runId: string; message: string; phase: string } | null
+  streamDraft?: { runId: string; phase: string; accumulated: string } | null
+  /** 时间线嵌入：过程进度由外层 TurnView 展示，此处不再重复 */
+  embedded?: boolean
   onResume: () => void
   onCancel: () => void
   onRetry?: () => void
@@ -455,7 +603,7 @@ export function ResearchAgentRunDetail({ detail, busy, onResume, onCancel, onRet
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span data-testid="research-agent-execution-status" className={`font-semibold ${status.tone}`}>执行状态：{status.label}</span>
             {run.status === 'succeeded' && <span data-testid="research-agent-conclusion-coverage" className={`font-semibold ${conclusion.tone}`}>结论覆盖：{researchConclusionCoverageLabel(run.resultSemantics.conclusionCoverage)}</span>}
-            <span className="text-slate-400">{run.runKind === 'multi_perspective' ? '多视角复核' : '单 Agent 研究'} · {phaseLabel(run.runKind, run.phase)}</span>
+            <span className="text-slate-400">{run.runKind === 'multi_perspective' ? '多视角复核' : '单 Agent 研究'} · {researchPhaseLabel(run.runKind, run.phase)}</span>
           </div>
           <div className="mt-1 break-words text-slate-600 dark:text-slate-300">{run.question}</div>
         </div>
@@ -470,6 +618,20 @@ export function ResearchAgentRunDetail({ detail, busy, onResume, onCancel, onRet
       </div>
       {run.status === 'needs_attention' && <div className="mt-3 border-l-2 border-red-500 bg-red-50 px-3 py-2 text-red-700 dark:bg-red-950/30 dark:text-red-300">模型或联网请求可能已经送达并产生费用，但没有取得可验证的完整响应。同一账本不能继续；可使用“重新研究”创建新的可追溯运行。</div>}
       {run.errorMessage && run.status !== 'needs_attention' && <div className="mt-3 border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{run.errorMessage}</div>}
+      {!embedded && liveProgress && (run.status === 'running' || run.status === 'queued') && (
+        <div data-testid="research-agent-live-progress" className="mt-3 border-l-2 border-cyan-500 bg-cyan-50 px-3 py-2 text-cyan-900 dark:bg-cyan-950/30 dark:text-cyan-100">
+          {liveProgress.message}
+        </div>
+      )}
+      {!embedded && streamDraft && (run.status === 'running' || run.status === 'paused') && (
+        <div data-testid="research-agent-stream-draft" className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-950">
+          <div className="mb-1 text-[11px] font-semibold text-slate-500">写作草稿 · {researchPhaseLabel(run.runKind, streamDraft.phase as ResearchAgentRunSummaryView['phase'])}</div>
+          <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-slate-700 dark:text-slate-200">
+            {streamDraft.accumulated || '生成中…'}
+            <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-cyan-500 align-middle" />
+          </div>
+        </div>
+      )}
       {run.runKind === 'single_agent' && run.status === 'succeeded' && !detail.reviewEligibility.eligible && detail.reviewEligibility.reason && <div className="mt-3 border-l-2 border-slate-300 px-3 py-2 text-slate-500 dark:border-slate-700 dark:text-slate-400">多视角复核不可用：{detail.reviewEligibility.reason}</div>}
       <div className="mt-4 flex border-b border-slate-200 dark:border-slate-800" role="tablist" aria-label="深度研究详情">
         <button
@@ -570,7 +732,7 @@ export function ResearchAgentRunDetail({ detail, busy, onResume, onCancel, onRet
           <summary className="flex min-h-11 cursor-pointer items-center font-semibold">步骤与证据账本</summary>
           <div className="space-y-3 pb-3">
             <ol className="space-y-1">
-              {detail.steps.map((step) => <li key={step.id} className="flex justify-between gap-3"><span>{step.ordinal}. {phaseLabel(run.runKind, step.kind)}</span><span className="text-slate-500">{step.status} · {step.attemptCount} 次</span></li>)}
+              {detail.steps.map((step) => <li key={step.id} className="flex justify-between gap-3"><span>{step.ordinal}. {researchPhaseLabel(run.runKind, step.kind)}</span><span className="text-slate-500">{step.status} · {step.attemptCount} 次</span></li>)}
             </ol>
             {detail.modelCalls.length > 0 && (
               <div data-testid="research-agent-model-calls" className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
@@ -814,6 +976,31 @@ function NetworkToolCall({ call }: { call: ResearchAgentToolCallView }) {
         </div>
       )}
 
+      {call.kind === 'mcp' && call.mcp && (
+        <div className="mt-2 grid gap-1 sm:grid-cols-[88px_minmax(0,1fr)]" data-testid="research-agent-mcp-sample">
+          <span className="text-slate-400">MCP 工具</span>
+          <span className="min-w-0 break-words font-mono text-slate-700 dark:text-slate-200">
+            {call.mcp.serverName ? `${call.mcp.serverName} / ` : ''}{call.mcp.toolName}
+          </span>
+          {call.mcp.subjectRef && (
+            <>
+              <span className="text-slate-400">主体</span>
+              <span>{call.mcp.subjectRef}</span>
+            </>
+          )}
+          <span className="text-slate-400">来源等级</span>
+          <span>{sourceClassLabel(call.mcp.sourceClass)} · 外源样本（不计正式正文）</span>
+          {call.mcp.resultPreview && (
+            <>
+              <span className="text-slate-400">结果摘要</span>
+              <pre className="min-w-0 whitespace-pre-wrap break-words rounded border border-slate-200 bg-slate-50 p-2 text-[11px] leading-5 text-slate-600 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+                {call.mcp.resultPreview}{call.mcp.truncated ? '…' : ''}
+              </pre>
+            </>
+          )}
+        </div>
+      )}
+
       {call.candidates.length > 0 && (
         <ol className="mt-2 divide-y divide-slate-200 border-y border-slate-200 dark:divide-slate-800 dark:border-slate-800" data-testid="research-agent-search-candidates">
           {call.candidates.map((candidate, index) => (
@@ -907,13 +1094,6 @@ function readResearchPlan(value: unknown): { questions: string[]; stopConditions
     ? record.stopConditions.filter((item): item is string => typeof item === 'string').slice(0, 6)
     : []
   return questions.length > 0 || stopConditions.length > 0 ? { questions, stopConditions } : null
-}
-
-function phaseLabel(
-  runKind: ResearchAgentRunSummaryView['runKind'],
-  phase: ResearchAgentRunSummaryView['phase'],
-): string {
-  return runKind === 'multi_perspective' ? MULTI_PERSPECTIVE_PHASE_LABEL[phase] : PHASE_LABEL[phase]
 }
 
 function modelCallPurposeLabel(value: string): string {

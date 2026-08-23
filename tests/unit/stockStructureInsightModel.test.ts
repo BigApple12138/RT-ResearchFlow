@@ -15,7 +15,8 @@ function createRows(count: number, closeAt: (index: number) => number): StockStr
       low: close - 0.4,
       close,
       pctChg: index === 0 ? null : (close / closeAt(index - 1) - 1) * 100,
-      amount: 1000 + index * 10,
+      vol: 1000 + index * 10,
+      amount: 9000 + index * 100,
     }
   })
 }
@@ -109,5 +110,32 @@ describe('股票价格与筹码结构研判模型', () => {
     expect(result.risk.support).toBeNull()
     expect(result.risk.resistance).toBeNull()
     expect(result.chips.summary).toContain('没有可用筹码分布')
+  })
+
+  it('近5日量能变化基于成交量 vol，不受 amount 影响', () => {
+    const rows = createRows(30, () => 10)
+    // 可见窗末 10 根：前5 vol=100，近5 vol=200 → +100%；amount 反向变化不得干扰
+    for (let i = 0; i < rows.length; i += 1) {
+      rows[i].vol = 50
+      rows[i].amount = 9999
+    }
+    const end = rows.length
+    for (let i = end - 10; i < end - 5; i += 1) {
+      rows[i].vol = 100
+      rows[i].amount = 5000
+    }
+    for (let i = end - 5; i < end; i += 1) {
+      rows[i].vol = 200
+      rows[i].amount = 100
+    }
+
+    const result = buildStockStructureInsight({
+      rows,
+      visibleRange: 30,
+      activeProfile: createProfile(),
+      latestProfile: null,
+    })
+
+    expect(result.risk.volumeChangePercent).toBeCloseTo(100, 5)
   })
 })

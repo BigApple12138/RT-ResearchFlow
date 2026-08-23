@@ -10,6 +10,8 @@
 
 较大的功能或架构调整，请先在 Ideas 中说明用户问题、建议范围和替代方案，达成方向共识后再提交代码。不要用公开 Issue 或 Discussion 上传数据库、日志、API Key、Token、真实持仓及个人路径。
 
+**开发流程（含 Agent）：** 核心是 **Spec-Driven Development（SDD）**——Specify → Plan → Implement → Validate（含 plan 文末「设计初衷检核」）。**spec 与 plan 必须提交进仓库归档**。Cursor **superpowers skills 只是可选工具**，可借鉴，不能代替 SDD。详见 [`AGENTS.md`](AGENTS.md) 与 [`docs/superpowers/README.md`](docs/superpowers/README.md)。豁免情形以 `AGENTS.md` 窄名单为准。
+
 ## 本地开发
 
 要求：Node.js 20.x、pnpm 10.x，以及能够构建 Electron 原生依赖的 Windows 开发环境。
@@ -49,6 +51,7 @@ pnpm run verify
 - 说明用户可见结果、技术边界、验证证据和已知限制。
 - 新增依赖时说明为什么现有依赖或平台能力不能满足需求。
 - 不提交构建产物、运行数据库、日志、测试报告或临时配置。
+- **合并前必须完成 Review**（GitHub 上可核查的 Approve 或带结论的审查报告）；CI 通过不等于可以合并。阻塞性意见处理完之前不要 merge。详见 [`AGENTS.md`](AGENTS.md) §「Pull Request Review」。
 - 接受 Review 后再修改原提交或追加提交；不要重写其他贡献者的历史。
 
 项目使用 AGPL-3.0-only。提交代码即表示你有权提供该贡献，并同意其按仓库许可证发布。

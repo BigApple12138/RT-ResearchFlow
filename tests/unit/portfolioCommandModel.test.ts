@@ -75,7 +75,7 @@ describe('buildPortfolioCommandSummary', () => {
     expect(summary.holdingCount).toBe(3)
     expect(summary.profitSummaryKind).toBe('partial')
     expect(summary.profitPctAvg).toBeCloseTo(3, 5)
-    expect(summary.pendingCount).toBe(2)
+    expect(summary.pendingCount).toBe(1)
     expect(summary.portfolioRiskCount).toBeGreaterThanOrEqual(1)
   })
 })

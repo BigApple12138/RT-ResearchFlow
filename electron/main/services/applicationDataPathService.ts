@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   readdirSync,
   renameSync,
@@ -15,12 +16,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'fs'
-import { dirname, join, relative, resolve } from 'path'
+import { dirname, isAbsolute, join, relative, resolve } from 'path'
+import { tmpdir } from 'os'
 import type { App } from 'electron'
 
 export const APP_DATA_DIRECTORY_NAME = 'data'
 export const APP_DATA_MARKER_FILE = '.trade-watch-data-root.json'
 export const SESSION_PROFILE_MIGRATION_MARKER_FILE = '.trade-watch-session-profile-v2.json'
+export const DATA_ROOT_OVERRIDE_FILE = 'data-root.json'
 
 const LEGACY_SESSION_PROFILE_MIGRATION_MARKER_FILE = '.trade-watch-session-profile-v1.json'
 
@@ -40,12 +43,23 @@ const TRANSIENT_NAMES = new Set(['LOCK', 'SingletonCookie', 'SingletonLock', 'Si
 
 export type ApplicationDataMode = 'development' | 'installed-windows' | 'platform-default'
 
+export type DataRootOverrideSource = 'env' | 'file'
+
+export interface DataRootOverride {
+  target: string
+  source: DataRootOverrideSource
+  /** 写入引导文件时正在使用的数据根；空目标迁移时优先从这里复制（支持连续切换）。 */
+  previousRoot: string | null
+}
+
 export interface ApplicationDataPathResult {
   mode: ApplicationDataMode
   dataRoot: string
   legacyUserDataPath: string
   migrated: boolean
   reusedExisting: boolean
+  override: DataRootOverride | null
+  pendingMigration: boolean
 }
 
 interface PathAppHost {
@@ -63,9 +77,21 @@ export interface PrepareApplicationDataRootOptions {
   pid?: number
 }
 
+export interface PrepareCustomDataRootOptions {
+  currentRoot: string
+  targetRoot: string
+  copyDirectory?: (source: string, destination: string) => void
+  now?: () => number
+  pid?: number
+}
+
 export class ApplicationDataPathError extends Error {
   constructor(
-    public readonly code: 'DATA_DIRECTORY_NOT_WRITABLE' | 'DATA_DIRECTORY_CONFLICT' | 'DATA_MIGRATION_FAILED',
+    public readonly code:
+      | 'DATA_DIRECTORY_NOT_WRITABLE'
+      | 'DATA_DIRECTORY_CONFLICT'
+      | 'DATA_MIGRATION_FAILED'
+      | 'DATA_ROOT_INVALID_PATH',
     message: string,
     options?: { cause?: unknown },
   ) {
@@ -405,44 +431,298 @@ export function prepareApplicationDataRoot(options: PrepareApplicationDataRootOp
   }
 }
 
+/**
+ * 引导配置文件（data-root.json）先于任何数据库存在，保存在固定的平台默认
+ * userData 目录，解决「数据目录在哪必须先于数据库可知」的鸡生蛋问题。
+ * 文件缺失或损坏时退回默认目录，不阻塞启动。
+ */
+export function readDataRootOverride(
+  bootstrapDirectory: string,
+): { target: string; previousRoot: string | null } | null {
+  let raw: string
+  try {
+    raw = readFileSync(join(bootstrapDirectory, DATA_ROOT_OVERRIDE_FILE), 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    console.warn('[AppData] 数据目录引导文件读取失败，退回默认目录:', error)
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw) as { target?: unknown; previousRoot?: unknown }
+    if (typeof parsed.target === 'string' && parsed.target.trim().length > 0) {
+      const previousRoot = typeof parsed.previousRoot === 'string'
+        && parsed.previousRoot.trim().length > 0
+        && isAbsolute(parsed.previousRoot.trim())
+        ? parsed.previousRoot.trim()
+        : null
+      return { target: parsed.target.trim(), previousRoot }
+    }
+    console.warn('[AppData] 数据目录引导文件缺少有效 target，退回默认目录。')
+    return null
+  } catch (error) {
+    console.warn('[AppData] 数据目录引导文件不是有效 JSON，退回默认目录:', error)
+    return null
+  }
+}
+
+export function writeDataRootOverride(
+  bootstrapDirectory: string,
+  target: string,
+  previousRoot: string | null = null,
+): void {
+  mkdirSync(bootstrapDirectory, { recursive: true })
+  const file = join(bootstrapDirectory, DATA_ROOT_OVERRIDE_FILE)
+  const payload = { version: 1, target, previousRoot, updatedAt: Date.now() }
+  const temporary = `${file}.tmp-${process.pid}`
+  writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8' })
+  renameSync(temporary, file)
+}
+
+export function clearDataRootOverride(bootstrapDirectory: string): void {
+  try {
+    unlinkSync(join(bootstrapDirectory, DATA_ROOT_OVERRIDE_FILE))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
+export function resolveDataRootOverride(
+  bootstrapDirectory: string,
+  envValue: string | undefined,
+): DataRootOverride | null {
+  const envTarget = envValue?.trim()
+  if (envTarget) return { target: envTarget, source: 'env', previousRoot: null }
+  const fileOverride = readDataRootOverride(bootstrapDirectory)
+  if (fileOverride) return { target: fileOverride.target, source: 'file', previousRoot: fileOverride.previousRoot }
+  return null
+}
+
+export function validateCustomDataRootTarget(target: unknown): string {
+  if (typeof target !== 'string') {
+    throw new ApplicationDataPathError('DATA_ROOT_INVALID_PATH', '数据目录路径无效')
+  }
+  const trimmed = target.trim()
+  if (!trimmed || !isAbsolute(trimmed)) {
+    throw new ApplicationDataPathError(
+      'DATA_ROOT_INVALID_PATH',
+      `数据目录必须是绝对路径：${trimmed || '(空)'}`,
+    )
+  }
+  const resolved = resolve(trimmed)
+  ensureWritableDirectory(resolved)
+  return resolved
+}
+
+export function classifyDataRootTarget(targetRoot: string): 'app-data' | 'empty' | 'conflict' {
+  if (hasApplicationData(targetRoot)) return 'app-data'
+  return listMeaningfulEntries(targetRoot).length > 0 ? 'conflict' : 'empty'
+}
+
+export function prepareCustomDataRoot(options: PrepareCustomDataRootOptions): {
+  migrated: boolean
+  reusedExisting: boolean
+} {
+  return prepareApplicationDataRoot({
+    legacyUserDataPath: options.currentRoot,
+    dataRoot: options.targetRoot,
+    copyDirectory: options.copyDirectory,
+    now: options.now,
+    pid: options.pid,
+  })
+}
+
+/**
+ * 待迁移进程专用的临时 Chromium profile。
+ * 阶段 A 不能把 userData 指向目标目录：Chromium 会在 ready 前就在 userData 里
+ * 初始化 profile 文件（Cache、Local Storage 等），把原本为空的目标目录污染成
+ * 「未知文件冲突」，导致阶段 B 复制必然失败。迁移小窗因此使用 OS 临时目录里
+ * 的一次性 profile，复制源与目标目录都保持干净。
+ */
+function migrationScratchProfile(): string {
+  const scratch = join(tmpdir(), `trade-watch-data-root-migration-${process.pid}-${Date.now()}`)
+  ensureWritableDirectory(scratch)
+  return scratch
+}
+
+function planDataRootOverride(
+  defaultRoot: string,
+  override: DataRootOverride | null,
+  fallbackSource: string | null,
+): { dataRoot: string; migrationSource: string | null } {
+  if (!override) return { dataRoot: defaultRoot, migrationSource: null }
+  const targetRoot = resolve(override.target)
+  if (targetRoot === resolve(defaultRoot)) return { dataRoot: targetRoot, migrationSource: null }
+  const classification = classifyDataRootTarget(targetRoot)
+  if (classification === 'app-data') return { dataRoot: targetRoot, migrationSource: null }
+  if (classification === 'conflict') {
+    throw new ApplicationDataPathError(
+      'DATA_DIRECTORY_CONFLICT',
+      `目标数据目录包含未知文件，已停止以避免覆盖：${targetRoot}`,
+    )
+  }
+  const migrationSource = [
+    // 引导文件记录的上一数据根优先：连续切换自定义目录时，新目标应从真正在用的根复制。
+    override.previousRoot,
+    defaultRoot,
+    fallbackSource,
+  ].find((candidate) => candidate !== null
+    && resolve(candidate) !== targetRoot
+    && hasApplicationData(candidate)) ?? null
+  return { dataRoot: targetRoot, migrationSource }
+}
+
+let configuredDataPathResult: ApplicationDataPathResult | null = null
+let pendingDataRootMigration: PrepareCustomDataRootOptions | null = null
+
+export function getApplicationDataPathResult(): ApplicationDataPathResult | null {
+  return configuredDataPathResult
+}
+
+export function hasPendingDataRootMigration(): boolean {
+  return pendingDataRootMigration !== null
+}
+
+/**
+ * 阶段 B：在 app.whenReady() 之后执行延迟的数据根复制迁移（带进度小窗）。
+ * 调用方在本进程退出前完成复制即可：Chromium profile 已初始化在临时 profile，
+ * 无法在进程内切换 userData，复制成功后须重启应用使新根生效。
+ */
+export function applyDeferredDataRootMigration(): { migrated: boolean; reusedExisting: boolean } {
+  const migration = pendingDataRootMigration
+  if (!migration) return { migrated: false, reusedExisting: true }
+  const prepared = prepareCustomDataRoot(migration)
+  pendingDataRootMigration = null
+  prepareSessionDataRoot(migration.targetRoot)
+  mkdirSync(join(migration.targetRoot, 'logs'), { recursive: true })
+  return prepared
+}
+
 export function configureApplicationDataPaths(
   app: Pick<App, 'isPackaged' | 'getPath' | 'setPath' | 'setAppLogsPath'> | PathAppHost,
   platform: NodeJS.Platform = process.platform,
+  envDataRoot: string | undefined = process.env['RT_DATA_ROOT'],
 ): ApplicationDataPathResult {
   const legacyUserDataPath = app.getPath('userData')
+  const override = resolveDataRootOverride(legacyUserDataPath, envDataRoot)
+  pendingDataRootMigration = null
 
   if (!app.isPackaged) {
-    const dataRoot = legacyUserDataPath.endsWith('-dev') ? legacyUserDataPath : `${legacyUserDataPath}-dev`
-    ensureWritableDirectory(dataRoot)
-    const { sessionData } = prepareSessionDataRoot(dataRoot)
-    const logs = join(dataRoot, 'logs')
+    // dev 模式下 override 按原样使用（不追加 -dev 后缀）：用户显式指定即视为知情。
+    const defaultRoot = legacyUserDataPath.endsWith('-dev') ? legacyUserDataPath : `${legacyUserDataPath}-dev`
+    const plan = planDataRootOverride(defaultRoot, override, null)
+    if (plan.migrationSource) {
+      pendingDataRootMigration = { currentRoot: plan.migrationSource, targetRoot: plan.dataRoot }
+      app.setPath('userData', migrationScratchProfile())
+      configuredDataPathResult = {
+        mode: 'development',
+        dataRoot: plan.migrationSource,
+        legacyUserDataPath,
+        migrated: false,
+        reusedExisting: false,
+        override,
+        pendingMigration: true,
+      }
+      return configuredDataPathResult
+    }
+    ensureWritableDirectory(plan.dataRoot)
+    const { sessionData } = prepareSessionDataRoot(plan.dataRoot)
+    const logs = join(plan.dataRoot, 'logs')
     mkdirSync(logs, { recursive: true })
-    app.setPath('userData', dataRoot)
+    app.setPath('userData', plan.dataRoot)
     app.setPath('sessionData', sessionData)
     app.setAppLogsPath(logs)
-    return { mode: 'development', dataRoot, legacyUserDataPath, migrated: false, reusedExisting: true }
-  }
-
-  if (platform !== 'win32') {
-    return {
-      mode: 'platform-default',
-      dataRoot: legacyUserDataPath,
+    configuredDataPathResult = {
+      mode: 'development',
+      dataRoot: plan.dataRoot,
       legacyUserDataPath,
       migrated: false,
       reusedExisting: true,
+      override,
+      pendingMigration: false,
     }
+    return configuredDataPathResult
+  }
+
+  if (platform !== 'win32') {
+    if (!override) {
+      configuredDataPathResult = {
+        mode: 'platform-default',
+        dataRoot: legacyUserDataPath,
+        legacyUserDataPath,
+        migrated: false,
+        reusedExisting: true,
+        override: null,
+        pendingMigration: false,
+      }
+      return configuredDataPathResult
+    }
+    const plan = planDataRootOverride(legacyUserDataPath, override, null)
+    if (plan.migrationSource) {
+      pendingDataRootMigration = { currentRoot: plan.migrationSource, targetRoot: plan.dataRoot }
+      app.setPath('userData', migrationScratchProfile())
+      configuredDataPathResult = {
+        mode: 'platform-default',
+        dataRoot: plan.migrationSource,
+        legacyUserDataPath,
+        migrated: false,
+        reusedExisting: false,
+        override,
+        pendingMigration: true,
+      }
+      return configuredDataPathResult
+    }
+    ensureWritableDirectory(plan.dataRoot)
+    const { sessionData } = prepareSessionDataRoot(plan.dataRoot)
+    const logs = join(plan.dataRoot, 'logs')
+    mkdirSync(logs, { recursive: true })
+    app.setPath('userData', plan.dataRoot)
+    app.setPath('sessionData', sessionData)
+    app.setAppLogsPath(logs)
+    configuredDataPathResult = {
+      mode: 'platform-default',
+      dataRoot: plan.dataRoot,
+      legacyUserDataPath,
+      migrated: false,
+      reusedExisting: true,
+      override,
+      pendingMigration: false,
+    }
+    return configuredDataPathResult
   }
 
   const installDirectory = dirname(app.getPath('exe'))
-  const dataRoot = join(installDirectory, APP_DATA_DIRECTORY_NAME)
-  const prepared = prepareApplicationDataRoot({ legacyUserDataPath, dataRoot })
-  const { sessionData } = prepareSessionDataRoot(dataRoot)
-  const logs = join(dataRoot, 'logs')
+  const defaultRoot = join(installDirectory, APP_DATA_DIRECTORY_NAME)
+  const plan = planDataRootOverride(defaultRoot, override, legacyUserDataPath)
+  if (override && plan.migrationSource) {
+    pendingDataRootMigration = { currentRoot: plan.migrationSource, targetRoot: plan.dataRoot }
+    app.setPath('userData', migrationScratchProfile())
+    configuredDataPathResult = {
+      mode: 'installed-windows',
+      dataRoot: plan.migrationSource,
+      legacyUserDataPath,
+      migrated: false,
+      reusedExisting: false,
+      override,
+      pendingMigration: true,
+    }
+    return configuredDataPathResult
+  }
+  const prepared = prepareApplicationDataRoot({ legacyUserDataPath, dataRoot: plan.dataRoot })
+  const { sessionData } = prepareSessionDataRoot(plan.dataRoot)
+  const logs = join(plan.dataRoot, 'logs')
   mkdirSync(logs, { recursive: true })
-  app.setPath('userData', dataRoot)
+  app.setPath('userData', plan.dataRoot)
   app.setPath('sessionData', sessionData)
   app.setAppLogsPath(logs)
-  return { mode: 'installed-windows', dataRoot, legacyUserDataPath, ...prepared }
+  configuredDataPathResult = {
+    mode: 'installed-windows',
+    dataRoot: plan.dataRoot,
+    legacyUserDataPath,
+    ...prepared,
+    override,
+    pendingMigration: false,
+  }
+  return configuredDataPathResult
 }
 
 export function applicationDataPathErrorMessage(error: unknown): string {

@@ -71,7 +71,12 @@ export type IndustryResearchFinancialDataset =
   | 'disclosure_date'
   | 'fina_mainbz'
 
-export type ResearchWebSearchProviderId = 'tavily' | 'bing' | 'custom_openai_compatible_search'
+export type ResearchWebSearchProviderId =
+  | 'tavily'
+  | 'bing'
+  | 'custom_openai_compatible_search'
+  | 'external_mcp'
+  | 'builtin_web'
 export type ResearchEvidenceCandidateStatus = 'fetched' | 'partial' | 'failed' | 'confirmed' | 'rejected'
 export type ResearchEvidenceSourceKind =
   | 'web_search'
@@ -378,6 +383,8 @@ export interface ResearchWebSearchConfigRow {
   enabled: number
   api_key_encrypted: Buffer | null
   base_url: string | null
+  mcp_server_id: string | null
+  mcp_tool_name: string | null
   last_validated_at: number | null
   last_error_code: string | null
   updated_at: number
@@ -649,6 +656,7 @@ export interface AIResearchDiscussionContextRow {
   base_snapshot_id: string | null
   base_selection_reason: ResearchBaseSelectionReason
   summarized_through_message_index: number | null
+  summarized_through_message_sequence: number | null
   latest_batch_id: string | null
   degraded_reason: string | null
   created_at: number
@@ -665,6 +673,8 @@ export interface IndustryResearchCandidateBatchRow {
   base_snapshot_id: string | null
   message_start_index: number | null
   message_end_index: number | null
+  message_start_sequence: number | null
+  message_end_sequence: number | null
   context_hash: string
   provider: string | null
   model: string | null
@@ -696,6 +706,8 @@ export interface IndustryResearchChangeSetRow {
   source_session_id: number | null
   message_start_index: number | null
   message_end_index: number | null
+  message_start_sequence: number | null
+  message_end_sequence: number | null
   user_edits_json: string | null
   resolution_action: 'accept' | 'reject' | 'defer' | null
   resolution_reason: string | null
@@ -718,6 +730,8 @@ export interface IndustryResearchChangeCandidateRow {
   source_locator: string
   message_start_index: number | null
   message_end_index: number | null
+  message_start_sequence: number | null
+  message_end_sequence: number | null
   target_entity_id: string | null
   statement_type: ResearchCandidateStatementType
   primary_source: number
@@ -1136,6 +1150,8 @@ export interface AppSettingsRow {
   decision_notify_in_app_enabled?: number  // FR-260: 应用内主动提醒开关，0/1，默认 1
   supply_chain_llm_fallback?: number       // FR-171: 产业链传导分析 LLM 兜底开关，0=关，1=开
   decision_center_filters_json?: string | null // FR-241: 今日看板筛选的跨 renderer-origin 持久偏好
+  /** Agent 联网授权：0=关（默认），1=开；仅控制 Registry 中 sideEffect=network 的 Tool */
+  ai_agent_network_enabled?: number
 }
 
 // FR-159: 历史回测明细行
@@ -1175,6 +1191,17 @@ export interface MarketTimelineDailyRow {
   limit_down: number
 }
 
+export interface MarketResonanceDailySnapshotRow {
+  trade_date: string
+  data_mode: 'archive' | 'partial'
+  source_label: string
+  coverage_available: number
+  coverage_total: number
+  snapshot_json: string
+  snapshot_sha256: string
+  captured_at: number
+}
+
 export interface FreeMinuteCacheRow {
   providerId: string
   tsCode: string
@@ -1188,20 +1215,6 @@ export interface FreeMinuteCacheRow {
   vol: number | null
   amount: number | null
   fetchedAt: number
-}
-
-export interface SectorFlowDailyRow {
-  trade_date: string
-  source: string
-  concept_code: string
-  concept_name: string
-  total_amount: number
-  net_inflow: number
-  net_inflow_rate: number
-  weighted_change: number
-  member_count: number
-  up_count: number
-  down_count: number
 }
 
 export interface SectorFlowObservationRow {
@@ -1246,6 +1259,176 @@ export interface AIConfigRow {
   customSkillPaths: string        // JSON array e.g. '["D:\\mySkills"]'
   skillsForTrend: number          // 0 or 1
   maxSkillChars: number           // default 30000
+  autoCompactDiscussion: number   // 0 or 1; default 1
+}
+
+export interface TrendStructureReviewRow {
+  revision_id: string
+  ts_code: string
+  score_trade_date: string
+  facts_hash: string
+  request_id: string
+  local_trend_state: 'strengthening' | 'strong' | 'stable' | 'weakening' | 'broken' | 'insufficient'
+  local_total_score: number | null
+  ai_verdict: 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
+  rationale: string
+  focus_points_json: string
+  provider: string | null
+  model: string | null
+  audit_json: string
+  created_at: number
+  updated_at: number
+  ai_score_status: 'scored' | 'skipped' | 'invalid'
+  ai_score_delta: number | null
+  ai_score_rationale: string | null
+}
+
+export interface TrendStructureReviewRevisionRow {
+  id: string
+  ts_code: string
+  score_trade_date: string
+  facts_hash: string
+  request_id: string
+  local_trend_state: 'strengthening' | 'strong' | 'stable' | 'weakening' | 'broken' | 'insufficient'
+  local_total_score: number | null
+  ai_verdict: 'agree' | 'possible_false_break' | 'possible_false_hold' | 'evidence_weak' | 'need_more_data'
+  rationale: string
+  focus_points_json: string
+  provider: string | null
+  model: string | null
+  audit_json: string
+  created_at: number
+  ai_score_status: 'scored' | 'skipped' | 'invalid'
+  ai_score_delta: number | null
+  ai_score_rationale: string | null
+}
+
+export interface TrendStructureReviewRequestRow {
+  request_id: string
+  ts_code: string
+  score_trade_date: string
+  facts_hash: string
+  revision_id: string
+  created_at: number
+}
+
+export interface DiscussionCompactionRow {
+  id: string
+  session_id: number
+  request_id: string
+  source_start_sequence: number
+  covered_through_sequence: number
+  source_messages_hash: string
+  summary_text: string
+  summary_hash: string
+  provider: string
+  model: string
+  created_at: number
+  /** 压缩前上下文规模（字符启发式，对齐 OpenClaw tokensBefore） */
+  tokens_before: number | null
+  /** 压缩后上下文规模（字符启发式，对齐 OpenClaw tokensAfter） */
+  tokens_after: number | null
+}
+
+export interface DiscussionMessageArchiveRow {
+  session_id: number
+  message_sequence: number
+  message_json: string
+  compaction_id: string
+  archived_at: number
+}
+
+export type DiscussionTurnRequestStatus = 'running' | 'succeeded' | 'failed'
+
+export interface DiscussionTurnRequestRow {
+  request_id: string
+  session_id: number
+  status: DiscussionTurnRequestStatus
+  user_message: string
+  response_text: string | null
+  error_message: string | null
+  created_at: number
+  updated_at: number
+  completed_at: number | null
+}
+
+/** Agent Hub 执行账本（Migration 148） */
+export type AgentTurnStatus =
+  | 'running'
+  | 'waiting_subagent'
+  | 'interrupted'
+  | 'done'
+  | 'error'
+  | 'cancelled'
+
+export type AgentTurnTerminal = 'done' | 'error' | 'cancelled'
+
+export type AgentStepStatus =
+  | 'pending'
+  | 'running'
+  | 'waiting_subagent'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled'
+
+export type AgentObservationFailureCategory = 'retryable' | 'replanable' | 'blocked'
+
+export interface AgentTurnRow {
+  id: string
+  request_id: string
+  request_fingerprint: string
+  session_id: number
+  goal: string
+  completion_criteria_json: string
+  plan_revision: number
+  status: AgentTurnStatus
+  terminal: AgentTurnTerminal | null
+  error_code: string | null
+  error_message: string | null
+  revision: number
+  created_at: number
+  updated_at: number
+  completed_at: number | null
+}
+
+export interface AgentStepRow {
+  id: string
+  turn_id: string
+  agent_id: string
+  role: string
+  task_id: string | null
+  parent_task_id: string | null
+  title: string
+  depends_on_json: string
+  capability_need_json: string
+  plan_revision: number
+  attempt: number
+  status: AgentStepStatus
+  subagent_run_id: string | null
+  intent_json: string | null
+  intent_sha256: string | null
+  outcome_json: string | null
+  outcome_sha256: string | null
+  revision: number
+  error_code: string | null
+  error_message: string | null
+  created_at: number
+  updated_at: number
+  started_at: number | null
+  completed_at: number | null
+}
+
+export interface AgentObservationRow {
+  id: string
+  turn_id: string
+  step_id: string | null
+  summary: string
+  evidence_refs_json: string
+  failure_category: AgentObservationFailureCategory | null
+  remaining_gaps_json: string
+  content_hash: string
+  created_at: number
 }
 
 export interface ProviderConfigRow {
@@ -1269,6 +1452,7 @@ export interface AIAnalysisSessionRow {
   response: string | null
   responseRound2: string | null
   messages: string | null // JSON array of {role, content}
+  next_message_sequence: number
   scanRunId: number | null
   briefingId: number | null
   isError: number // 0 or 1
@@ -1431,6 +1615,8 @@ export interface DataSourceConfigRow {
   id: 1
   tushareTokenEncrypted: Buffer | null
   tushareEnabled: number // 0 or 1
+  /** Custom Tushare REST base URL; null/empty = official default */
+  tushareApiUrl: string | null
 }
 
 export interface StockInfoRow {
@@ -1500,7 +1686,7 @@ export interface IntradayCacheRow {
 
 // FR-123: 个股分钟级 K 线缓存（Tushare 374 rt_min）
 export interface StockMinuteCacheRow {
-  stockCode: string // 6 位纯数字，如 '600036'
+  stockCode: string // 个股为 6 位纯数字（如 '600036'）；预置指数为带后缀 tsCode（如 '000001.SH'，2026-08-13 指数分时专业版）
   tradeDate: string // YYYYMMDD（北京时间交易日）
   tsMinute: string // HH:mm（北京时间）
   open: number | null
@@ -2221,6 +2407,19 @@ export interface DecisionSignalEventRow {
 
 export type DecisionReviewReportKind = 'daily' | 'weekly'
 
+export type DecisionReviewAiNarrativeStatus = 'pending' | 'ready' | 'error' | 'skipped'
+
+/** FR-250: 可选；旧快照无字段视为无 AI */
+export interface DecisionReviewAiNarrative {
+  status: DecisionReviewAiNarrativeStatus
+  text: string | null
+  generatedAt?: number
+  provider?: string
+  model?: string
+  errorCode?: string
+  errorMessage?: string
+}
+
 export interface DecisionReviewReportSnapshot {
   kind: DecisionReviewReportKind
   rangeDays: number
@@ -2234,13 +2433,20 @@ export interface DecisionReviewReportSnapshot {
     openRiskCount: number
     evidenceGapCount: number
     followUpCount: number
+    watchingCount?: number
   }
+  /** 日报日结可选字段；旧快照/周报可缺省 */
+  marketEnvironment?: unknown
+  capitalHighlights?: unknown
+  holdingMoves?: unknown
+  watchedSignals?: unknown[]
   processed: unknown[]
   openRisks: unknown[]
   evidenceGaps: unknown[]
   followUps: unknown[]
   disclaimer: string
   emptyDay: boolean
+  aiNarrative?: DecisionReviewAiNarrative | null
 }
 
 export interface DecisionReviewReportRow {
@@ -2353,6 +2559,9 @@ export interface DecisionJudgmentFollowUpRecord {
 export interface Briefing extends Omit<BriefingRow, 'isRead' | 'isCatchUp'> {
   isRead: boolean
   isCatchUp: boolean
+  /** 持仓相关过滤命中词（最多 3 个，展示用可再截断） */
+  relevanceHits?: string[]
+  relevanceKind?: 'direct' | 'chain_peer'
 }
 
 export interface Source extends Omit<SourceRow, 'isBuiltIn' | 'isEnabled'> {
@@ -2367,6 +2576,8 @@ export interface ScanStatus {
   currentRun: ScanRunRow | null
 }
 
+export type BriefingRelevanceScope = 'all' | 'portfolio'
+
 export interface BriefingListOptions {
   date?: string // YYYY-MM-DD filter
   impactRating?: ImpactRating | null
@@ -2374,6 +2585,8 @@ export interface BriefingListOptions {
   isRead?: boolean | null
   search?: string | null
   publicationTimeScope?: PublicationTimeScope
+  /** IPC 缺省 'all'；Renderer 默认传 'portfolio' */
+  relevance?: BriefingRelevanceScope
   limit?: number
   offset?: number
 }
@@ -2389,7 +2602,14 @@ export interface BriefingSourceStat {
 export interface BriefingListResult {
   items: Briefing[]
   total: number
+  /** 与当前列表过滤（含 relevance）一致的未读数 */
   unreadCount: number
+  /** 同 unreadCount；显式命名便于 UI */
+  relevanceUnreadCount: number
+  /** 忽略 relevance 后、其余筛选下的未读（次级「全部未读」） */
+  allUnreadCount: number
+  relevanceModeApplied: 'all' | 'portfolio' | 'portfolio_fallback_empty'
+  portfolioTermCount: number
   sourceStats: BriefingSourceStat[]
 }
 

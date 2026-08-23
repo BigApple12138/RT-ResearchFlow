@@ -6,13 +6,9 @@ import {
   createSession,
   updateSessionResponse,
   updateSessionRound2,
-  updateSessionMessages,
-  deleteSession,
   listSessions,
   getSession,
-  deleteAllSessions,
-  deleteSessionsOlderThan,
-  type ConversationMessage
+  getSessionMessages,
 } from '../database/aiAnalysisSessionRepository'
 import { getDataSourceConfig, updateDataSourceConfig } from '../database/dataSourceRepository'
 import { encryptApiKey, decryptApiKey } from '../utils/apiKeyEncryption'
@@ -26,7 +22,7 @@ import {
   resolveArticleAnalysisPrompt,
   runCandidateRecovery,
 } from '../aiPromptDefaults'
-import { callWithFallback, resolveProviderCredentials } from '../services/aiFallbackService'
+import { callWithFallback, resolveForecastProviderIds, resolveProviderCredentials } from '../services/aiFallbackService'
 import { CandidateRecoveryError, recoverSessionCandidates } from '../services/aiCandidateRecoveryService'
 import { buildSkillsBlock } from '../services/aiSkillsPromptService'
 import {
@@ -37,10 +33,13 @@ import {
   fetchIndexPrices,
   fetchIntradayData,
   fetchIntradayDataBySecid,
-  fetchStockMinuteDaily,
+  fetchStockMinute,
   forceFetchSingleStock,
   getBoardSecid,
+  INDEX_SECID,
+  resolveStockIdentityPublic,
   validateTushareToken,
+  validateTushareApiUrlInput,
 } from '../services/tushareService'
 import { inspectTrendBenchmarkHealth, type TrendBenchmarkHealth } from '../services/trendBenchmarkFreshness'
 import { getCachedPricePage, getCachedPrices, getStockInfo, upsertStockInfo, upsertStockInfoIfAbsent } from '../database/stockPriceCacheRepository'
@@ -50,9 +49,9 @@ import { sha256 } from '../utils/hashUtils'
 import { fetchHtml } from './detailHandlers'
 import { detailContentToText, extractDetailContent } from '../services/detailContentExtraction'
 import { getStockMinuteByDate, upsertStockMinute } from '../database/stockMinuteCacheRepository'
-import { runStockBasicSyncJob, subscribeStockMinute, unsubscribeStockMinute } from '../services/schedulerService'
+import { runStockBasicSyncJob, subscribeStockMinute, unsubscribeStockMinute, refreshStockMinuteOnce } from '../services/schedulerService'
 import { searchByNameOrCode, countAll as countStockBasic } from '../database/stockBasicCacheRepository'
-import type { AIProvider, ImpactRating, BriefingRow, SourceRow, StockPriceCacheRow } from '../database/types'
+import type { AIProvider, ImpactRating, BriefingRow, SourceRow, StockPriceCacheRow, DiscussionCompactionRow } from '../database/types'
 // FR-163: 数据增强辅助模块
 import { queryLatestFactor } from '../database/stkFactorCacheRepository'
 import { getStockLimitHistory } from '../database/limitListDailyRepository'
@@ -69,11 +68,22 @@ import {
   buildRound2MarketBlockedResponse,
   prepareArticleRound2MarketContext,
 } from '../services/aiRound2MarketContextService'
+import {
+  formatDailyCsvVolumeCell,
+  summarizeVolumeEnergy,
+} from '../services/volumeContextSummary'
+import {
+  appendForecastGrounding,
+  DEFAULT_TREND_MORROW_PROMPT,
+  DEFAULT_TREND_TODAY_PROMPT,
+  ensureStkFactorForForecast,
+  prepareForecastIntradayEvidence,
+  serializeMinuteBarsForPrompt,
+  TECHNICAL_FACTOR_EOD_NOTE,
+  technicalFactorAbsenceNote,
+} from '../services/forecastEvidencePackage'
 import { buildArticleRound2ResearchFactContext } from '../services/researchFactPromptService'
 import {
-  buildDiscussionAIRequest,
-  deleteResearchDiscussion,
-  deleteAllResearchDiscussions,
   discussionContextPreview,
   discussionSummary,
   getDiscussionResearchAuditContext,
@@ -84,16 +94,71 @@ import {
   updateDiscussionContextBeforeStart,
 } from '../services/researchDiscussionContextService'
 import {
-  auditResearchText,
-  buildBlockedResearchText,
   buildResearchAuditTraceView,
 } from '../services/researchEvidenceAuditService'
+import { runPortfolioBrief } from '../services/portfolioBriefService'
 import {
   countResearchDiscussionSessions,
   getResearchDiscussionContext,
 } from '../database/researchDiscussionRepository'
 import type { ResearchDiscussionOriginType, ResearchDiscussionStatus } from '../database/types'
-import { getResearchAgentAuditContext } from '../services/researchAgentRunManager'
+import { getResearchAgentAuditContext, isDiscussionSessionBusy } from '../services/researchAgentRunManager'
+import { runDiscussionFollowUp } from '../services/discussionFollowUpService'
+import { compactDiscussionContextWithinLock } from '../services/discussionContextCompactionService'
+import { withDiscussionSessionLock } from '../services/discussionSessionLock'
+import { listDiscussionCompactionCheckpoints } from '../database/discussionCompactionRepository'
+import { restoreLatestDiscussionCompactionWithinLock } from '../services/discussionCompactionRestoreService'
+import {
+  deleteAllSessionsWithSessionLocks,
+  deleteSessionWithSessionLock,
+  deleteSessionsOlderThanWithSessionLocks,
+} from '../services/discussionSessionLifecycleService'
+import {
+  validateDiscussionCompactionInput,
+  validateDiscussionFollowUpInput,
+  validateAgentTurnInput,
+  validateAgentConfirmInput,
+  isUuid,
+} from './discussionIpcContract'
+import { runAgentTurnForSession } from '../services/agentTurnService'
+import { getAgentHitlGate, getAgentToolRegistry, subscribeAgentEvents } from '../agent/agentRuntime'
+import { subscribeResearchAgentBridge } from '../agent/researchAgentBridge'
+import type { AgentEvent } from '../agent/types'
+export { isUuid } from './discussionIpcContract'
+
+export interface DiscussionCompactionDto {
+  id: string
+  sessionId: number
+  requestId: string
+  sourceStartSequence: number
+  coveredThroughSequence: number
+  sourceMessagesHash: string
+  summary: string
+  summaryHash: string
+  provider: string
+  model: string
+  createdAt: number
+  tokensBefore: number | null
+  tokensAfter: number | null
+}
+
+export function toDiscussionCompactionDto(row: DiscussionCompactionRow): DiscussionCompactionDto {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    requestId: row.request_id,
+    sourceStartSequence: row.source_start_sequence,
+    coveredThroughSequence: row.covered_through_sequence,
+    sourceMessagesHash: row.source_messages_hash,
+    summary: row.summary_text,
+    summaryHash: row.summary_hash,
+    provider: row.provider,
+    model: row.model,
+    createdAt: row.created_at,
+    tokensBefore: row.tokens_before ?? null,
+    tokensAfter: row.tokens_after ?? null,
+  }
+}
 
 /** FR-055/FR-072: Inject current Beijing date+time prefix into a prompt.
  *  Prepends "今天是XXXX年XX月XX日，现在是XX:XX（北京时间）\n\n" before the prompt text.
@@ -143,21 +208,22 @@ function buildForecastInputSnapshot(data: {
   })
 }
 
-/** FR-072: Default trendForecastPrompt — used when provider_configs.trendForecastPrompt is empty. */
-const DEFAULT_TREND_TODAY_PROMPT =
-  '我将提供给你以下信息：股票代码、今天大盘（上证指数）的分时走势数据、这支股票所属板块指数的分时走势数据，以及这支股票此时此刻的实际分时数据。' +
-  '请你结合上述数据，同时利用你可访问的公开渠道（东方财富、同花顺或其他来源）收集该公司的基本面信息（含近期年报/季报要点、主营业务、行业地位），' +
-  '并结合当前时政热点及该股票所属板块是否处于市场热点，综合分析并预测该股票今日剩余交易时段（至15:00收盘）的价格走势。' +
-  '跳过11:30至13:00的午休时段。' +
-  '当各指标出现矛盾信号时（如MACD趋势向上但RSI6或KDJ已进入超买区），必须明确指出矛盾并倾向于保守判断，不得凭借单一指标的信号主导结论。'
+/** FR-072 默认今日/明日预测提示：见 forecastEvidencePackage（接地，禁止催模型假装联网终端）。 */
 
-/** FR-072: Default trendForecastMorrowPrompt — used when provider_configs.trendForecastMorrowPrompt is empty. */
-const DEFAULT_TREND_MORROW_PROMPT =
-  '我将提供给你以下信息：股票代码、今日完整分时数据、今日大盘及板块分时数据、近30日日线OHLCV数据。' +
-  '请你结合上述数据，同时利用你可访问的公开渠道（东方财富、同花顺或其他来源）收集该公司基本面信息（含近期年报/季报要点、主营业务、行业地位），' +
-  '并结合当前时政热点及该股票所属板块是否处于市场热点，综合预测明日09:30至15:00的价格走势。' +
-  '跳过11:30至13:00的午休时段。' +
-  '当各指标出现矛盾信号时（如MACD趋势向上但RSI6或KDJ已进入超买区），必须明确指出矛盾并倾向于保守判断，不得凭借单一指标的信号主导结论。'
+/** 近30日日线 CSV 块：量=成交量(手) + 紧凑量能摘要 */
+function buildRecentDailyOhlcvPromptBlock(
+  rows: Array<{ tradeDate: string; open: number | null; high: number | null; low: number | null; close: number | null; volume: number | null; amount?: number | null }>,
+): string {
+  const dailyCsv = rows.map((r) =>
+    `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${formatDailyCsvVolumeCell(r.volume)}`,
+  ).join('\n')
+  const volumeSummary = summarizeVolumeEnergy(rows.map((r) => ({
+    tradeDate: r.tradeDate,
+    volume: r.volume,
+    amount: r.amount,
+  })))
+  return `近30日日线数据（日期,开,高,低,收,量=成交量手）：\n${dailyCsv}\n${volumeSummary}`
+}
 
 function refreshStructuredResultInBackground(db: import('better-sqlite3').Database, sessionId: number, reason: string): void {
   void generateStructuredResult(db, sessionId, { force: true }).catch((err) => {
@@ -627,6 +693,90 @@ async function _buildBoardMarketSuffix(stockCode: string): Promise<string> {
   return marketPart + boardPart
 }
 
+function resolveTechnicalSummaryForForecast(
+  db: import('better-sqlite3').Database,
+  tsCode: string,
+  factorStatus: Awaited<ReturnType<typeof ensureStkFactorForForecast>>,
+): string {
+  const tech = buildTechnicalSummary(db, tsCode)
+  if (tech) return `${tech}\n${TECHNICAL_FACTOR_EOD_NOTE}`
+  return technicalFactorAbsenceNote(factorStatus)
+}
+
+/**
+ * 组装今日预测共用证据：刷新分时主包、ensure 因子、大盘板块、增强摘要。
+ */
+async function assembleTodayForecastEvidence(
+  db: import('better-sqlite3').Database,
+  stockCode: string,
+): Promise<
+  | {
+      ok: true
+      timeStr: string
+      tsCode: string
+      intradayLabel: string
+      intradayJson: string
+      volumeSummary: string
+      dataPointCount: number
+      dataLabel: string
+      boardSuffix: string
+      extraContext: string
+    }
+  | { ok: false; error: { code: string; message: string } }
+> {
+  const tsCode = toTsCodeWithSuffix(stockCode)
+  const factorStatus = await ensureStkFactorForForecast(db, tsCode)
+  const intraday = await prepareForecastIntradayEvidence(db, stockCode)
+  if (!intraday.ok) {
+    return { ok: false, error: intraday.error }
+  }
+  const boardSuffix = await _buildBoardMarketSuffix(stockCode)
+  const techSummary = resolveTechnicalSummaryForForecast(db, tsCode, factorStatus)
+  const extraContext = [
+    techSummary,
+    buildLimitConceptSummary(db, stockCode),
+    buildSectorFlowSummary(db, stockCode),
+    buildSMCSummary(db, stockCode),
+    intraday.volumeSummary,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+  const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
+  const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
+  return {
+    ok: true,
+    timeStr,
+    tsCode,
+    intradayLabel: intraday.intradayLabel,
+    intradayJson: intraday.intradayJson,
+    volumeSummary: intraday.volumeSummary,
+    dataPointCount: intraday.dataPointCount,
+    dataLabel: intraday.dataLabel,
+    boardSuffix,
+    extraContext,
+  }
+}
+
+function buildTodayForecastUserPrompt(input: {
+  forecastPrompt: string
+  stockCode: string
+  timeStr: string
+  intradayLabel: string
+  intradayJson: string
+  boardSuffix: string
+  extraContext: string
+}): string {
+  const body =
+    `${input.forecastPrompt}\n\n股票代码：${input.stockCode}\n当前北京时间：${input.timeStr}\n\n` +
+    `${input.intradayLabel}：${input.intradayJson}${input.boardSuffix}` +
+    `${input.extraContext ? '\n\n' + input.extraContext : ''}` +
+    `\n\n请在响应末尾输出如下格式的预测数据（从${input.timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n` +
+    `\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n` +
+    `并另外输出结构化分析（紧跟在上方 json 块之后）：\n` +
+    `\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+  return appendForecastGrounding(body)
+}
+
 /**
  * FR-168: 持仓批量预测核心函数（导出供后台服务调用）.
  * 并行调用所有已配置 AI provider 预测今日走势，结果直接写入 trend_forecasts 表.
@@ -637,49 +787,26 @@ export async function performPredictTrendToday(
   stockCode: string
 ): Promise<{ ok: boolean; successCount: number; error?: { code: string; message: string } }> {
   const aiConfig = getAIConfig(db)
-  // 优先使用 multiModelProviders 列表，否则 fallback 到单个 provider
-  const multiModelProviders: string[] = aiConfig.multiModelProviders
-    ? (JSON.parse(aiConfig.multiModelProviders) as string[])
-    : []
-  const providersToUse: string[] =
-    multiModelProviders.length > 0 ? multiModelProviders : aiConfig.provider ? [aiConfig.provider] : []
+  // Prefer explicit multiModelProviders; otherwise same credential resolution as AI discussion / single-stock forecast.
+  const providersToUse = resolveForecastProviderIds(db)
 
   if (providersToUse.length === 0) {
     return { ok: false, successCount: 0, error: { code: 'AI_NOT_CONFIGURED', message: '未配置 AI 厂商' } }
   }
 
-  // 获取今日分时数据（优先 DB 分钟 K 线，fallback 东财）
-  const bjToday = getBjTodayYmd()
-  const minuteRows = getStockMinuteByDate(db, stockCode, bjToday)
-  let intradayLabel: string
-  let intradayJson: string
-  let dataPointCount = 0
-  if (minuteRows.length > 0) {
-    intradayLabel = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-    dataPointCount = minuteRows.length
-    intradayJson = JSON.stringify(minuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-  } else {
-    const stockItems = await fetchIntradayData(stockCode)
-    if (stockItems.length === 0) {
-      return { ok: false, successCount: 0, error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据' } }
-    }
-    intradayLabel = '实际分时数据（至今）'
-    dataPointCount = stockItems.length
-    intradayJson = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+  const evidence = await assembleTodayForecastEvidence(db, stockCode)
+  if (!evidence.ok) {
+    return { ok: false, successCount: 0, error: evidence.error }
   }
-
-  const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-  const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
-  const boardSuffix = await _buildBoardMarketSuffix(stockCode)
-  const tsCode = toTsCodeWithSuffix(stockCode)
-  const extraContext = [
-    buildTechnicalSummary(db, tsCode),
-    buildLimitConceptSummary(db, stockCode),
-    buildSectorFlowSummary(db, stockCode),
-    buildSMCSummary(db, stockCode),
-  ]
-    .filter(Boolean)
-    .join('\n\n')
+  const {
+    timeStr,
+    intradayLabel,
+    intradayJson,
+    dataPointCount,
+    dataLabel,
+    boardSuffix,
+    extraContext,
+  } = evidence
 
   // 构建各 provider 调用任务
   const tasks = providersToUse
@@ -693,14 +820,15 @@ export async function performPredictTrendToday(
       const forecastPrompt =
         injectTimePrefix(pc.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) +
         buildSkillsBlock(db, true)
-      const prompt =
-        `${forecastPrompt}\n\n股票代码：${stockCode}\n当前北京时间：${timeStr}\n\n` +
-        `${intradayLabel}：${intradayJson}${boardSuffix}` +
-        `${extraContext ? '\n\n' + extraContext : ''}` +
-        `\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n` +
-        `\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n` +
-        `并另外输出结构化分析（紧跟在上方 json 块之后）：\n` +
-        `\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+      const prompt = buildTodayForecastUserPrompt({
+        forecastPrompt,
+        stockCode,
+        timeStr,
+        intradayLabel,
+        intradayJson,
+        boardSuffix,
+        extraContext,
+      })
       return { provider: p, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, prompt }
     })
     .filter(Boolean) as { provider: string; model: string; apiKey: string; baseUrl?: string; maxTokens?: number | null; prompt: string }[]
@@ -750,7 +878,7 @@ export async function performPredictTrendToday(
             type: 'today',
             provider: task.provider,
             model: task.model,
-            dataLabel: intradayLabel,
+            dataLabel,
             dataPointCount,
             contextText: extraContext,
             promptText: task.prompt,
@@ -890,6 +1018,37 @@ function getCachedStockFetchSummary(
 }
 
 export function registerAIHandlers(getWindow: () => BrowserWindow | null): void {
+  // Agent Hub：确保种子 Tool + deep_start 已注册；事件推送到 Renderer
+  try {
+    getAgentToolRegistry()
+  } catch (error) {
+    console.warn('[ai] Agent ToolRegistry 初始化失败:', error instanceof Error ? error.message : error)
+  }
+
+  const pushAgentEvent = (event: AgentEvent) => {
+    const win = getWindow()
+    if (!win || win.isDestroyed()) return
+    try {
+      win.webContents.send('ai:agentEvent', event)
+    } catch { /* UI only */ }
+  }
+  subscribeAgentEvents(pushAgentEvent)
+  subscribeResearchAgentBridge((kind, event) => {
+    const runId = String(event.runId ?? '')
+    if (!runId) return
+    pushAgentEvent({
+      type: kind === 'progress' ? 'status' : 'tool_result',
+      requestId: typeof event.agentRequestId === 'string' ? event.agentRequestId : `bridge:${runId}`,
+      sessionId: typeof event.sessionId === 'number' ? event.sessionId : 0,
+      at: Date.now(),
+      payload: {
+        source: kind === 'progress' ? 'researchAgent.progress' : 'researchAgent.delta',
+        ...event,
+        name: kind === 'delta' ? 'research.deep_start' : undefined,
+      },
+    })
+  })
+
   // ── FR-072 / FR-081: per-stock per-provider forecast cache (in-process memory) ──
   interface StockForecastCache {
     today?: { time: string; price: number }[]
@@ -935,7 +1094,8 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     return {
       provider: row.provider,
       model: row.model,
-      hasApiKey: row.provider ? !!providerHasApiKey[row.provider] : false,
+      // Any configured provider key is enough for AI features; do not require legacy ai_config.provider.
+      hasApiKey: configured.length > 0,
       providerHasApiKey,
       providerConfigs,
       baseUrl: row.baseUrl ?? '',
@@ -962,6 +1122,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       customSkillPaths: (() => { try { return JSON.parse(row.customSkillPaths || '[]') } catch { return [] } })(),
       skillsForTrend: !!row.skillsForTrend,
       maxSkillChars: row.maxSkillChars ?? 30000,
+      autoCompactDiscussion: row.autoCompactDiscussion !== 0,
       providerModels: PROVIDER_MODELS,
       providerLabels: PROVIDER_LABELS,
       providerDefaultBaseUrls: PROVIDER_DEFAULT_BASE_URLS
@@ -989,6 +1150,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     selectedSkills?: string[]
     skillsForTrend?: boolean
     maxSkillChars?: number
+    autoCompactDiscussion?: boolean
     // FR-079: per-provider config update
     providerConfig?: {
       provider: string
@@ -1022,6 +1184,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     if (data.selectedSkills !== undefined) update.selectedSkills = JSON.stringify(data.selectedSkills)
     if (data.skillsForTrend !== undefined) update.skillsForTrend = data.skillsForTrend ? 1 : 0
     if (data.maxSkillChars !== undefined) update.maxSkillChars = Math.min(100000, Math.max(1000, data.maxSkillChars))
+    if (data.autoCompactDiscussion !== undefined) update.autoCompactDiscussion = data.autoCompactDiscussion ? 1 : 0
 
     // Only update API key if a non-empty string was provided (legacy flat path)
     if (data.apiKey) {
@@ -1272,7 +1435,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     const discussion = getResearchDiscussionContext(db, row.id)
     if (discussion) refreshDiscussionOriginAvailability(db, row.id)
     const currentDiscussion = discussion ? getResearchDiscussionContext(db, row.id) ?? discussion : null
-    const messages = row.messages ? (JSON.parse(row.messages) as ConversationMessage[]) : null
+    const messages = row.messages == null ? null : getSessionMessages(db, row.id)
     const auditContext = currentDiscussion ? getDiscussionResearchAuditContext(db, row.id) : null
     return {
       id: row.id,
@@ -1316,6 +1479,9 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       const originTypes = new Set<ResearchDiscussionOriginType>(['daily_review', 'weekly_review', 'decision_signal', 'judgment', 'industry_research', 'briefing', 'manual'])
       if (!origin || typeof origin.type !== 'string' || !originTypes.has(origin.type as ResearchDiscussionOriginType)) {
         throw new ResearchDiscussionError('INVALID_PARAM', 'origin.type 格式无效')
+      }
+      if (origin.type === 'manual' && origin.id != null) {
+        throw new ResearchDiscussionError('INVALID_PARAM', '普通主动讨论不能指定来源 ID')
       }
       const returnTarget = data.returnTarget && typeof data.returnTarget === 'object'
         ? data.returnTarget as Record<string, unknown>
@@ -1422,35 +1588,32 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // ── ai:deleteAllSessions ───────────────────────────────────────────────────────
-  ipcMain.handle('ai:deleteAllSessions', (_e, data: { includeResearchDiscussions?: boolean } = {}) => {
+  ipcMain.handle('ai:deleteAllSessions', async (_e, data: { includeResearchDiscussions?: boolean } = {}) => {
     const db = getDb()
     const protectedResearchDiscussions = countResearchDiscussionSessions(db)
-    if (data.includeResearchDiscussions) {
-      deleteAllResearchDiscussions(db)
+    const summary = await deleteAllSessionsWithSessionLocks(db, data.includeResearchDiscussions === true)
+    return {
+      deleted: summary.deleted,
+      protectedResearchDiscussions: data.includeResearchDiscussions ? 0 : protectedResearchDiscussions,
     }
-    const deleted = deleteAllSessions(db, false)
-    return { deleted, protectedResearchDiscussions: data.includeResearchDiscussions ? 0 : protectedResearchDiscussions }
   })
 
   // ── ai:cleanupOldSessions ──────────────────────────────────────────────────────
-  ipcMain.handle('ai:cleanupOldSessions', (_e, data: { olderThanDays: number; dryRun: boolean }) => {
+  ipcMain.handle('ai:cleanupOldSessions', async (_e, data: { olderThanDays: number; dryRun: boolean }) => {
     const db = getDb()
     const olderThanMs = data.olderThanDays * 24 * 60 * 60 * 1000
-    return deleteSessionsOlderThan(db, olderThanMs, data.dryRun)
+    return deleteSessionsOlderThanWithSessionLocks(db, olderThanMs, data.dryRun)
   })
 
   // ── ai:deleteSession ──────────────────────────────────────────────────────────
-  ipcMain.handle('ai:deleteSession', (_e, data: { id: number; confirmResearchDiscussion?: boolean }) => {
+  ipcMain.handle('ai:deleteSession', async (_e, data: { id: number; confirmResearchDiscussion?: boolean }) => {
     const db = getDb()
-    const discussion = getResearchDiscussionContext(db, data.id)
-    if (discussion) {
-      if (!data.confirmResearchDiscussion) {
-        return { ok: false, error: 'CONFIRM_REQUIRED', message: '删除研究讨论会使未处理变更包失效，但不会删除已写入研究' }
-      }
-      deleteResearchDiscussion(db, data.id)
-      return { ok: true }
+    const deletion = await deleteSessionWithSessionLock(db, data.id, {
+      allowResearchDiscussion: data.confirmResearchDiscussion === true,
+    })
+    if (deletion.deletedResearchDiscussion && !data.confirmResearchDiscussion) {
+      return { ok: false, error: 'CONFIRM_REQUIRED', message: '删除研究讨论会使未处理变更包失效，但不会删除已写入研究' }
     }
-    deleteSession(db, data.id)
     return { ok: true }
   })
 
@@ -1532,60 +1695,174 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     }
   })
 
+  // ── ai:compactDiscussionContext ──────────────────────────────────────────────
+  ipcMain.handle('ai:compactDiscussionContext', async (_e, data: {
+    requestId?: unknown
+    sessionId?: unknown
+    mode?: unknown
+  }) => {
+    const validation = validateDiscussionCompactionInput(data)
+    if (!validation.ok) return validation
+    const { requestId, sessionId, mode } = validation.data
+    const db = getDb()
+    return withDiscussionSessionLock(sessionId, async () => {
+      if (!getSession(db, sessionId)) return { ok: false, code: 'NOT_FOUND', message: 'Session not found' }
+      if (isDiscussionSessionBusy(db, sessionId)) {
+        return { ok: false, code: 'SESSION_BUSY', message: '当前会话有深度研究进行中，请等待完成或取消后再整理上下文。' }
+      }
+      const result = await compactDiscussionContextWithinLock(db, {
+        sessionId,
+        requestId,
+        mode,
+      })
+      if (!result.ok) return result
+      return {
+        ok: true,
+        sessionId,
+        compaction: result.compaction ? toDiscussionCompactionDto(result.compaction) : null,
+        archivedCount: result.archivedCount,
+        skippedReason: result.skippedReason,
+        messages: result.messages,
+      }
+    })
+  })
+
+  // ── ai:listDiscussionCompactionCheckpoints ──────────────────────────────────
+  ipcMain.handle('ai:listDiscussionCompactionCheckpoints', async (_e, data: {
+    sessionId?: unknown
+    limit?: unknown
+  }) => {
+    const sessionId = typeof data?.sessionId === 'number' ? data.sessionId : Number(data?.sessionId)
+    if (!Number.isInteger(sessionId) || sessionId <= 0) {
+      return { ok: false, code: 'INVALID_ARGUMENT', message: 'sessionId 无效' }
+    }
+    const limit = data?.limit == null ? 20 : Number(data.limit)
+    const db = getDb()
+    if (!getSession(db, sessionId)) return { ok: false, code: 'NOT_FOUND', message: 'Session not found' }
+    const rows = listDiscussionCompactionCheckpoints(db, sessionId, limit)
+    return {
+      ok: true,
+      sessionId,
+      checkpoints: rows.map((row) => toDiscussionCompactionDto(row)),
+    }
+  })
+
+  // ── ai:restoreDiscussionCompaction ─────────────────────────────────────────
+  ipcMain.handle('ai:restoreDiscussionCompaction', async (_e, data: {
+    requestId?: unknown
+    sessionId?: unknown
+    compactionId?: unknown
+  }) => {
+    if (!isUuid(String(data?.requestId ?? ''))) {
+      return { ok: false, code: 'INVALID_ARGUMENT', message: 'requestId 必须是 UUID' }
+    }
+    const sessionId = typeof data?.sessionId === 'number' ? data.sessionId : Number(data?.sessionId)
+    if (!Number.isInteger(sessionId) || sessionId <= 0) {
+      return { ok: false, code: 'INVALID_ARGUMENT', message: 'sessionId 无效' }
+    }
+    const compactionId = data?.compactionId == null ? undefined : String(data.compactionId)
+    const db = getDb()
+    return withDiscussionSessionLock(sessionId, async () => {
+      if (!getSession(db, sessionId)) return { ok: false, code: 'NOT_FOUND', message: 'Session not found' }
+      if (isDiscussionSessionBusy(db, sessionId)) {
+        return { ok: false, code: 'SESSION_BUSY', message: '当前会话有深度研究进行中，请等待完成或取消后再恢复检查点。' }
+      }
+      const result = restoreLatestDiscussionCompactionWithinLock(db, {
+        sessionId,
+        requestId: String(data.requestId),
+        compactionId,
+      })
+      if (!result.ok) return result
+      return {
+        ok: true,
+        sessionId,
+        restoredCompactionId: result.restoredCompactionId,
+        restoredCount: result.restoredCount,
+        messages: result.messages,
+      }
+    })
+  })
+
   // ── ai:followUp ───────────────────────────────────────────────────────────────
   // FR-061: continue conversation within an existing session
-  ipcMain.handle('ai:followUp', async (_e, data: { sessionId: number; message: string }) => {
+  ipcMain.handle('ai:followUp', async (_e, data: {
+    requestId?: unknown
+    sessionId?: unknown
+    message?: unknown
+  }) => {
+    const validation = validateDiscussionFollowUpInput(data)
+    if (!validation.ok) return { error: validation.message, code: validation.code }
+    const { requestId, sessionId, message } = validation.data
     const db = getDb()
-    const session = getSession(db, data.sessionId)
-    if (!session) return { error: 'Session not found' }
+    const win = getWindow()
+    return runDiscussionFollowUp(db, {
+      requestId,
+      sessionId,
+      message,
+    }, {
+      onSuccess: (database, id) => refreshStructuredResultInBackground(database, id, 'follow up'),
+      onDelta: (event) => {
+        if (!win || win.isDestroyed()) return
+        try {
+          win.webContents.send('ai:followUpDelta', event)
+        } catch { /* UI only */ }
+      },
+    })
+  })
 
-    if (!resolveProviderCredentials(db)) return { error: 'AI not configured' }
+  // ── ai:agentTurn ──────────────────────────────────────────────────────────────
+  // Agent Hub 主路径：Planner–Executor；深挖 busy 时拒绝新 turn，但 progress 桥接放行
+  ipcMain.handle('ai:agentTurn', async (_e, data: unknown) => {
+    const validation = validateAgentTurnInput(data)
+    if (!validation.ok) return { error: validation.message, code: validation.code }
+    const { requestId, sessionId, message } = validation.data
+    const db = getDb()
+    return runAgentTurnForSession(db, { requestId, sessionId, message }, {
+      onEvent: pushAgentEvent,
+    }).catch((error) => ({
+      error: error instanceof Error ? error.message : String(error),
+      code: 'AGENT_TURN_FAILED',
+    }))
+  })
 
-    // Build or restore conversation history
-    let messages: ConversationMessage[]
-    if (session.messages) {
-      messages = JSON.parse(session.messages) as ConversationMessage[]
-    } else {
-      // Seed context from round1 + optional round2 response
-      const context =
-        (session.response ?? '') +
-        (session.responseRound2 ? `\n\n【第二轮深度分析】\n${session.responseRound2}` : '')
-      messages = [{ role: 'assistant', content: context }]
-    }
-
-    messages.push({ role: 'user', content: injectTimePrefix(data.message) })
-
+  // ── ai:agentConfirm ───────────────────────────────────────────────────────────
+  ipcMain.handle('ai:agentConfirm', async (_e, data: unknown) => {
+    const validation = validateAgentConfirmInput(data)
+    if (!validation.ok) return { ok: false, error: validation.message, code: validation.code }
     try {
-      const result = await callWithFallback(db, buildDiscussionAIRequest(db, data.sessionId, messages))
-      const auditContext = getDiscussionResearchAuditContext(db, data.sessionId)
-      const researchAudit = auditContext
-        ? auditResearchText({
-            text: result.text,
-            documentKind: 'discussion',
-            evidenceContrast: auditContext.evidenceContrast,
-            asOf: auditContext.asOf,
-            excludedUrls: auditContext.excludedUrls,
-            webSearchTrace: result.webSearchTrace,
-            allowedFactTexts: [
-              ...auditContext.allowedFactTexts,
-              ...messages.filter((message) => message.role === 'user').map((message) => message.content),
-            ],
-          })
-        : null
-      const persistedText = researchAudit?.status === 'blocked'
-        ? buildBlockedResearchText(researchAudit)
-        : result.text
-      messages.push({
-        role: 'assistant',
-        content: persistedText,
-        webSearchTrace: result.webSearchTrace,
-        ...(researchAudit ? { researchAudit } : {}),
-      })
-      updateSessionMessages(db, data.sessionId, messages)
-      refreshStructuredResultInBackground(db, data.sessionId, 'follow up')
-      return { text: persistedText, messages }
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) }
+      getAgentHitlGate().resolveHitl(validation.data.hitlId, validation.data.approved)
+      return { ok: true, requestId: validation.data.requestId, hitlId: validation.data.hitlId, approved: validation.data.approved }
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'HITL_RESOLVE_FAILED',
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  })
+
+  // ── ai:runPortfolioBrief ──────────────────────────────────────────────────────
+  ipcMain.handle('ai:runPortfolioBrief', async (_e, data: {
+    requestId?: string
+    sessionId?: number | null
+    mode?: 'analyze' | 'list' | 'checkConfig'
+  }) => {
+    const requestId = typeof data?.requestId === 'string' ? data.requestId : ''
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+      return { ok: false, code: 'INVALID_PARAM', message: 'requestId 格式无效' }
+    }
+    const sessionId = data?.sessionId == null ? null : Number(data.sessionId)
+    if (sessionId != null && (!Number.isInteger(sessionId) || sessionId <= 0)) {
+      return { ok: false, code: 'INVALID_PARAM', message: 'sessionId 无效' }
+    }
+    const mode = data?.mode === 'list' || data?.mode === 'checkConfig' || data?.mode === 'analyze'
+      ? data.mode
+      : 'analyze'
+    try {
+      return await runPortfolioBrief(getDb(), { requestId, sessionId, mode })
+    } catch (error) {
+      console.error('[ai:runPortfolioBrief]', error instanceof Error ? error.message : 'unknown')
+      return { ok: false, code: 'DB_ERROR', message: '持仓简报失败' }
     }
   })
 
@@ -1595,16 +1872,31 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     const row = getDataSourceConfig(db)
     return {
       tushareEnabled: row.tushareEnabled === 1,
-      hasTushareToken: !!(row.tushareTokenEncrypted && row.tushareTokenEncrypted.length > 0)
+      hasTushareToken: !!(row.tushareTokenEncrypted && row.tushareTokenEncrypted.length > 0),
+      tushareApiUrl: row.tushareApiUrl ?? ''
     }
   })
 
   // ── datasource:saveConfig ─────────────────────────────────────────────────────
-  ipcMain.handle('datasource:saveConfig', (_e, data: { tushareToken?: string; tushareEnabled?: boolean }) => {
+  ipcMain.handle('datasource:saveConfig', (_e, data: {
+    tushareToken?: string
+    tushareEnabled?: boolean
+    tushareApiUrl?: string
+  }) => {
     const db = getDb()
+    if (data.tushareApiUrl !== undefined) {
+      const checked = validateTushareApiUrlInput(data.tushareApiUrl)
+      if (!checked.ok) {
+        return { ok: false, message: checked.message }
+      }
+    }
     const update: Parameters<typeof updateDataSourceConfig>[1] = {}
     if (data.tushareToken) update.tushareTokenEncrypted = encryptApiKey(data.tushareToken)
     if (data.tushareEnabled !== undefined) update.tushareEnabled = data.tushareEnabled ? 1 : 0
+    if (data.tushareApiUrl !== undefined) {
+      const checked = validateTushareApiUrlInput(data.tushareApiUrl)
+      if (checked.ok) update.tushareApiUrl = checked.url
+    }
     updateDataSourceConfig(db, update)
     // FR-123: 关闭 Tushare 时立即取消分钟 K 订阅, 防止失效订阅继续轮询
     if (data.tushareEnabled === false) {
@@ -1620,8 +1912,14 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // ── datasource:validateTushare ────────────────────────────────────────────────
-  ipcMain.handle('datasource:validateTushare', async (_e, data: { token: string }) => {
-    return validateTushareToken(data.token)
+  ipcMain.handle('datasource:validateTushare', async (_e, data: { token: string; apiUrl?: string }) => {
+    if (data.apiUrl !== undefined) {
+      const checked = validateTushareApiUrlInput(data.apiUrl)
+      if (!checked.ok) {
+        return { valid: false, message: checked.message }
+      }
+    }
+    return validateTushareToken(data.token, data.apiUrl)
   })
 
   // ── datasource:listStocks ──────────────────────────────────────────────────────
@@ -1708,6 +2006,36 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       "DELETE FROM stock_info WHERE stockCode NOT IN ('000001.SH','399001.SZ','399006.SZ')"
     ).run()
     return { ok: true }
+  })
+
+  // ── datasource:refreshTodayBar ───────────────────────────────────────────────
+  // 盘中轻量刷新「今日」合成日 K（分钟优先，分时兜底），供日视图自动刷新。
+  ipcMain.handle('datasource:refreshTodayBar', async (_e, data: { stockCode?: string }) => {
+    const raw = String(data?.stockCode ?? '').trim()
+    const stockCode = raw.replace(/\.(SH|SZ|BJ)$/i, '')
+    if (!/^\d{6}$/.test(stockCode) && !['000001', '399001', '399006'].includes(stockCode)) {
+      return { ok: false as const, reason: 'invalid_code' as const }
+    }
+    const db = getDb()
+    try {
+      // 自动刷新：仅盘中拉分钟并覆盖合成；非盘中不 force，避免误覆盖
+      try {
+        await refreshStockMinuteOnce(stockCode)
+      } catch (err) {
+        console.warn(
+          '[refreshTodayBar] minute refresh failed:',
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+      const updated = await backfillTodayDailyFromIntradayIfMissing(db, stockCode)
+      return { ok: true as const, updated }
+    } catch (err) {
+      return {
+        ok: false as const,
+        reason: 'fetch_error' as const,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    }
   })
 
   // ── datasource:refreshStock ────────────────────────────────────────────────────
@@ -1829,18 +2157,54 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // ── datasource:searchStock ────────────────────────────────────────────────
-  // 按股票名称或代码模糊搜索，优先从本地 stock_basic_cache 查询，无需调用 API
-  ipcMain.handle('datasource:searchStock', (_e, data: { keyword: string }) => {
+  // 优先本地 stock_basic_cache；六位代码无命中时走东财轻量报价补名称（不拉日线）
+  ipcMain.handle('datasource:searchStock', async (_e, data: { keyword: string }) => {
     const keyword = (data?.keyword ?? '').trim()
     if (!keyword) return { ok: true as const, results: [], empty: false }
     const db = getDb()
     const total = countStockBasic(db)
+    const sixDigit = /^\d{6}$/.test(keyword) ? keyword : null
+
+    const toResult = (tsCode: string, name: string, market: string | null = null) => ({
+      tsCode,
+      name,
+      market,
+    })
+
     if (total === 0) {
-      // stock_basic 尚未同步，提示用户
-      return { ok: true as const, results: [], empty: true }
+      if (sixDigit) {
+        const resolved = await resolveStockIdentityPublic(db, sixDigit)
+        if (resolved.ok) {
+          return {
+            ok: true as const,
+            results: [toResult(resolved.tsCode, resolved.stockName, resolved.tsCode.split('.')[1] ?? null)],
+            empty: true as const,
+          }
+        }
+      }
+      return { ok: true as const, results: [], empty: true as const }
     }
+
     const results = searchByNameOrCode(db, keyword, 10)
-    return { ok: true as const, results, empty: false }
+    if (results.length > 0) return { ok: true as const, results, empty: false as const }
+
+    if (sixDigit) {
+      const resolved = await resolveStockIdentityPublic(db, sixDigit)
+      if (resolved.ok) {
+        return {
+          ok: true as const,
+          results: [toResult(resolved.tsCode, resolved.stockName, resolved.tsCode.split('.')[1] ?? null)],
+          empty: false as const,
+        }
+      }
+    }
+    return { ok: true as const, results: [], empty: false as const }
+  })
+
+  // ── datasource:resolveStockName ───────────────────────────────────────────
+  // 轻量代码→名称（本地 / 东财报价），供观察池等补全展示名
+  ipcMain.handle('datasource:resolveStockName', async (_e, data: { stockCode: string }) => {
+    return resolveStockIdentityPublic(getDb(), String(data?.stockCode ?? ''))
   })
 
   // ── datasource:getIntradayData ─────────────────────────────────────────────
@@ -1868,30 +2232,71 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   }
 
   // DB-first + 今日用 Tushare 补拉 / Tushare 缺失时回退东财 push2his OHLCV 补拉并落库
+  // 指数短路（2026-08-13 指数分时专业版）：命中 INDEX_SECID 即指数——跳过 Tushare rt_min（不支持指数），
+  // 缓存键用带后缀 tsCode（如 000001.SH，规避与平安银行裸键 000001 撞键）；当日重拉东财 klt=1 供盘中轮询刷新
+  // （前端每 60s 轮询周期只发 1 次本 IPC，INSERT OR REPLACE 幂等，1 次/60s 不触发反爬），历史日缓存命中直接返回。
   ipcMain.handle('datasource:getStockMinuteKline', async (_e, data: { tsCode?: string; tradeDate?: string }) => {
     if (!data?.tsCode) return { ok: false, code: 'INVALID_PARAM', message: '缺少 tsCode' }
-    const stockCode = data.tsCode.split('.')[0]
+    const isIndex = Boolean(INDEX_SECID[data.tsCode])
+    // 指数缓存键强制带后缀；个股维持裸 6 位键
+    const stockCode = isIndex ? data.tsCode : data.tsCode.split('.')[0]
     const todayStr = bjTodayYYYYMMDD()
     const tradeDate = data.tradeDate || todayStr
 
     // 先查 DB
     let rows = getStockMinuteByDate(getDb(), stockCode, tradeDate)
+
+    if (isIndex) {
+      // 历史日缓存命中：直接返回，不打任何行情源
+      if (rows.length > 0 && tradeDate !== todayStr) return { ok: true, data: rows }
+      // 当日（或缓存为空）：直走东财 klt=1（secid 映射已支持指数）并以带后缀键落库
+      try {
+        const bars = await fetchEastmoneyMinuteOHLCV(data.tsCode, tradeDate)
+        if (bars.length > 0) {
+          const now = Date.now()
+          const cacheRows = bars.map(b => ({
+            stockCode,
+            tradeDate: b.tradeDate || tradeDate,
+            tsMinute: b.tsMinute,
+            open: b.open,
+            high: b.high,
+            low: b.low,
+            close: b.close,
+            vol: b.vol,
+            amount: b.amount,
+            fetchedAt: now
+          }))
+          upsertStockMinute(getDb(), cacheRows)
+          rows = getStockMinuteByDate(getDb(), stockCode, tradeDate)
+        } else {
+          // 三维复审修复：东财返回空时留痕（fetchEastmoneyMinuteOHLCV 内部恒返回 []，catch 捕不到空结果）
+          console.warn(`[datasource:getStockMinuteKline] index Eastmoney klt=1 empty: tsCode=${data.tsCode} tradeDate=${tradeDate}`)
+        }
+      } catch (err) {
+        // 东财失败静默：当日返回既有缓存（可能为空），不抛异常；补 warn 便于排查
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn(`[datasource:getStockMinuteKline] index Eastmoney klt=1 failed: tsCode=${data.tsCode} tradeDate=${tradeDate} ${msg}`)
+      }
+      return { ok: true, data: rows }
+    }
+
     if (rows.length > 0) return { ok: true, data: rows }
 
     if (tradeDate === todayStr) {
-      // 今日模式：Tushare rt_min_daily
+      // 今日模式：优先官方 rt_min；无权限/失败由下方东财兜底
       const dsCfg = getDataSourceConfig(getDb())
       if (dsCfg.tushareEnabled && dsCfg.tushareTokenEncrypted) {
         try {
           const token = decryptApiKey(dsCfg.tushareTokenEncrypted)
           if (!token) throw new Error('TUSHARE_TOKEN_UNAVAILABLE')
-          const fetched = await fetchStockMinuteDaily(token, data.tsCode)
+          const fetched = await fetchStockMinute(token, data.tsCode)
           if (fetched.length > 0) {
             upsertStockMinute(getDb(), fetched)
             rows = fetched
           }
-        } catch {
-          // Tushare 失败静默
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          console.warn(`[datasource:getStockMinuteKline] rt_min failed, will try Eastmoney: ${msg}`)
         }
       }
     }
@@ -1927,11 +2332,11 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // 启动一只股票的分钟订阅（互斥, 切换股票自动 unsubscribe 旧的）
-  // 不再要求 Tushare：无 Tushare 时订阅内部自动回退东财 push2his 60s 轮询
+  // 不再要求 Tushare：无 Tushare / 无分钟权限时订阅内部自动回退东财 push2his
   ipcMain.handle('datasource:subscribeStockMinute', async (_e, data: { stockCode?: string }) => {
     if (!data?.stockCode) return { ok: false, code: 'INVALID_PARAM', message: '缺少 stockCode' }
-    subscribeStockMinute(data.stockCode)
-    return { ok: true }
+    const gotData = await subscribeStockMinute(data.stockCode)
+    return { ok: true, gotData }
   })
 
   // 取消当前活跃订阅
@@ -2131,43 +2536,26 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       const model = pc.model || (PROVIDER_MODELS as Record<string, string[]>)[data.provider]?.[0] || ''
       if (!model) return { error: { code: 'AI_NOT_CONFIGURED', message: `厂商 ${data.provider} 未选择模型` } }
       try {
-        // FR-163a: 优先从 DB 读取今日 OHLCV 分钟 K 线；无数据时 fallback 东财 price-only
-        const bjToday = getBjTodayYmd()
-        const minuteRows = getStockMinuteByDate(db, data.stockCode, bjToday)
-        let intradayLabel: string
-        let intradayJson: string
-        let dataPointCount = 0
-        if (minuteRows.length > 0) {
-          intradayLabel = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-          dataPointCount = minuteRows.length
-          intradayJson = JSON.stringify(minuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-        } else {
-          const stockItems = await fetchIntradayData(data.stockCode)
-          if (stockItems.length === 0) {
-            return { error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据，无法预测' } }
-          }
-          intradayLabel = '实际分时数据（至今）'
-          dataPointCount = stockItems.length
-          intradayJson = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+        const evidence = await assembleTodayForecastEvidence(db, data.stockCode)
+        if (!evidence.ok) {
+          return { error: { ...evidence.error, message: evidence.error.message + '，无法预测' } }
         }
-        const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-        const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
-        const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-        // FR-163b-e: 构建数据增强摘要
-        const tsCode = toTsCodeWithSuffix(data.stockCode)
-        const techSummary = buildTechnicalSummary(db, tsCode)
-        const limitSummary = buildLimitConceptSummary(db, data.stockCode)
-        const sectorSummary = buildSectorFlowSummary(db, data.stockCode)
-        const smcSummary = buildSMCSummary(db, data.stockCode)
-        const extraContext = [techSummary, limitSummary, sectorSummary, smcSummary].filter(Boolean).join('\n\n')
         const forecastPrompt = injectTimePrefix(pc.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) + buildSkillsBlock(db, true)
-        const prompt = `${forecastPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${intradayLabel}：${intradayJson}${boardSuffix}${extraContext ? '\n\n' + extraContext : ''}\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+        const prompt = buildTodayForecastUserPrompt({
+          forecastPrompt,
+          stockCode: data.stockCode,
+          timeStr: evidence.timeStr,
+          intradayLabel: evidence.intradayLabel,
+          intradayJson: evidence.intradayJson,
+          boardSuffix: evidence.boardSuffix,
+          extraContext: evidence.extraContext,
+        })
         const aiResult = await callAIProvider({ provider: data.provider as AIProvider, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, messages: [{ role: 'user', content: prompt }] })
         const { points, aiReason, direction, confidence, keySupport, keyResistance } = parseForecastResponse(aiResult.text)
         if (points.length === 0) {
           return { stockCode: data.stockCode, points: [], aiReason, message: 'AI未返回有效预测数据' }
         }
-        const forecastId = insertForecast(db, { stockCode: data.stockCode, type: 'today', points: JSON.stringify(points), aiReason: aiReason || null, provider: data.provider, model, direction: direction ?? null, confidence: confidence ?? null, keySupport: keySupport ?? null, keyResistance: keyResistance ?? null, inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: data.provider, model, dataLabel: intradayLabel, dataPointCount, contextText: extraContext, promptText: prompt, forecastPointCount: points.length }) })
+        const forecastId = insertForecast(db, { stockCode: data.stockCode, type: 'today', points: JSON.stringify(points), aiReason: aiReason || null, provider: data.provider, model, direction: direction ?? null, confidence: confidence ?? null, keySupport: keySupport ?? null, keyResistance: keyResistance ?? null, inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: data.provider, model, dataLabel: evidence.dataLabel, dataPointCount: evidence.dataPointCount, contextText: evidence.extraContext, promptText: prompt, forecastPointCount: points.length }) })
         emitAIForecastDecisionSignal({ stockCode: data.stockCode, forecastType: 'today', forecastId, provider: data.provider, model, direction, confidence, keySupport, keyResistance })
         const maxKeep = aiConfig.maxForecastsPerStock ?? 50
         trimForecasts(db, data.stockCode, maxKeep)
@@ -2190,36 +2578,19 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     // If providers are explicitly specified (FR-094) or multi-model is enabled, run in parallel.
     if (requestedProviders.length > 0 || multiModelProviders.length > 1) {
       try {
-        // FR-163a: 优先从 DB 读取今日 OHLCV 分钟 K 线；无数据时 fallback 东财 price-only
-        const bjToday = getBjTodayYmd()
-        const minuteRowsMulti = getStockMinuteByDate(db, data.stockCode, bjToday)
-        let intradayLabelMulti: string
-        let intradayJsonMulti: string
-        let dataPointCountMulti = 0
-        if (minuteRowsMulti.length > 0) {
-          intradayLabelMulti = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-          dataPointCountMulti = minuteRowsMulti.length
-          intradayJsonMulti = JSON.stringify(minuteRowsMulti.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-        } else {
-          const stockItems = await fetchIntradayData(data.stockCode)
-          if (stockItems.length === 0) {
-            return { error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据，无法预测' } }
-          }
-          intradayLabelMulti = '实际分时数据（至今）'
-          dataPointCountMulti = stockItems.length
-          intradayJsonMulti = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+        const evidenceMulti = await assembleTodayForecastEvidence(db, data.stockCode)
+        if (!evidenceMulti.ok) {
+          return { error: { ...evidenceMulti.error, message: evidenceMulti.error.message + '，无法预测' } }
         }
-        const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-        const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
-        const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-        // FR-163b-e: 构建数据增强摘要（多 provider 路径共享同一份上下文）
-        const tsCodeMulti = toTsCodeWithSuffix(data.stockCode)
-        const techSummaryMulti = buildTechnicalSummary(db, tsCodeMulti)
-        const limitSummaryMulti = buildLimitConceptSummary(db, data.stockCode)
-        const sectorSummaryMulti = buildSectorFlowSummary(db, data.stockCode)
-        const smcSummaryMulti = buildSMCSummary(db, data.stockCode)
-        const extraContextMulti = [techSummaryMulti, limitSummaryMulti, sectorSummaryMulti, smcSummaryMulti].filter(Boolean).join('\n\n')
-        const intradayJson = intradayJsonMulti
+        const {
+          timeStr,
+          intradayLabel: intradayLabelMulti,
+          intradayJson,
+          dataPointCount: dataPointCountMulti,
+          dataLabel: dataLabelMulti,
+          boardSuffix,
+          extraContext: extraContextMulti,
+        } = evidenceMulti
 
         // Build per-provider tasks
         const tasks = multiModelProviders.map(p => {
@@ -2230,7 +2601,15 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
           const model = pc.model || (PROVIDER_MODELS as Record<string, string[]>)[p]?.[0] || ''
           if (!model) return null
           const forecastPrompt = injectTimePrefix(pc.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) + buildSkillsBlock(db, true)
-          const prompt = `${forecastPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${intradayLabelMulti}：${intradayJson}${boardSuffix}${extraContextMulti ? '\n\n' + extraContextMulti : ''}\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+          const prompt = buildTodayForecastUserPrompt({
+            forecastPrompt,
+            stockCode: data.stockCode,
+            timeStr,
+            intradayLabel: intradayLabelMulti,
+            intradayJson,
+            boardSuffix,
+            extraContext: extraContextMulti,
+          })
           return { provider: p, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, prompt }
         }).filter(Boolean) as { provider: string; model: string; apiKey: string; baseUrl?: string; maxTokens?: number | null; prompt: string }[]
 
@@ -2277,7 +2656,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
               confidence: confidence ?? null,
               keySupport: keySupport ?? null,
               keyResistance: keyResistance ?? null,
-              inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: task.provider, model: task.model, dataLabel: intradayLabelMulti, dataPointCount: dataPointCountMulti, contextText: extraContextMulti, promptText: task.prompt, forecastPointCount: points.length }),
+              inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: task.provider, model: task.model, dataLabel: dataLabelMulti, dataPointCount: dataPointCountMulti, contextText: extraContextMulti, promptText: task.prompt, forecastPointCount: points.length }),
             })
             emitAIForecastDecisionSignal({ stockCode: data.stockCode, forecastType: 'today', forecastId, provider: task.provider, model: task.model, direction, confidence, keySupport, keyResistance })
             trimForecasts(db, data.stockCode, maxKeep)
@@ -2309,37 +2688,20 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       return { error: { code: 'AI_NOT_CONFIGURED', message: '请先在AI配置页配置AI厂商' } }
     }
     try {
-      // FR-163a: 优先从 DB 读取今日 OHLCV 分钟 K 线；无数据时 fallback 东财 price-only
-      const bjTodayFb = getBjTodayYmd()
-      const minuteRowsFb = getStockMinuteByDate(db, data.stockCode, bjTodayFb)
-      let intradayLabelFb: string
-      let intradayJsonFb: string
-      let dataPointCountFb = 0
-      if (minuteRowsFb.length > 0) {
-        intradayLabelFb = '今日1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）'
-        dataPointCountFb = minuteRowsFb.length
-        intradayJsonFb = JSON.stringify(minuteRowsFb.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))
-      } else {
-        const stockItems = await fetchIntradayData(data.stockCode)
-        if (stockItems.length === 0) {
-          return { error: { code: 'INTRADAY_EMPTY', message: '当日暂无分时数据，无法预测' } }
-        }
-        intradayLabelFb = '实际分时数据（至今）'
-        dataPointCountFb = stockItems.length
-        intradayJsonFb = JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))
+      const evidenceFb = await assembleTodayForecastEvidence(db, data.stockCode)
+      if (!evidenceFb.ok) {
+        return { error: { ...evidenceFb.error, message: evidenceFb.error.message + '，无法预测' } }
       }
-      const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
-      const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
       const forecastPrompt = injectTimePrefix(creds.trendForecastPrompt || aiConfig.trendForecastPrompt || DEFAULT_TREND_TODAY_PROMPT) + buildSkillsBlock(db, true)
-      const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-      // FR-163b-e: 构建数据增强摘要
-      const tsCodeFb = toTsCodeWithSuffix(data.stockCode)
-      const techSummaryFb = buildTechnicalSummary(db, tsCodeFb)
-      const limitSummaryFb = buildLimitConceptSummary(db, data.stockCode)
-      const sectorSummaryFb = buildSectorFlowSummary(db, data.stockCode)
-      const smcSummaryFb = buildSMCSummary(db, data.stockCode)
-      const extraContextFb = [techSummaryFb, limitSummaryFb, sectorSummaryFb, smcSummaryFb].filter(Boolean).join('\n\n')
-      const prompt = `${forecastPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${intradayLabelFb}：${intradayJsonFb}${boardSuffix}${extraContextFb ? '\n\n' + extraContextFb : ''}\n\n请在响应末尾输出如下格式的预测数据（从${timeStr}到15:00，每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+      const prompt = buildTodayForecastUserPrompt({
+        forecastPrompt,
+        stockCode: data.stockCode,
+        timeStr: evidenceFb.timeStr,
+        intradayLabel: evidenceFb.intradayLabel,
+        intradayJson: evidenceFb.intradayJson,
+        boardSuffix: evidenceFb.boardSuffix,
+        extraContext: evidenceFb.extraContext,
+      })
       const aiResult = await callWithFallback(db, { messages: [{ role: 'user', content: prompt }] })
       const { points, aiReason, direction, confidence, keySupport, keyResistance } = parseForecastResponse(aiResult.text)
       if (points.length === 0) {
@@ -2356,7 +2718,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
         confidence: confidence ?? null,
         keySupport: keySupport ?? null,
         keyResistance: keyResistance ?? null,
-        inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: aiResult.provider, model: aiResult.model, dataLabel: intradayLabelFb, dataPointCount: dataPointCountFb, contextText: extraContextFb, promptText: prompt, forecastPointCount: points.length }),
+        inputSnapshot: buildForecastInputSnapshot({ stockCode: data.stockCode, type: 'today', provider: aiResult.provider, model: aiResult.model, dataLabel: evidenceFb.dataLabel, dataPointCount: evidenceFb.dataPointCount, contextText: evidenceFb.extraContext, promptText: prompt, forecastPointCount: points.length }),
       })
       emitAIForecastDecisionSignal({ stockCode: data.stockCode, forecastType: 'today', forecastId, provider: aiResult.provider, model: aiResult.model, direction, confidence, keySupport, keyResistance })
       const maxKeep = aiConfig.maxForecastsPerStock ?? 50
@@ -2394,28 +2756,28 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       try {
         const allPrices = getCachedPrices(db, data.stockCode)
         const recent30 = allPrices.slice(-30)
-        const dailyCsv = recent30.map(r =>
-          `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${r.volume ?? ''}`
-        ).join('\n')
-        // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线
+        const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
+        // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线（含量额）；预测前刷新今日分钟
+        await prepareForecastIntradayEvidence(db, data.stockCode)
         const { getLatestTradeDateForStock } = await import('../database/stockMinuteCacheRepository')
         const latestMDateM = getLatestTradeDateForStock(db, data.stockCode)
         const morrowMinuteRows = latestMDateM ? getStockMinuteByDate(db, data.stockCode, latestMDateM) : []
         let intradayPart: string
         if (morrowMinuteRows.length > 0) {
-          intradayPart = `\n\n最新交易日(${latestMDateM})1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）：${JSON.stringify(morrowMinuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))}`
+          intradayPart = `\n\n最新交易日(${latestMDateM})1分钟K线（t,o,h,l,c,v,a可选）：${serializeMinuteBarsForPrompt(morrowMinuteRows)}`
         } else {
           const stockItems = await fetchIntradayData(data.stockCode)
           intradayPart = stockItems.length > 0
-            ? `\n\n今日分时数据：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))}`
-            : ''
+            ? `\n\n今日分时数据（time,price,volume）：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price, volume: i.volume })))}`
+            : '\n\n今日分时数据：本包未提供'
         }
         const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
         const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
         const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-        // FR-163b-e: 构建数据增强摘要
+        // FR-163b-e: 构建数据增强摘要（含 Tushare 因子 ensure）
         const tsCodeMM = toTsCodeWithSuffix(data.stockCode)
-        const techSummaryMM = buildTechnicalSummary(db, tsCodeMM)
+        const factorStatusMM = await ensureStkFactorForForecast(db, tsCodeMM)
+        const techSummaryMM = resolveTechnicalSummaryForForecast(db, tsCodeMM, factorStatusMM)
         const limitSummaryMM = buildLimitConceptSummary(db, data.stockCode)
         const sectorSummaryMM = buildSectorFlowSummary(db, data.stockCode)
         const smcSummaryMM = buildSMCSummary(db, data.stockCode)
@@ -2429,7 +2791,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
           const model = pc.model || (PROVIDER_MODELS as Record<string, string[]>)[p]?.[0] || ''
           if (!model) return null
           const morrowPrompt = injectTimePrefix(pc.trendForecastMorrowPrompt || aiConfig.trendForecastMorrowPrompt || DEFAULT_TREND_MORROW_PROMPT) + buildSkillsBlock(db, true)
-          const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n近30日日线数据（日期,开,高,低,收,量）：\n${dailyCsv}${intradayPart}${boardSuffix}${extraContextMM ? '\n\n' + extraContextMM : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+          const prompt = appendForecastGrounding(`${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMM ? '\n\n' + extraContextMM : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``)
           return { provider: p, model, apiKey, baseUrl: pc.baseUrl ?? undefined, maxTokens: pc.maxTokens ?? undefined, prompt }
         }).filter(Boolean) as { provider: string; model: string; apiKey: string; baseUrl?: string; maxTokens?: number | null; prompt: string }[]
 
@@ -2507,34 +2869,34 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     try {
       const allPrices = getCachedPrices(db, data.stockCode)
       const recent30 = allPrices.slice(-30)
-      const dailyCsv = recent30.map(r =>
-        `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${r.volume ?? ''}`
-      ).join('\n')
-      // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线
+      const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
+      // FR-163a: 优先从 DB 读取最新交易日 OHLCV 分钟 K 线（含量额）
+      await prepareForecastIntradayEvidence(db, data.stockCode)
       const { getLatestTradeDateForStock: getLatestDate2 } = await import('../database/stockMinuteCacheRepository')
       const latestMDateFb = getLatestDate2(db, data.stockCode)
       const morrowMinuteRowsFb = latestMDateFb ? getStockMinuteByDate(db, data.stockCode, latestMDateFb) : []
       let intradayPart: string
       if (morrowMinuteRowsFb.length > 0) {
-        intradayPart = `\n\n最新交易日(${latestMDateFb})1分钟K线（t=时间,o=开,h=高,l=低,c=收,v=成交量手）：${JSON.stringify(morrowMinuteRowsFb.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))}`
+        intradayPart = `\n\n最新交易日(${latestMDateFb})1分钟K线（t,o,h,l,c,v,a可选）：${serializeMinuteBarsForPrompt(morrowMinuteRowsFb)}`
       } else {
         const stockItems = await fetchIntradayData(data.stockCode)
         intradayPart = stockItems.length > 0
-          ? `\n\n今日分时数据：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price })))}`
-          : ''
+          ? `\n\n今日分时数据（time,price,volume）：${JSON.stringify(stockItems.map(i => ({ time: i.time, price: i.price, volume: i.volume })))}`
+          : '\n\n今日分时数据：本包未提供'
       }
       const bjNow = new Date(Date.now() + 8 * 60 * 60 * 1000)
       const timeStr = `${bjNow.getUTCHours().toString().padStart(2, '0')}:${bjNow.getUTCMinutes().toString().padStart(2, '0')}`
       const morrowPrompt = injectTimePrefix(creds.trendForecastMorrowPrompt || aiConfig.trendForecastMorrowPrompt || DEFAULT_TREND_MORROW_PROMPT) + buildSkillsBlock(db, true)
       const boardSuffix = await buildBoardMarketSuffix(data.stockCode)
-      // FR-163b-e: 构建数据增强摘要
+      // FR-163b-e: 构建数据增强摘要（含 Tushare 因子 ensure）
       const tsCodeMF = toTsCodeWithSuffix(data.stockCode)
-      const techSummaryMF = buildTechnicalSummary(db, tsCodeMF)
+      const factorStatusMF = await ensureStkFactorForForecast(db, tsCodeMF)
+      const techSummaryMF = resolveTechnicalSummaryForForecast(db, tsCodeMF, factorStatusMF)
       const limitSummaryMF = buildLimitConceptSummary(db, data.stockCode)
       const sectorSummaryMF = buildSectorFlowSummary(db, data.stockCode)
       const smcSummaryMF = buildSMCSummary(db, data.stockCode)
       const extraContextMF = [techSummaryMF, limitSummaryMF, sectorSummaryMF, smcSummaryMF].filter(Boolean).join('\n\n')
-      const prompt = `${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n近30日日线数据（日期,开,高,低,收,量）：\n${dailyCsv}${intradayPart}${boardSuffix}${extraContextMF ? '\n\n' + extraContextMF : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``
+      const prompt = appendForecastGrounding(`${morrowPrompt}\n\n股票代码：${data.stockCode}\n当前北京时间：${timeStr}\n\n${dailyBlock}${intradayPart}${boardSuffix}${extraContextMF ? '\n\n' + extraContextMF : ''}\n\n请在响应末尾输出明日09:30至15:00的预测分时数据（每5分钟一条，**跳过11:30至13:00的午休时段**，仅输出上午09:30-11:25和下午13:00-15:00区间的时间点）：\n\`\`\`json\n[{"time":"HH:mm","price":0.00}]\n\`\`\`\n\n并另外输出结构化分析（紧跟在上方 json 块之后）：\n\`\`\`analysis\n{"direction":"up|down|flat","confidence":0.0,"key_support":0.00,"key_resistance":0.00}\n\`\`\``)
       const aiResult = await callWithFallback(db, { messages: [{ role: 'user', content: prompt }] })
       const { points, aiReason, direction, confidence, keySupport, keyResistance } = parseForecastResponse(aiResult.text)
       if (points.length === 0) {
@@ -2715,14 +3077,14 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
       } else {
         const allPrices = getCachedPrices(db, stockCode)
         const recent30 = allPrices.slice(-30)
-        const dailyCsv = recent30.map(r => `${r.tradeDate},${r.open ?? ''},${r.high ?? ''},${r.low ?? ''},${r.close ?? ''},${r.volume ?? ''}`).join('\n')
+        const dailyBlock = buildRecentDailyOhlcvPromptBlock(recent30)
         const { getLatestTradeDateForStock } = await import('../database/stockMinuteCacheRepository')
         const latestMinuteDate = getLatestTradeDateForStock(db, stockCode)
         const minuteRows = latestMinuteDate ? getStockMinuteByDate(db, stockCode, latestMinuteDate) : []
         const minutePart = minuteRows.length > 0
           ? `\n\n最新交易日(${latestMinuteDate})1分钟K线：${JSON.stringify(minuteRows.map(r => ({ t: r.tsMinute, o: r.open, h: r.high, l: r.low, c: r.close, v: r.vol })))}`
           : ''
-        marketDataPart = `近30日日线数据（日期,开,高,低,收,量）：\n${dailyCsv}${minutePart}`
+        marketDataPart = `${dailyBlock}${minutePart}`
       }
 
       const timeRange = sourceForecast.type === 'today'

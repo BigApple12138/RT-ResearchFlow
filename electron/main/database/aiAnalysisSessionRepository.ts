@@ -5,10 +5,15 @@ import type { ResearchTextAudit } from '../services/researchEvidenceAuditService
 export interface ConversationMessage {
   role: 'user' | 'assistant'
   content: string
+  /** Main-process-owned session sequence. Legacy inputs may omit it until normalized. */
+  sequence?: number
+  requestId?: string
   researchAgentRunId?: string
   webSearchTrace?: import('../services/aiProvider').AIWebSearchTrace
   researchAudit?: ResearchTextAudit
 }
+
+export type NormalizedConversationMessage = ConversationMessage & { sequence: number }
 
 export interface CreateSessionParams {
   provider: AIProvider
@@ -23,12 +28,75 @@ export interface CreateSessionParams {
   createdAt?: number
 }
 
+interface NormalizedMessages {
+  messages: NormalizedConversationMessage[]
+  nextSequence: number
+}
+
+function isStoredConversationMessage(value: unknown): value is ConversationMessage {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const message = value as Record<string, unknown>
+  return (message.role === 'user' || message.role === 'assistant')
+    && typeof message.content === 'string'
+    && (message.sequence === undefined || (typeof message.sequence === 'number' && Number.isInteger(message.sequence) && message.sequence > 0))
+}
+
+/** Returns null for malformed storage so callers never rewrite the original ledger. */
+function parseStoredMessages(raw: string | null): ConversationMessage[] | null {
+  if (raw == null) return []
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (!Array.isArray(value) || !value.every(isStoredConversationMessage)) return null
+    return value
+  } catch {
+    return null
+  }
+}
+
+function assertConversationMessagesValid(messages: ConversationMessage[]): void {
+  if (!Array.isArray(messages) || !messages.every(isStoredConversationMessage)) {
+    throw new Error('INVALID_MESSAGES')
+  }
+}
+
+export function normalizeConversationMessages(
+  messages: ConversationMessage[],
+  cursor = 1,
+): NormalizedMessages {
+  assertConversationMessagesValid(messages)
+  const used = new Set<number>()
+  let nextSequence = Math.max(1, Number.isInteger(cursor) ? cursor : 1)
+  let previousSequence = 0
+  const normalized = messages.map((message) => {
+    const candidate = message.sequence
+    const canKeep = typeof candidate === 'number'
+      && Number.isInteger(candidate)
+      && candidate > previousSequence
+      && !used.has(candidate)
+    const sequence = canKeep
+      ? candidate
+      : (() => {
+          nextSequence = Math.max(nextSequence, previousSequence + 1)
+          while (used.has(nextSequence)) nextSequence += 1
+          return nextSequence
+        })()
+    used.add(sequence)
+    previousSequence = sequence
+    nextSequence = Math.max(nextSequence, sequence + 1)
+    return { ...message, sequence }
+  })
+  return { messages: normalized, nextSequence }
+}
+
 export function createSession(db: Database, params: CreateSessionParams): number {
+  const normalized = params.messages == null
+    ? null
+    : normalizeConversationMessages(params.messages, 1)
   const result = db
     .prepare(
       `INSERT INTO ai_analysis_sessions
-        (createdAt, provider, model, articleUrls, promptSent, response, scanRunId, briefingId, isError, messages)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (createdAt, provider, model, articleUrls, promptSent, response, scanRunId, briefingId, isError, messages, next_message_sequence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       params.createdAt ?? Date.now(),
@@ -40,7 +108,8 @@ export function createSession(db: Database, params: CreateSessionParams): number
       params.scanRunId ?? null,
       params.briefingId ?? null,
       params.isError ? 1 : 0,
-      params.messages == null ? null : JSON.stringify(params.messages),
+      normalized == null ? null : JSON.stringify(normalized.messages),
+      normalized?.nextSequence ?? 0,
     )
   return result.lastInsertRowid as number
 }
@@ -70,7 +139,25 @@ export function updateSessionResponse(db: Database, id: number, response: string
 }
 
 export function updateSessionMessages(db: Database, id: number, messages: ConversationMessage[]): void {
-  db.prepare('UPDATE ai_analysis_sessions SET messages = ? WHERE id = ?').run(JSON.stringify(messages), id)
+  const row = db.prepare('SELECT messages, next_message_sequence FROM ai_analysis_sessions WHERE id = ?').get(id) as { messages: string | null; next_message_sequence?: number } | undefined
+  if (row && parseStoredMessages(row.messages) === null) throw new Error('INVALID_STORED_MESSAGES')
+  const normalized = normalizeConversationMessages(messages, row?.next_message_sequence ?? 1)
+  db.prepare('UPDATE ai_analysis_sessions SET messages = ?, next_message_sequence = ? WHERE id = ?')
+    .run(JSON.stringify(normalized.messages), normalized.nextSequence, id)
+}
+
+export function getSessionMessages(db: Database, id: number): NormalizedConversationMessage[] {
+  const row = getSession(db, id)
+  if (!row) return []
+  if (row.messages == null) return []
+  const parsed = parseStoredMessages(row.messages)
+  if (parsed === null) return []
+  const normalized = normalizeConversationMessages(parsed, row.next_message_sequence ?? 1)
+  const raw = JSON.stringify(normalized.messages)
+  if (raw !== row.messages || normalized.nextSequence !== row.next_message_sequence) {
+    updateSessionMessages(db, id, parsed)
+  }
+  return normalized.messages
 }
 
 export function deleteSession(db: Database, id: number): void {

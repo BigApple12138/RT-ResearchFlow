@@ -1,5 +1,16 @@
 import { create } from 'zustand'
-import type { Briefing, BriefingListOptions, BriefingSourceStat, DailyArchiveRow, Source, AppSettingsRow, DecisionCenterFiltersPreference, ImpactRating, PublicationTimeScope, ScanStatus } from '../../electron/main/database/types'
+import type { Briefing, BriefingListOptions, BriefingListResult, BriefingRelevanceScope, BriefingSourceStat, DailyArchiveRow, Source, AppSettingsRow, DecisionCenterFiltersPreference, ImpactRating, PublicationTimeScope, ScanStatus } from '../../electron/main/database/types'
+import { buildHeatmapFailureMessage } from '../utils/heatmapFailure'
+import {
+  computeIndustryMomentum,
+  createPersistedIndustryMomentum,
+  getBeijingDate,
+  hasMeaningfulIndustryMomentum,
+  parsePersistedIndustryMomentum,
+  type HeatmapHistoryEntry,
+  type IndustryMomentumMeta,
+} from '../utils/heatmapMomentum'
+import { isInTradingHours } from '../utils/tradingHours'
 
 interface MarketSnapshot {
   updatedAt: string
@@ -13,26 +24,17 @@ interface MarketSnapshot {
   }>
 }
 
-interface HeatmapHistoryEntry {
-  snapshot: MarketSnapshot
-  fetchedAt: number
-}
-
-const HEATMAP_HISTORY_MAX = 20
-// FR-102: 动量窗口由 settings.momentumWindowMinutes 动态决定，此处不再需要常量
+// 30分钟配置需要至少31个一分钟样本，额外余量用于轮询抖动。
+const HEATMAP_HISTORY_MAX = 40
+const HEATMAP_LIVE_FRESHNESS_MS = 90_000
+let heatmapMomentumRecoveryPendingCount = 0
 
 /** FR-115: 行业云图数据源类型 */
 export type HeatmapProvider = 'sina' | 'eastmoney' | 'tushare'
 
 /** FR-115: 返回今日北京时间的日期部分，YYYY-MM-DD */
 function getTodayBjDate(): string {
-  const now = new Date()
-  const bjOffset = 8 * 60
-  const bjTime = new Date(now.getTime() + (bjOffset + now.getTimezoneOffset()) * 60_000)
-  const y = bjTime.getFullYear()
-  const m = String(bjTime.getMonth() + 1).padStart(2, '0')
-  const d = String(bjTime.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
+  return getBeijingDate(Date.now())
 }
 
 /** FR-104: 今日北京时间日期作为 localStorage key 的一部分（FR-115 升级为按 provider 分槽，见 getProviderCacheKey） */
@@ -42,8 +44,103 @@ function getProviderCacheKey(provider: HeatmapProvider, date: string): string {
   return `heatmapCache_${provider}_${date}`
 }
 
+function getMomentumCacheKey(provider: HeatmapProvider): string {
+  return `heatmapMomentumLatest_${provider}`
+}
+
+function readPersistedMomentum(
+  provider: HeatmapProvider,
+  now = Date.now(),
+): { momentum: Record<string, number>; meta: IndustryMomentumMeta } | null {
+  try {
+    const key = getMomentumCacheKey(provider)
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { version?: unknown }
+    const record = parsePersistedIndustryMomentum(parsed, now)
+    if (!record) {
+      localStorage.removeItem(key)
+      return null
+    }
+    return {
+      momentum: record.momentum,
+      meta: {
+        mode: 'last-session',
+        origin: record.origin,
+        sourceProvider: parsed.version === 1 ? provider : record.sourceProvider,
+        scope: record.scope,
+        boundary: record.boundary,
+        capturedAt: record.capturedAt,
+        tradeDate: record.tradeDate,
+        windowMinutes: record.windowMinutes,
+        ...(record.coverage ? { coverage: record.coverage } : {}),
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
+function persistMomentum(
+  provider: HeatmapProvider,
+  momentum: Record<string, number>,
+  capturedAt: number,
+  windowMinutes: number,
+): void {
+  try {
+    const record = createPersistedIndustryMomentum(momentum, capturedAt, windowMinutes, {
+      origin: 'live-capture',
+      sourceProvider: provider,
+      scope: 'provider-snapshot',
+      boundary: 'live',
+    })
+    localStorage.setItem(getMomentumCacheKey(provider), JSON.stringify(record))
+  } catch {
+    // localStorage 不可用时仅保留当前会话状态。
+  }
+}
+
+function persistRecoveredMomentum(
+  provider: HeatmapProvider,
+  recovered: {
+    sourceProvider: 'eastmoney'
+    boundary: 'lunch-close' | 'market-close'
+    capturedAt: number
+    windowMinutes: number
+    momentum: Record<string, number>
+    coverage: IndustryMomentumMeta['coverage']
+  },
+): void {
+  try {
+    const existing = readPersistedMomentum(provider)
+    if (
+      existing
+      && existing.meta.windowMinutes === recovered.windowMinutes
+      && existing.meta.capturedAt >= recovered.capturedAt
+    ) return
+    const record = createPersistedIndustryMomentum(
+      recovered.momentum,
+      recovered.capturedAt,
+      recovered.windowMinutes,
+      {
+        origin: 'historical-recovery',
+        sourceProvider: recovered.sourceProvider,
+        scope: recovered.coverage?.l2.total
+          ? 'shenwan-l1-l2'
+          : 'shenwan-l1',
+        boundary: recovered.boundary,
+        coverage: recovered.coverage,
+      },
+    )
+    localStorage.setItem(getMomentumCacheKey(provider), JSON.stringify(record))
+  } catch {
+    // localStorage 不可用时由调用方保留当前会话状态。
+  }
+}
+
 export type Tab = 'feed' | 'sources' | 'settings' | 'ai-config' | 'ai-analysis' | 'datasource' | 'stock-chart' | 'market-heatmap' | 'industry-heatmap' | 'short-term-strategy' | 'trend-watcher' | 'decision-center'
 export type AIAnalysisSubTab = 'records' | 'deepResearch' | 'industryResearch'
+export type TrendWatcherSubTab = 'portfolio' | 'dashboard' | 'alerts' | 'manage'
 
 export interface ResearchDiscussionReturnTarget {
   tab: Tab
@@ -260,6 +357,11 @@ interface AppState {
   selectedSourceId: number | null
   publicationTimeScope: PublicationTimeScope
   searchQuery: string
+  /** 资讯默认「与我相关」本地过滤 */
+  relevanceScope: BriefingRelevanceScope
+  relevanceModeApplied: BriefingListResult['relevanceModeApplied']
+  allUnreadCount: number
+  portfolioTermCount: number
 
   // Scan status
   scanStatus: ScanStatus | null
@@ -297,12 +399,17 @@ interface AppState {
   // Global tab navigation
   activeTab: Tab
   setActiveTab: (tab: Tab) => void
+  trendWatcherSubTab: TrendWatcherSubTab
+  setTrendWatcherSubTab: (subTab: TrendWatcherSubTab) => void
   aiAnalysisSubTab: AIAnalysisSubTab
+  /** Phase 2a: 无侧栏入口；仅程序化/后台任务/E2E 打开遗留工作台 */
+  aiAnalysisWorkbench: null | 'deepResearch' | 'industryResearch'
   pendingIndustryResearchProjectId: string | null
   pendingResearchDiscussionSessionId: number | null
   pendingResearchDiscussionReturnTarget: ResearchDiscussionReturnTarget | null
   researchDiscussionDrafts: Record<number, string>
   setAIAnalysisSubTab: (subTab: AIAnalysisSubTab) => void
+  openAIAnalysisWorkbench: (workbench: null | 'deepResearch' | 'industryResearch', projectId?: string | null) => void
   navigateToIndustryResearch: (projectId?: string | null) => void
   clearPendingIndustryResearchProject: () => void
   navigateToResearchDiscussion: (sessionId: number, initialDraft?: string | null) => void
@@ -354,11 +461,15 @@ interface AppState {
   heatmapPollingStarted: boolean
   heatmapHistory: HeatmapHistoryEntry[]
   industryMomentum: Record<string, number>
+  industryMomentumMeta: IndustryMomentumMeta | null
+  heatmapMomentumRecoveryLoading: boolean
+  heatmapMomentumRecoveryError: string
   // FR-115: 双 provider 缓存
   heatmapSnapshotByProvider: Record<HeatmapProvider, MarketSnapshot | null>
   heatmapHistoryByProvider: Record<HeatmapProvider, HeatmapHistoryEntry[]>
   activeHeatmapProvider: HeatmapProvider
   fetchHeatmapSnapshot: () => Promise<void>
+  recoverHeatmapMomentum: (forceRefresh?: boolean) => Promise<void>
   initHeatmapPolling: () => void
   setHeatmapProvider: (provider: HeatmapProvider) => Promise<void>
 
@@ -368,7 +479,7 @@ interface AppState {
   goToPage: (page: number) => Promise<void>
   markRead: (id: number) => Promise<void>
   markAllRead: () => Promise<void>
-  setFilter: (filter: Partial<Pick<AppState, 'selectedDate' | 'selectedRating' | 'selectedSourceId' | 'publicationTimeScope' | 'searchQuery'>>) => void
+  setFilter: (filter: Partial<Pick<AppState, 'selectedDate' | 'selectedRating' | 'selectedSourceId' | 'publicationTimeScope' | 'searchQuery' | 'relevanceScope'>>) => void
   loadScanStatus: () => Promise<void>
   triggerManualScan: () => Promise<void>
   loadArchiveDates: () => Promise<void>
@@ -404,6 +515,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectedSourceId: null,
   publicationTimeScope: 'all',
   searchQuery: '',
+  relevanceScope: 'portfolio',
+  relevanceModeApplied: 'all',
+  allUnreadCount: 0,
+  portfolioTermCount: 0,
   scanStatus: null,
   isScanning: false,
   archiveDates: [],
@@ -420,7 +535,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   aiHasApiKey: false,
   aiProgress: null,
   activeTab: 'decision-center',
+  trendWatcherSubTab: 'portfolio',
   aiAnalysisSubTab: 'records',
+  aiAnalysisWorkbench: null,
   pendingIndustryResearchProjectId: null,
   pendingResearchDiscussionSessionId: null,
   pendingResearchDiscussionReturnTarget: null,
@@ -441,6 +558,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   heatmapPollingStarted: false,
   heatmapHistory: [],
   industryMomentum: {},
+  industryMomentumMeta: null,
+  heatmapMomentumRecoveryLoading: false,
+  heatmapMomentumRecoveryError: '',
   // FR-115: 双 provider 缓存初始状态（FR-132 扩展为三 provider）
   heatmapSnapshotByProvider: { sina: null, eastmoney: null, tushare: null },
   heatmapHistoryByProvider: { sina: [], eastmoney: [], tushare: [] },
@@ -449,13 +569,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadBriefings: async (options) => {
     set({ isLoadingBriefings: true, currentPage: 1 })
     try {
-      const { selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery } = get()
+      const state = get()
       const result = await window.api.briefings.list({
-        date: options?.date ?? selectedDate ?? undefined,
-        impactRating: options?.impactRating ?? selectedRating ?? undefined,
-        sourceId: options?.sourceId ?? selectedSourceId ?? undefined,
-        publicationTimeScope: options?.publicationTimeScope ?? publicationTimeScope,
-        search: (options?.search ?? searchQuery) || undefined,
+        date: options?.date ?? state.selectedDate ?? undefined,
+        impactRating: options?.impactRating ?? state.selectedRating ?? undefined,
+        sourceId: options?.sourceId ?? state.selectedSourceId ?? undefined,
+        publicationTimeScope: options?.publicationTimeScope ?? state.publicationTimeScope,
+        search: (options?.search ?? state.searchQuery) || undefined,
+        relevance: options?.relevance ?? state.relevanceScope,
         limit: PAGE_SIZE,
         offset: 0
       })
@@ -463,6 +584,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         briefings: result.items,
         totalCount: result.total,
         unreadCount: result.unreadCount,
+        allUnreadCount: result.allUnreadCount ?? result.unreadCount,
+        relevanceModeApplied: result.relevanceModeApplied ?? 'all',
+        portfolioTermCount: result.portfolioTermCount ?? 0,
         briefingSourceStats: result.sourceStats,
         isLoadingBriefings: false
       })
@@ -473,17 +597,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   goToPage: async (page) => {
-    const { selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery, totalCount } = get()
-    const totalPages = Math.ceil(totalCount / PAGE_SIZE)
+    const state = get()
+    const totalPages = Math.ceil(state.totalCount / PAGE_SIZE)
     if (page < 1 || page > totalPages) return
     set({ isLoadingBriefings: true, currentPage: page, selectedBriefingId: null, briefingDeepLinkId: null })
     try {
       const result = await window.api.briefings.list({
-        date: selectedDate ?? undefined,
-        impactRating: selectedRating ?? undefined,
-        sourceId: selectedSourceId ?? undefined,
-        publicationTimeScope,
-        search: searchQuery || undefined,
+        date: state.selectedDate ?? undefined,
+        impactRating: state.selectedRating ?? undefined,
+        sourceId: state.selectedSourceId ?? undefined,
+        publicationTimeScope: state.publicationTimeScope,
+        search: state.searchQuery || undefined,
+        relevance: state.relevanceScope,
         limit: PAGE_SIZE,
         offset: (page - 1) * PAGE_SIZE
       })
@@ -491,6 +616,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         briefings: result.items,
         totalCount: result.total,
         unreadCount: result.unreadCount,
+        allUnreadCount: result.allUnreadCount ?? result.unreadCount,
+        relevanceModeApplied: result.relevanceModeApplied ?? 'all',
+        portfolioTermCount: result.portfolioTermCount ?? 0,
         briefingSourceStats: result.sourceStats,
         isLoadingBriefings: false
       })
@@ -500,23 +628,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   loadMoreBriefings: async () => {
-    const { briefings, totalCount, selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery } = get()
-    if (briefings.length >= totalCount) return
+    const state = get()
+    if (state.briefings.length >= state.totalCount) return
 
     set({ isLoadingBriefings: true })
     try {
       const result = await window.api.briefings.list({
-        date: selectedDate ?? undefined,
-        impactRating: selectedRating ?? undefined,
-        sourceId: selectedSourceId ?? undefined,
-        publicationTimeScope,
-        search: searchQuery || undefined,
+        date: state.selectedDate ?? undefined,
+        impactRating: state.selectedRating ?? undefined,
+        sourceId: state.selectedSourceId ?? undefined,
+        publicationTimeScope: state.publicationTimeScope,
+        search: state.searchQuery || undefined,
+        relevance: state.relevanceScope,
         limit: PAGE_SIZE,
-        offset: briefings.length
+        offset: state.briefings.length
       })
       set({
-        briefings: [...briefings, ...result.items],
+        briefings: [...state.briefings, ...result.items],
         briefingSourceStats: result.sourceStats,
+        unreadCount: result.unreadCount,
+        allUnreadCount: result.allUnreadCount ?? result.unreadCount,
+        relevanceModeApplied: result.relevanceModeApplied ?? 'all',
+        portfolioTermCount: result.portfolioTermCount ?? 0,
         isLoadingBriefings: false
       })
     } catch {
@@ -526,28 +659,33 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   markRead: async (id) => {
     await window.api.briefings.markRead(id)
-    set((state) => ({
-      briefings: state.briefings.map((b) =>
-        b.id === id ? { ...b, isRead: true, readAt: Date.now() } : b
-      ),
-      unreadCount: Math.max(0, state.unreadCount - (state.briefings.some((b) => b.id === id && !b.isRead) ? 1 : 0))
-    }))
+    set((state) => {
+      const wasUnread = state.briefings.some((b) => b.id === id && !b.isRead)
+      return {
+        briefings: state.briefings.map((b) =>
+          b.id === id ? { ...b, isRead: true, readAt: Date.now() } : b
+        ),
+        unreadCount: Math.max(0, state.unreadCount - (wasUnread ? 1 : 0)),
+        allUnreadCount: Math.max(0, state.allUnreadCount - (wasUnread ? 1 : 0)),
+      }
+    })
     get().loadArchiveDates()
   },
 
   markAllRead: async () => {
-    const { selectedDate, selectedRating, selectedSourceId, publicationTimeScope, searchQuery } = get()
+    const state = get()
     await window.api.briefings.markAllRead({
-      date: selectedDate ?? undefined,
-      impactRating: selectedRating ?? undefined,
-      sourceId: selectedSourceId ?? undefined,
-      publicationTimeScope,
-      search: searchQuery || undefined,
+      date: state.selectedDate ?? undefined,
+      impactRating: state.selectedRating ?? undefined,
+      sourceId: state.selectedSourceId ?? undefined,
+      publicationTimeScope: state.publicationTimeScope,
+      search: state.searchQuery || undefined,
+      relevance: state.relevanceScope,
     })
-    set((state) => ({
+    set({
       briefings: state.briefings.map((b) => ({ ...b, isRead: true })),
-      unreadCount: 0
-    }))
+      unreadCount: 0,
+    })
     await Promise.all([get().loadBriefings(), get().loadArchiveDates()])
   },
 
@@ -622,14 +760,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearBriefingDeepLink: () => set({ briefingDeepLinkId: null }),
 
   setActiveTab: (tab) => set({ activeTab: tab }),
+  setTrendWatcherSubTab: (subTab) => set({ activeTab: 'trend-watcher', trendWatcherSubTab: subTab }),
   openPremarketScenario: () => set({
     activeTab: 'decision-center',
     premarketScenarioOpenRequest: Date.now(),
   }),
-  setAIAnalysisSubTab: (subTab) => set({ aiAnalysisSubTab: subTab }),
+  setAIAnalysisSubTab: (subTab) => set({
+    activeTab: 'ai-analysis',
+    aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: subTab === 'deepResearch' || subTab === 'industryResearch' ? subTab : null,
+    pendingResearchDiscussionSessionId: null,
+  }),
+  openAIAnalysisWorkbench: (workbench, projectId) => set({
+    activeTab: 'ai-analysis',
+    aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: workbench,
+    pendingIndustryResearchProjectId: workbench === 'industryResearch' ? (projectId ?? null) : null,
+    pendingResearchDiscussionSessionId: null,
+  }),
   navigateToIndustryResearch: (projectId) => set({
     activeTab: 'ai-analysis',
-    aiAnalysisSubTab: 'industryResearch',
+    aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: 'industryResearch',
     pendingIndustryResearchProjectId: projectId ?? null,
     pendingResearchDiscussionSessionId: null,
   }),
@@ -637,6 +789,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   navigateToResearchDiscussion: (sessionId, initialDraft) => set((state) => ({
     activeTab: 'ai-analysis',
     aiAnalysisSubTab: 'records',
+    aiAnalysisWorkbench: null,
     pendingResearchDiscussionSessionId: sessionId,
     pendingIndustryResearchProjectId: null,
     researchDiscussionDrafts: initialDraft?.trim() && !state.researchDiscussionDrafts[sessionId]
@@ -661,27 +814,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         activeTab: 'ai-analysis',
         aiAnalysisSubTab: 'records',
+        aiAnalysisWorkbench: null,
         pendingResearchDiscussionSessionId: Number(target.entityId),
         pendingIndustryResearchProjectId: null,
         pendingResearchDiscussionReturnTarget: target,
       })
       return
     }
-    if (target.tab === 'ai-analysis' && target.subTab === 'deepResearch') {
+    if (target.tab === 'ai-analysis' && (target.subTab === 'deepResearch' || target.subTab === 'industryResearch')) {
       set({
         activeTab: 'ai-analysis',
-        aiAnalysisSubTab: 'deepResearch',
-        pendingIndustryResearchProjectId: null,
-        pendingResearchDiscussionSessionId: null,
-        pendingResearchDiscussionReturnTarget: target,
-      })
-      return
-    }
-    if (target.tab === 'ai-analysis' && target.subTab === 'industryResearch') {
-      set({
-        activeTab: 'ai-analysis',
-        aiAnalysisSubTab: 'industryResearch',
-        pendingIndustryResearchProjectId: target.entityId ?? null,
+        aiAnalysisSubTab: 'records',
+        aiAnalysisWorkbench: target.subTab,
+        pendingIndustryResearchProjectId: target.subTab === 'industryResearch' ? (target.entityId ?? null) : null,
         pendingResearchDiscussionSessionId: null,
         pendingResearchDiscussionReturnTarget: target,
       })
@@ -691,6 +836,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         activeTab: 'feed',
         selectedBriefingId: Number(target.entityId),
+        pendingResearchDiscussionSessionId: null,
+        pendingResearchDiscussionReturnTarget: target,
+      })
+      return
+    }
+    if (target.tab === 'trend-watcher') {
+      const subTab = target.subTab === 'dashboard' || target.subTab === 'alerts' || target.subTab === 'manage' || target.subTab === 'portfolio'
+        ? target.subTab
+        : 'portfolio'
+      set({
+        activeTab: 'trend-watcher',
+        trendWatcherSubTab: subTab,
         pendingResearchDiscussionSessionId: null,
         pendingResearchDiscussionReturnTarget: target,
       })
@@ -860,30 +1017,26 @@ export const useAppStore = create<AppState>((set, get) => ({
           { snapshot, fetchedAt: now }
         ].slice(-HEATMAP_HISTORY_MAX)
 
-        // 计算动量：找最接近 N 分钟前的最早一条历史记录
-        const windowMs = Math.max(10_000, (get().settings?.momentumWindowMinutes ?? 3) * 60_000 - 10_000)
-        const cutoff = now - windowMs
-        const baseline = newHistory.find(h => h.fetchedAt <= cutoff)
-        let momentum: Record<string, number> = {}
-        if (baseline) {
-          // FR-120: 同时纳入 L1 加权涨跌 + L2 子行业涨跌（东财 provider 才有 subIndustries）
-          const baseMap = new Map<string, number>()
-          for (const i of baseline.snapshot.industries) {
-            baseMap.set(i.name, i.weightedChange)
-            for (const sub of i.subIndustries ?? []) baseMap.set(sub.name, sub.change)
+        const momentumWindowMinutes = get().settings?.momentumWindowMinutes ?? 3
+        const computedMomentum = computeIndustryMomentum(newHistory, momentumWindowMinutes)
+        let momentum = computedMomentum
+        let momentumMeta: IndustryMomentumMeta | null = null
+        if (isInTradingHours(now) && hasMeaningfulIndustryMomentum(computedMomentum)) {
+          persistMomentum(targetProvider, computedMomentum, now, momentumWindowMinutes)
+          momentumMeta = {
+            mode: 'live',
+            origin: 'live-capture',
+            sourceProvider: targetProvider,
+            scope: 'provider-snapshot',
+            boundary: 'live',
+            capturedAt: now,
+            tradeDate: getBeijingDate(now),
+            windowMinutes: momentumWindowMinutes,
           }
-          for (const ind of snapshot.industries) {
-            const base = baseMap.get(ind.name)
-            if (base !== undefined) {
-              momentum[ind.name] = parseFloat((ind.weightedChange - base).toFixed(3))
-            }
-            for (const sub of ind.subIndustries ?? []) {
-              const subBase = baseMap.get(sub.name)
-              if (subBase !== undefined) {
-                momentum[sub.name] = parseFloat((sub.change - subBase).toFixed(3))
-              }
-            }
-          }
+        } else {
+          const persisted = readPersistedMomentum(targetProvider, now)
+          momentum = persisted?.momentum ?? {}
+          momentumMeta = persisted?.meta ?? null
         }
 
         // FR-115: 写入 byProvider 槽位（无论当前 active 是否仍是 targetProvider）
@@ -898,7 +1051,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             heatmapHistoryByProvider: nextHistoryMap,
             heatmapSnapshot: snapshot,
             heatmapHistory: newHistory,
-            industryMomentum: momentum
+            industryMomentum: momentum,
+            industryMomentumMeta: momentumMeta,
           })
         } else {
           set({
@@ -923,22 +1077,93 @@ export const useAppStore = create<AppState>((set, get) => ({
           }
         } catch { /* 写入失败静默忽略 */ }
       } else {
-        const msgMap: Record<string, string> = {
-          UPSTREAM_TIMEOUT: res.message ?? '数据源接口超时，请稍后重试',
-          UPSTREAM_ERROR: `数据获取失败：${res.message}`,
-          EMPTY_DATA: '数据源返回空数据'
-        }
+        const hasSnapshot = get().heatmapSnapshotByProvider[targetProvider] !== null
+        const message = buildHeatmapFailureMessage(targetProvider, res, hasSnapshot)
         // FR-115: 仅在请求期间未切换 provider 时才写错误（否则错误属于另一个 provider，不打扰用户）
         if (get().activeHeatmapProvider === targetProvider) {
-          set({ heatmapError: msgMap[res.code] ?? res.message })
+          set({ heatmapError: message })
         }
       }
-    } catch (err) {
+    } catch {
       if (get().activeHeatmapProvider === targetProvider) {
-        set({ heatmapError: err instanceof Error ? err.message : String(err) })
+        const hasSnapshot = get().heatmapSnapshotByProvider[targetProvider] !== null
+        set({
+          heatmapError: buildHeatmapFailureMessage(
+            targetProvider,
+            { code: 'UPSTREAM_ERROR' },
+            hasSnapshot,
+          )
+        })
       }
     } finally {
       set({ heatmapLoading: false })
+    }
+  },
+
+  recoverHeatmapMomentum: async (forceRefresh = false) => {
+    let targetProvider = get().activeHeatmapProvider
+    if (!get().heatmapPollingStarted) {
+      try {
+        targetProvider = await window.api.settings.getMarketHeatmapProvider()
+      } catch {
+        // 设置读取失败时使用当前内存中的 provider。
+      }
+    }
+    const windowMinutes = get().settings?.momentumWindowMinutes ?? 3
+    const existing = readPersistedMomentum(targetProvider)
+    heatmapMomentumRecoveryPendingCount += 1
+    set({ heatmapMomentumRecoveryLoading: true, heatmapMomentumRecoveryError: '' })
+    try {
+      const response = await window.api.marketHeatmap.recoverMomentum({
+        windowMinutes,
+        includeL2: targetProvider !== 'sina',
+        forceRefresh,
+        ...(existing?.meta.origin === 'historical-recovery'
+          && existing.meta.boundary !== 'live'
+          ? {
+              existingRecord: {
+                tradeDate: existing.meta.tradeDate,
+                boundary: existing.meta.boundary,
+                windowMinutes: existing.meta.windowMinutes,
+              },
+            }
+          : {}),
+      })
+      if (!response.ok) {
+        if (get().activeHeatmapProvider === targetProvider || !get().heatmapPollingStarted) {
+          set({ heatmapMomentumRecoveryError: response.message })
+        }
+        return
+      }
+      if (!response.data) {
+        const stillActive = get().activeHeatmapProvider === targetProvider || !get().heatmapPollingStarted
+        if (stillActive && existing) {
+          set({
+            activeHeatmapProvider: targetProvider,
+            industryMomentum: existing.momentum,
+            industryMomentumMeta: existing.meta,
+          })
+        }
+        return
+      }
+
+      persistRecoveredMomentum(targetProvider, response.data)
+      const persisted = readPersistedMomentum(targetProvider)
+      const stillActive = get().activeHeatmapProvider === targetProvider || !get().heatmapPollingStarted
+      if (stillActive && persisted) {
+        set({
+          activeHeatmapProvider: targetProvider,
+          industryMomentum: persisted.momentum,
+          industryMomentumMeta: persisted.meta,
+        })
+      }
+    } catch {
+      if (get().activeHeatmapProvider === targetProvider || !get().heatmapPollingStarted) {
+        set({ heatmapMomentumRecoveryError: '历史分钟数据暂不可用，请稍后重试' })
+      }
+    } finally {
+      heatmapMomentumRecoveryPendingCount = Math.max(0, heatmapMomentumRecoveryPendingCount - 1)
+      set({ heatmapMomentumRecoveryLoading: heatmapMomentumRecoveryPendingCount > 0 })
     }
   },
 
@@ -969,14 +1194,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // 派生顶层字段（基于当前 active provider 的槽位）
       const activeSnapshot = snapMap[provider]
+      const persistedMomentum = readPersistedMomentum(provider)
       set({
         activeHeatmapProvider: provider,
         heatmapSnapshotByProvider: snapMap,
         heatmapSnapshot: activeSnapshot,
+        industryMomentum: persistedMomentum?.momentum ?? {},
+        industryMomentumMeta: persistedMomentum?.meta ?? null,
         heatmapPollingStarted: true
       })
 
-      get().fetchHeatmapSnapshot()
+      await get().recoverHeatmapMomentum()
+      await get().fetchHeatmapSnapshot()
     })()
   },
 
@@ -993,33 +1222,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     const cachedSnapshot = get().heatmapSnapshotByProvider[provider]
     const cachedHistory = get().heatmapHistoryByProvider[provider] ?? []
 
-    // ③ 基于槽位历史重算动量
-    const windowMs = Math.max(10_000, (get().settings?.momentumWindowMinutes ?? 3) * 60_000 - 10_000)
-    let momentum: Record<string, number> = {}
-    if (cachedSnapshot && cachedHistory.length > 0) {
-      const lastEntry = cachedHistory[cachedHistory.length - 1]
-      const cutoff = lastEntry.fetchedAt - windowMs
-      const baseline = cachedHistory.find(h => h.fetchedAt <= cutoff)
-      if (baseline) {
-        // FR-120: 同时纳入 L1 + L2 子行业
-        const baseMap = new Map<string, number>()
-        for (const i of baseline.snapshot.industries) {
-          baseMap.set(i.name, i.weightedChange)
-          for (const sub of i.subIndustries ?? []) baseMap.set(sub.name, sub.change)
-        }
-        for (const ind of cachedSnapshot.industries) {
-          const base = baseMap.get(ind.name)
-          if (base !== undefined) {
-            momentum[ind.name] = parseFloat((ind.weightedChange - base).toFixed(3))
-          }
-          for (const sub of ind.subIndustries ?? []) {
-            const subBase = baseMap.get(sub.name)
-            if (subBase !== undefined) {
-              momentum[sub.name] = parseFloat((sub.change - subBase).toFixed(3))
-            }
-          }
-        }
+    // ③ 只有最新样本仍处于盘中且足够新鲜时才标为实时，否则恢复上次盘中结果。
+    const now = Date.now()
+    const momentumWindowMinutes = get().settings?.momentumWindowMinutes ?? 3
+    const lastEntry = cachedHistory[cachedHistory.length - 1]
+    const computedMomentum = cachedSnapshot
+      ? computeIndustryMomentum(cachedHistory, momentumWindowMinutes)
+      : {}
+    const canReuseLive = Boolean(
+      lastEntry
+      && isInTradingHours(now)
+      && isInTradingHours(lastEntry.fetchedAt)
+      && now - lastEntry.fetchedAt <= HEATMAP_LIVE_FRESHNESS_MS
+      && hasMeaningfulIndustryMomentum(computedMomentum),
+    )
+    let momentum = computedMomentum
+    let momentumMeta: IndustryMomentumMeta | null = null
+    if (canReuseLive && lastEntry) {
+      persistMomentum(provider, computedMomentum, lastEntry.fetchedAt, momentumWindowMinutes)
+      momentumMeta = {
+        mode: 'live',
+        origin: 'live-capture',
+        sourceProvider: provider,
+        scope: 'provider-snapshot',
+        boundary: 'live',
+        capturedAt: lastEntry.fetchedAt,
+        tradeDate: getBeijingDate(lastEntry.fetchedAt),
+        windowMinutes: momentumWindowMinutes,
       }
+    } else {
+      const persisted = readPersistedMomentum(provider, now)
+      momentum = persisted?.momentum ?? {}
+      momentumMeta = persisted?.meta ?? null
     }
 
     // ④ 瞬间切换：派生写入顶层字段（如槽位为空则展示「暂无数据」但不弹错）
@@ -1028,10 +1262,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       heatmapSnapshot: cachedSnapshot,
       heatmapHistory: cachedHistory,
       industryMomentum: momentum,
+      industryMomentumMeta: momentumMeta,
       heatmapError: ''
     })
 
-    // ⑤ fire-and-forget 后台静默更新
+    // ⑤ 午休/盘后先恢复真实分钟边界，再后台静默更新当前截面。
+    await get().recoverHeatmapMomentum()
     void get().fetchHeatmapSnapshot()
   },
 

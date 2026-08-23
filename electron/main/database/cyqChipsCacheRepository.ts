@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { CyqChipsRow } from '../services/tushareService'
+import { tsCodeLookupCandidates } from '../utils/tsCodeLookup'
 
 // ── FR-142 筹码分布缓存仓库 ─────────────────────────────────────────
 
@@ -22,14 +23,17 @@ export function queryChips(
   tsCode: string,
   tradeDate: string
 ): { price: number; percent: number }[] {
-  const rows = db
-    .prepare(
-      `SELECT price, percent FROM cyq_chips_cache
-       WHERE ts_code = ? AND trade_date = ?
-       ORDER BY price ASC`
-    )
-    .all(tsCode, tradeDate) as { price: number; percent: number }[]
-  return rows
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const rows = db
+      .prepare(
+        `SELECT price, percent FROM cyq_chips_cache
+         WHERE ts_code = ? AND trade_date = ?
+         ORDER BY price ASC`
+      )
+      .all(code, tradeDate) as { price: number; percent: number }[]
+    if (rows.length > 0) return rows
+  }
+  return []
 }
 
 /** 查询该股票 DB 中最新一期筹码数据（按 trade_date 降序取最新），盘中兜底用 */
@@ -37,20 +41,23 @@ export function queryLatestChips(
   db: Database.Database,
   tsCode: string
 ): { tradeDate: string; chips: { price: number; percent: number }[] } | null {
-  const dateRow = db
-    .prepare(
-      `SELECT trade_date FROM cyq_chips_cache WHERE ts_code = ? ORDER BY trade_date DESC LIMIT 1`
-    )
-    .get(tsCode) as { trade_date: string } | undefined
-  if (!dateRow) return null
-  const chips = db
-    .prepare(
-      `SELECT price, percent FROM cyq_chips_cache
-       WHERE ts_code = ? AND trade_date = ?
-       ORDER BY price ASC`
-    )
-    .all(tsCode, dateRow.trade_date) as { price: number; percent: number }[]
-  return { tradeDate: dateRow.trade_date, chips }
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const dateRow = db
+      .prepare(
+        `SELECT trade_date FROM cyq_chips_cache WHERE ts_code = ? ORDER BY trade_date DESC LIMIT 1`
+      )
+      .get(code) as { trade_date: string } | undefined
+    if (!dateRow) continue
+    const chips = db
+      .prepare(
+        `SELECT price, percent FROM cyq_chips_cache
+         WHERE ts_code = ? AND trade_date = ?
+         ORDER BY price ASC`
+      )
+      .all(code, dateRow.trade_date) as { price: number; percent: number }[]
+    if (chips.length > 0) return { tradeDate: dateRow.trade_date, chips }
+  }
+  return null
 }
 
 /** 查询该股票已有筹码数据的最近交易日，按日期升序返回。 */
@@ -59,14 +66,17 @@ export function listChipTradeDates(
   tsCode: string,
   limit: number,
 ): string[] {
-  const rows = db.prepare(`
-    SELECT DISTINCT trade_date
-    FROM cyq_chips_cache
-    WHERE ts_code = ?
-    ORDER BY trade_date DESC
-    LIMIT ?
-  `).all(tsCode, limit) as { trade_date: string }[]
-  return rows.map((row) => row.trade_date).reverse()
+  for (const code of tsCodeLookupCandidates(tsCode)) {
+    const rows = db.prepare(`
+      SELECT DISTINCT trade_date
+      FROM cyq_chips_cache
+      WHERE ts_code = ?
+      ORDER BY trade_date DESC
+      LIMIT ?
+    `).all(code, limit) as { trade_date: string }[]
+    if (rows.length > 0) return rows.map((row) => row.trade_date).reverse()
+  }
+  return []
 }
 
 export type ChipHistoryByDate = Map<string, { price: number; percent: number }[]>
@@ -84,7 +94,8 @@ export function queryChipHistories(
   const result = new Map<string, ChipHistoryByDate>()
   if (tsCodes.length === 0) return result
 
-  const aliases = [...new Set(tsCodes.flatMap((tsCode) => [tsCode, tsCode.split('.')[0]]))]
+  const aliases = [...new Set(tsCodes.flatMap((tsCode) => tsCodeLookupCandidates(tsCode)))]
+  if (aliases.length === 0) return result
   const placeholders = aliases.map(() => '?').join(', ')
   const rows = (tradeDate
     ? db.prepare(`
@@ -125,12 +136,13 @@ export function queryChipHistories(
     byStoredCode.set(row.ts_code, history)
   }
   for (const tsCode of tsCodes) {
-    const exact = byStoredCode.get(tsCode)
-    const fallback = byStoredCode.get(tsCode.split('.')[0])
-    const merged = new Map([
-      ...(fallback ?? new Map()),
-      ...(exact ?? new Map()),
-    ])
+    const merged = new Map<string, { price: number; percent: number }[]>()
+    // 候选顺序 canonical → raw → bare；从后往前合并，带后缀覆盖裸六位
+    for (const code of [...tsCodeLookupCandidates(tsCode)].reverse()) {
+      for (const [date, points] of byStoredCode.get(code) ?? []) {
+        merged.set(date, points)
+      }
+    }
     result.set(tsCode, new Map([...merged.entries()].sort(([left], [right]) => left.localeCompare(right))))
   }
   return result

@@ -27,28 +27,40 @@ export function isPortfolioForecastRunning(): boolean {
 
 /**
  * 持仓批量预测主任务.
- * 遍历 portfolio_stocks 中所有股票，跳过今日已有预测的，串行调用
- * performPredictTrendToday，每只间隔 500ms，单只超时 60s 则跳过并 warn.
- * 通过 win.webContents.send 向前端推送 portfolio:forecastProgress 事件.
+ * 遍历 portfolio_stocks；默认跳过今日已有预测。
+ * `options.force=true` 时不跳过（供用户手动确认后重跑；定时任务不得传 force）。
  */
 export async function runPortfolioForecastJob(
   db: Database.Database,
-  win?: BrowserWindow | null
+  win?: BrowserWindow | null,
+  options: { force?: boolean } = {},
 ): Promise<void> {
   if (_running) {
     console.warn('[Portfolio] 批量预测任务已在运行，跳过本次触发')
     return
   }
   _running = true
+  const force = options.force === true
   try {
     const stocks = listPortfolioStocks(db)
     if (stocks.length === 0) {
       console.log('[Portfolio] 持仓列表为空，跳过批量预测')
+      // total=0：通知渲染进程结束 loading（持仓为空时 IPC 通常已提前返回）
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('portfolio:forecastProgress', {
+          current: 0,
+          total: 0,
+          stockCode: '',
+          ok: true,
+          error: 'NO_PENDING',
+        })
+      }
       return
     }
 
-    // 过滤出今日尚未预测的股票
+    // 过滤出今日尚未预测的股票（force 时全部纳入）
     const pending = stocks.filter(s => {
+      if (force) return true
       try {
         const latest = getLatestForecasts(db, s.tsCode)
         if (latest.today && isTodayBj(latest.today.createdAt)) {
@@ -63,10 +75,20 @@ export async function runPortfolioForecastJob(
 
     if (pending.length === 0) {
       console.log('[Portfolio] 所有持仓股票今日均已预测')
+      // total=0：无可执行项时也必须推送，否则前端会一直停在「任务启动中」
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('portfolio:forecastProgress', {
+          current: 0,
+          total: 0,
+          stockCode: '',
+          ok: true,
+          error: 'ALREADY_DONE_TODAY',
+        })
+      }
       return
     }
 
-    console.log(`[Portfolio] 开始批量预测，共 ${pending.length} 只股票`)
+    console.log(`[Portfolio] 开始批量预测${force ? '（强制重跑）' : ''}，共 ${pending.length} 只股票`)
 
     for (let i = 0; i < pending.length; i++) {
       const stock = pending[i]

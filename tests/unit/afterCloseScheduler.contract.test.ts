@@ -35,6 +35,11 @@ describe('18:00统一盘后调度契约', () => {
     )
     expect(startScheduler).toContain('} else {')
     expect(startScheduler.match(/runStartupAfterCloseCatchUp\(\)/g)).toHaveLength(2)
+    expect(startScheduler.match(/runStartupPublicHistoricalDailySyncIfNeeded\(/g)).toHaveLength(2)
+    expect(startScheduler).toContain('schedulePublicHistoricalDailyResumeCheck()')
+    expect(startScheduler.match(/schedulePublicHistoricalDailyResumeCheck\(\)/g)).toHaveLength(2)
+    expect(scheduler).toContain('_publicDailyResumeTimer = setInterval')
+    expect(scheduler).toContain('if (_publicDailyResumeTimer)')
 
     const marketTask = scheduler.slice(
       scheduler.indexOf('export async function runTopListSyncJob'),
@@ -53,6 +58,17 @@ describe('18:00统一盘后调度契约', () => {
     expect(coordinator).toContain("runTrackedAfterCloseTask(tradeDate, 'premarket_validation'")
     expect(coordinator.indexOf("'premarket_validation'")).toBeGreaterThan(coordinator.indexOf("'market_daily'"))
     expect(coordinator).toContain('runPremarketOutcomeValidation(db, tradeDate)')
+  })
+
+  it('市场共振在板块截面完成后由18点协调器固化', () => {
+    const coordinator = scheduler.slice(
+      scheduler.indexOf('export function runUnifiedAfterCloseSyncJob'),
+      scheduler.indexOf('function scheduleAfterCloseDailySync'),
+    )
+    expect(coordinator).toContain("runTrackedAfterCloseTask(tradeDate, 'market_resonance'")
+    expect(coordinator).toContain('archiveMarketResonanceSnapshot(db, tradeDate)')
+    expect(coordinator.indexOf("'market_resonance'")).toBeGreaterThan(coordinator.indexOf("'sector_snapshot'"))
+    expect(coordinator.indexOf("'market_resonance'")).toBeLessThan(coordinator.indexOf("'trend_scores'"))
   })
 
   it('证券主数据独立于题材源接入18点协调器并提供启动过期补偿', () => {

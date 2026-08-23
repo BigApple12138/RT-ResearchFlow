@@ -22,6 +22,7 @@ export interface AIConfigUpdate {
   customSkillPaths?: string | null
   skillsForTrend?: number
   maxSkillChars?: number
+  autoCompactDiscussion?: number
 }
 
 export function getAIConfig(db: Database): AIConfigRow {
@@ -51,13 +52,14 @@ export function setProviderConfig(
 ): void {
   const existing = getProviderConfig(db, provider)
   if (!existing) {
-    // Insert with whatever fields are provided
+    // apiKeyEncrypted is NOT NULL in schema; empty blob means "no key yet"
+    // (configured-provider checks use LENGTH(apiKeyEncrypted) > 0).
     db.prepare(
       `INSERT INTO provider_configs (provider, apiKeyEncrypted, model, baseUrl, maxTokens, presetPrompt, trendForecastPrompt, trendForecastMorrowPrompt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       provider,
-      data.apiKeyEncrypted ?? null,
+      data.apiKeyEncrypted ?? Buffer.alloc(0),
       data.model ?? null,
       data.baseUrl ?? null,
       data.maxTokens ?? null,

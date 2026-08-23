@@ -13,6 +13,7 @@ import {
   createChart,
   ColorType,
   CandlestickSeries,
+  HistogramSeries,
   LineSeries,
   LineStyle,
 } from 'lightweight-charts'
@@ -27,6 +28,13 @@ import type { FactorData } from './FactorSummary'
 import { RightDrawer } from './RightDrawer'
 import { StockStructureInsight } from './StockStructureInsight'
 import type { StockStructureRow } from './stockStructureInsightModel'
+import {
+  buildDrawerCacheFingerprint,
+  getDrawerCache,
+  hasFreshDrawerCache,
+  isDrawerCacheFresh,
+  putDrawerCache,
+} from './stockKlineChipDrawerCache'
 
 interface Props {
   tsCode: string
@@ -39,12 +47,27 @@ interface Props {
   onClose: () => void
   /** 点击「查看走势图」按钮时触发 */
   onNavigate: () => void
+  /** 由趋势雷达显式传入时显示 AI 结构复核入口。 */
+  onReview?: () => void
+  /** 由趋势雷达显式传入时显示带着复核去讨论入口。 */
+  onDiscuss?: () => void
   /** 嵌套在整页业务抽屉中时由调用方提升层级。 */
   zIndex?: number
 }
 
 type OhlcvRow = StockStructureRow
-type CandleTooltip = { x: number; y: number; date: string; open: number | null; high: number | null; low: number | null; close: number; pctChg: number | null; amount: number | null }
+type CandleTooltip = {
+  x: number
+  y: number
+  date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number
+  pctChg: number | null
+  vol: number | null
+  amount: number | null
+}
 type ChipProfileTooltip = { y: number; price: number; selectedPercent: number; latestPercent: number | null }
 
 const CANDLE_HEIGHT = 460
@@ -77,6 +100,8 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
   stockName,
   onClose,
   onNavigate,
+  onReview,
+  onDiscuss,
   zIndex = 9999,
 }) => {
   const candleRef = useRef<HTMLDivElement>(null)
@@ -84,7 +109,7 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
 
   const [lastClose, setLastClose] = useState<number | null>(null)
   const [lastPctChg, setLastPctChg] = useState<number | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => !hasFreshDrawerCache(tsCode))
   const [loadError, setLoadError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [visibleRange, setVisibleRange] = useState<VisibleRange>(60)
@@ -136,232 +161,318 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
       ? `筹码分布，${profileSummary.profitPercent == null ? '浮盈与套牢比例待现价补齐' : `浮盈筹码${profileSummary.profitPercent.toFixed(1)}%，套牢筹码${profileSummary.trappedPercent?.toFixed(1)}%`}，主峰价格${profileSummary.peakPrice.toFixed(2)}，核心成本区${profileSummary.coreLowPrice.toFixed(2)}至${profileSummary.coreHighPrice.toFixed(2)}`
     : '筹码分布尚未加载'
 
-  // 蜡烛图 + 并行拉取筹码/因子数据
+  // 蜡烛图 + 并行拉取筹码/因子；会话缓存命中且未过期则跳过转圈与网络
   useEffect(() => {
     let cancelled = false
     let candleChart: ReturnType<typeof createChart> | null = null
 
+    const normalizeOhlcv = (rows: Array<{
+      tradeDate: string
+      open: number | null
+      high: number | null
+      low: number | null
+      close: number
+      pctChg?: number | null
+      vol?: number | null
+      amount?: number | null
+    }>): OhlcvRow[] => {
+      const filtered = rows.filter((r) => r.open != null && r.high != null && r.low != null)
+      const map = new Map<string, typeof filtered[0]>()
+      for (const r of filtered) map.set(r.tradeDate, r)
+      return [...map.values()]
+        .sort((a, b) => a.tradeDate.localeCompare(b.tradeDate))
+        .map((r) => ({
+          tradeDate: r.tradeDate,
+          open: r.open ?? null,
+          high: r.high ?? null,
+          low: r.low ?? null,
+          close: r.close,
+          pctChg: r.pctChg ?? null,
+          vol: r.vol ?? null,
+          amount: r.amount ?? null,
+        }))
+    }
+
+    const applyChipsAndFactor = (chips: ChipPoint[] | null, factor: FactorData | null) => {
+      if (chips && chips.length > 0) {
+        setChipsData(chips)
+        setLatestChipsData(chips)
+        setChipsDataDate(null)
+        chipsDataRef.current = chips
+      } else {
+        setChipsData(null)
+        setLatestChipsData(null)
+        setChipsDataDate(null)
+        chipsDataRef.current = null
+      }
+      setFactorData(factor)
+    }
+
     const load = async () => {
-      setLoading(true)
       setLoadError(null)
-      setLastClose(null)
-      setLastPctChg(null)
-      setChipsData(null)
-      setLatestChipsData(null)
-      setChipsDataDate(null)
-      setFactorData(null)
-      setOhlcvRows([])
       setChipsTooltip(null)
       setCandleTooltip(null)
       setProfileOverlay(null)
       setChipsLoading(false)
-      // FR-144：切换股票时清空历史缓存和选中状态
       chipsCacheRef.current.clear()
-      chipsDataRef.current = null
       chipsLayoutRef.current = null
-      ohlcvRowsRef.current = []
       setSelectedDate(null)
 
-      try {
-        // 并行发起：蜡烛K线 + 筹码 + 技术因子
-        const [klineRes, chipsRes, factorRes] = await Promise.all([
-          window.api.shortTerm.getStockMiniKline(tsCode),
-          window.api.shortTerm.getStockChips(tsCode),
-          window.api.shortTerm.getStockFactor(tsCode),
-        ])
+      const cached = getDrawerCache(tsCode)
+      const cacheFresh = cached != null && isDrawerCacheFresh(cached)
 
-        if (cancelled) return
+      let ohlcvRows: OhlcvRow[] = []
+      let chips: ChipPoint[] | null = null
+      let factor: FactorData | null = null
 
-        // 筹码数据
-        if (chipsRes.ok && chipsRes.data.length > 0) {
-          setChipsData(chipsRes.data)
-          setLatestChipsData(chipsRes.data)
-          setChipsDataDate(null)
-          chipsDataRef.current = chipsRes.data
-        }
-        // 技术因子
-        if (factorRes.ok) {
-          setFactorData(factorRes.data)
-        }
-
-        // 蜡烛K线
-        if (!klineRes.ok) {
-          setLoadError('近期日K读取失败，请重试。')
-          setLoading(false)
-          return
-        }
-        const ohlcvRows = (() => {
-          const filtered = klineRes.rows.filter(
-            (r) => r.open != null && r.high != null && r.low != null
-          )
-          // 去重（同一 tradeDate 保留最后一条）并升序排序
-          const map = new Map<string, typeof filtered[0]>()
-          for (const r of filtered) map.set(r.tradeDate, r)
-          return [...map.values()].sort((a, b) => a.tradeDate.localeCompare(b.tradeDate))
-        })()
-
-        if (ohlcvRows.length > 0 && candleRef.current) {
-          candleChart = createChart(candleRef.current, {
-            autoSize: true,
-            layout: {
-              background: { type: ColorType.Solid, color: '#1f2937' },
-              textColor: '#9ca3af',
-              fontSize: 11,
-              attributionLogo: false,
-            },
-            localization: {
-              // 将十字线底部日期标签统一显示为 MM/DD（避免出现 "06 5月 '26" 等本地化格式）
-              timeFormatter: (time: unknown) => {
-                const s = typeof time === 'string' ? time : ''
-                const parts = s.split('-')
-                return parts.length === 3 ? `${parts[1]}/${parts[2]}` : s
-              },
-            },
-            grid: {
-              vertLines: { visible: false },
-              horzLines: { color: '#374151' },
-            },
-            leftPriceScale: { visible: true, borderColor: '#374151' },
-            rightPriceScale: { visible: false },
-            timeScale: {
-              borderColor: '#374151',
-              timeVisible: false,
-              tickMarkFormatter: (time: unknown, tickMarkType: number) => {
-                const s = typeof time === 'string' ? time : ''
-                if (!s.includes('-')) return s
-                const parts = s.split('-')
-                if (tickMarkType === 0) return parts[0]
-                return `${parts[1]}/${parts[2]}`
-              },
-            },
-            height: CANDLE_HEIGHT,
-          })
-
-          const candleSeries = candleChart.addSeries(CandlestickSeries, {
-            upColor: '#ef4444',
-            downColor: '#22c55e',
-            borderUpColor: '#ef4444',
-            borderDownColor: '#22c55e',
-            wickUpColor: '#ef4444',
-            wickDownColor: '#22c55e',
-            priceLineVisible: false,
-            lastValueVisible: false,
-          })
-          const data = ohlcvRows.map((r) => ({
-            time: `${r.tradeDate.slice(0, 4)}-${r.tradeDate.slice(4, 6)}-${r.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
-            open: r.open!,
-            high: r.high!,
-            low: r.low!,
-            close: r.close,
-          }))
-          candleSeries.setData(data)
-
-          const addChartLine = (
-            lineData: Array<{ time: import('lightweight-charts').Time; value: number }>,
-            color: string,
-            title: string,
-          ) => {
-            if (!lineData.length) return
-            const series = candleChart!.addSeries(LineSeries, {
-              color,
-              lineWidth: 1,
-              lineStyle: LineStyle.Dashed,
-              lastValueVisible: false,
-              priceLineVisible: false,
-              title,
-            })
-            series.setData(lineData)
-          }
-
-          const addLocalMovingAverage = (period: number, color: string, title: string) => {
-            addChartLine(
-              buildMovingAverageSeries(ohlcvRows, period).map((point) => ({
-                time: `${point.tradeDate.slice(0, 4)}-${point.tradeDate.slice(4, 6)}-${point.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
-                value: point.value,
-              })),
-              color,
-              title,
-            )
-          }
-          // 均线直接基于当前完整日K计算，避免30日技术因子缓存截断可见曲线。
-          addLocalMovingAverage(5, '#f97316', 'MA5')
-          addLocalMovingAverage(10, '#3b82f6', 'MA10')
-          addLocalMovingAverage(20, '#8b5cf6', 'MA20 / BOLL中轨')
-          addLocalMovingAverage(60, '#a16207', 'MA60')
-          const bollingerRows = buildBollingerBandSeries(ohlcvRows)
-          addChartLine(bollingerRows.map((point) => ({
-            time: `${point.tradeDate.slice(0, 4)}-${point.tradeDate.slice(4, 6)}-${point.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
-            value: point.upper,
-          })), '#ef4444', 'BOLL上')
-          addChartLine(bollingerRows.map((point) => ({
-            time: `${point.tradeDate.slice(0, 4)}-${point.tradeDate.slice(4, 6)}-${point.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
-            value: point.lower,
-          })), '#22c55e', 'BOLL下')
-          applyVisibleRange(candleChart, data.length, visibleRangeRef.current)
-          // FR-144：写入 ref 供 subscribeClick 回调同步访问
-          const normalizedRows = ohlcvRows.map(r => ({
-            tradeDate: r.tradeDate,
-            open: r.open ?? null,
-            high: r.high ?? null,
-            low: r.low ?? null,
-            close: r.close,
-            pctChg: r.pctChg ?? null,
-            amount: r.amount ?? null,
-          }))
-          ohlcvRowsRef.current = normalizedRows
-          setOhlcvRows(normalizedRows)
-          // FR-144：注册蜡烛点击 → 联动筹码日期
-          candleChartRef.current = candleChart
-          candleChart.subscribeClick((param) => {
-            if (!param.time || !chipsDataRef.current) return
-            const ymd = (param.time as string).replace(/-/g, '')
-            const rows = ohlcvRowsRef.current
-            const isLatest = rows.length > 0 && rows[rows.length - 1].tradeDate === ymd
-            setSelectedDate(isLatest ? null : ymd)
-          })
-
-          // 十字线移动时展示 OHLC + 成交额 tooltip
-          candleChart.subscribeCrosshairMove((param) => {
-            if (!param.time || !param.point) { setCandleTooltip(null); return }
-            const ymd = (param.time as string).replace(/-/g, '')
-            const row = ohlcvRowsRef.current.find((r) => r.tradeDate === ymd)
-            if (!row) { setCandleTooltip(null); return }
-            setCandleTooltip({
-              x: param.point.x,
-              y: param.point.y,
-              date: ymd,
-              open: row.open,
-              high: row.high,
-              low: row.low,
-              close: row.close,
-              pctChg: row.pctChg,
-              amount: row.amount,
-            })
-          })
-
+      if (cached) {
+        setLoading(false)
+        ohlcvRows = cached.ohlcvRows
+        chips = cached.chips
+        factor = cached.factor
+        applyChipsAndFactor(chips, factor)
+        ohlcvRowsRef.current = ohlcvRows
+        setOhlcvRows(ohlcvRows)
+        if (ohlcvRows.length > 0) {
           const last = ohlcvRows[ohlcvRows.length - 1]
-          if (last && Number.isFinite(last.close)) {
-            candleSeries.createPriceLine({
-              price: last.close,
-              color: '#59d9e8',
-              lineWidth: 1,
-              lineStyle: LineStyle.Dashed,
-              axisLabelVisible: true,
-              title: '',
-            })
-          }
           setLastClose(last?.close ?? null)
           setLastPctChg(last?.pctChg ?? null)
-        } else {
-          setLoadError('本地没有可用的近期日K数据。')
         }
-        setLoading(false)
-      } catch {
-        if (!cancelled) {
-          setLoadError('近期走势加载失败，请重试。')
-          setLoading(false)
+      } else {
+        setLoading(true)
+        setLastClose(null)
+        setLastPctChg(null)
+        setChipsData(null)
+        setLatestChipsData(null)
+        setChipsDataDate(null)
+        setFactorData(null)
+        setOhlcvRows([])
+        chipsDataRef.current = null
+        ohlcvRowsRef.current = []
+      }
+
+      if (!cacheFresh) {
+        try {
+          const [klineRes, chipsRes, factorRes] = await Promise.all([
+            window.api.shortTerm.getStockMiniKline(tsCode),
+            window.api.shortTerm.getStockChips(tsCode),
+            window.api.shortTerm.getStockFactor(tsCode),
+          ])
+          if (cancelled) return
+
+          if (!klineRes.ok) {
+            if (!cached) {
+              setLoadError('近期日K读取失败，请重试。')
+              setLoading(false)
+            }
+            return
+          }
+
+          const nextOhlcv = normalizeOhlcv(klineRes.rows)
+          const nextChips = chipsRes.ok && chipsRes.data.length > 0 ? chipsRes.data : null
+          const nextFactor = factorRes.ok ? (factorRes.data ?? null) : null
+          const nextFp = buildDrawerCacheFingerprint({
+            ohlcvRows: nextOhlcv,
+            chips: nextChips,
+            factor: nextFactor,
+          })
+
+          if (cached && nextFp === cached.fingerprint) {
+            putDrawerCache({
+              tsCode,
+              ohlcvRows: cached.ohlcvRows,
+              chips: cached.chips,
+              factor: cached.factor,
+              fingerprint: cached.fingerprint,
+            })
+            ohlcvRows = cached.ohlcvRows
+            chips = cached.chips
+            factor = cached.factor
+          } else {
+            ohlcvRows = nextOhlcv
+            chips = nextChips
+            factor = nextFactor
+            putDrawerCache({ tsCode, ohlcvRows, chips, factor, fingerprint: nextFp })
+            applyChipsAndFactor(chips, factor)
+            ohlcvRowsRef.current = ohlcvRows
+            setOhlcvRows(ohlcvRows)
+          }
+        } catch {
+          if (!cancelled && !cached) {
+            setLoadError('近期走势加载失败，请重试。')
+            setLoading(false)
+          }
+          if (cancelled || !cached) return
         }
       }
+
+      if (cancelled) return
+
+      applyChipsAndFactor(chips, factor)
+
+      if (ohlcvRows.length > 0 && candleRef.current) {
+        candleChart = createChart(candleRef.current, {
+          autoSize: true,
+          layout: {
+            background: { type: ColorType.Solid, color: '#1f2937' },
+            textColor: '#9ca3af',
+            fontSize: 11,
+            attributionLogo: false,
+          },
+          localization: {
+            timeFormatter: (time: unknown) => {
+              const s = typeof time === 'string' ? time : ''
+              const parts = s.split('-')
+              return parts.length === 3 ? `${parts[1]}/${parts[2]}` : s
+            },
+          },
+          grid: {
+            vertLines: { visible: false },
+            horzLines: { color: '#374151' },
+          },
+          leftPriceScale: { visible: true, borderColor: '#374151' },
+          rightPriceScale: { visible: false },
+          timeScale: {
+            borderColor: '#374151',
+            timeVisible: false,
+            tickMarkFormatter: (time: unknown, tickMarkType: number) => {
+              const s = typeof time === 'string' ? time : ''
+              if (!s.includes('-')) return s
+              const parts = s.split('-')
+              if (tickMarkType === 0) return parts[0]
+              return `${parts[1]}/${parts[2]}`
+            },
+          },
+          height: CANDLE_HEIGHT,
+        })
+
+        const candleSeries = candleChart.addSeries(CandlestickSeries, {
+          upColor: '#ef4444',
+          downColor: '#22c55e',
+          borderUpColor: '#ef4444',
+          borderDownColor: '#22c55e',
+          wickUpColor: '#ef4444',
+          wickDownColor: '#22c55e',
+          priceLineVisible: false,
+          lastValueVisible: false,
+        })
+        const data = ohlcvRows.map((r) => ({
+          time: `${r.tradeDate.slice(0, 4)}-${r.tradeDate.slice(4, 6)}-${r.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
+          open: r.open!,
+          high: r.high!,
+          low: r.low!,
+          close: r.close,
+        }))
+        candleSeries.setData(data)
+
+        const histSeries = candleChart.addSeries(HistogramSeries, {
+          priceScaleId: 'volume',
+          priceFormat: { type: 'volume' },
+          priceLineVisible: false,
+          lastValueVisible: false,
+        })
+        candleChart.priceScale('volume').applyOptions({
+          scaleMargins: { top: 0.72, bottom: 0 },
+        })
+        histSeries.setData(
+          ohlcvRows
+            .filter((r) => r.vol != null && Number.isFinite(r.vol))
+            .map((r) => ({
+              time: `${r.tradeDate.slice(0, 4)}-${r.tradeDate.slice(4, 6)}-${r.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
+              value: r.vol as number,
+              color: (r.close >= (r.open ?? r.close))
+                ? 'rgba(239, 68, 68, 0.5)'
+                : 'rgba(34, 197, 94, 0.5)',
+            })),
+        )
+
+        const addChartLine = (
+          lineData: Array<{ time: import('lightweight-charts').Time; value: number }>,
+          color: string,
+          title: string,
+        ) => {
+          if (!lineData.length) return
+          const series = candleChart!.addSeries(LineSeries, {
+            color,
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            title,
+          })
+          series.setData(lineData)
+        }
+
+        const addLocalMovingAverage = (period: number, color: string, title: string) => {
+          addChartLine(
+            buildMovingAverageSeries(ohlcvRows, period).map((point) => ({
+              time: `${point.tradeDate.slice(0, 4)}-${point.tradeDate.slice(4, 6)}-${point.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
+              value: point.value,
+            })),
+            color,
+            title,
+          )
+        }
+        addLocalMovingAverage(5, '#f97316', 'MA5')
+        addLocalMovingAverage(10, '#3b82f6', 'MA10')
+        addLocalMovingAverage(20, '#8b5cf6', 'MA20 / BOLL中轨')
+        addLocalMovingAverage(60, '#a16207', 'MA60')
+        const bollingerRows = buildBollingerBandSeries(ohlcvRows)
+        addChartLine(bollingerRows.map((point) => ({
+          time: `${point.tradeDate.slice(0, 4)}-${point.tradeDate.slice(4, 6)}-${point.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
+          value: point.upper,
+        })), '#ef4444', 'BOLL上')
+        addChartLine(bollingerRows.map((point) => ({
+          time: `${point.tradeDate.slice(0, 4)}-${point.tradeDate.slice(4, 6)}-${point.tradeDate.slice(6, 8)}` as import('lightweight-charts').Time,
+          value: point.lower,
+        })), '#22c55e', 'BOLL下')
+        applyVisibleRange(candleChart, data.length, visibleRangeRef.current)
+        ohlcvRowsRef.current = ohlcvRows
+        setOhlcvRows(ohlcvRows)
+        candleChartRef.current = candleChart
+        candleChart.subscribeClick((param) => {
+          if (!param.time || !chipsDataRef.current) return
+          const ymd = (param.time as string).replace(/-/g, '')
+          const rows = ohlcvRowsRef.current
+          const isLatest = rows.length > 0 && rows[rows.length - 1].tradeDate === ymd
+          setSelectedDate(isLatest ? null : ymd)
+        })
+        candleChart.subscribeCrosshairMove((param) => {
+          if (!param.time || !param.point) { setCandleTooltip(null); return }
+          const ymd = (param.time as string).replace(/-/g, '')
+          const row = ohlcvRowsRef.current.find((r) => r.tradeDate === ymd)
+          if (!row) { setCandleTooltip(null); return }
+          setCandleTooltip({
+            x: param.point.x,
+            y: param.point.y,
+            date: ymd,
+            open: row.open,
+            high: row.high,
+            low: row.low,
+            close: row.close,
+            pctChg: row.pctChg,
+            vol: row.vol,
+            amount: row.amount,
+          })
+        })
+
+        const last = ohlcvRows[ohlcvRows.length - 1]
+        if (last && Number.isFinite(last.close)) {
+          candleSeries.createPriceLine({
+            price: last.close,
+            color: '#59d9e8',
+            lineWidth: 1,
+            lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true,
+            title: '',
+          })
+        }
+        setLastClose(last?.close ?? null)
+        setLastPctChg(last?.pctChg ?? null)
+      } else if (!cached) {
+        setLoadError('本地没有可用的近期日K数据。')
+      }
+      setLoading(false)
     }
 
     void load()
@@ -525,13 +636,35 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
       testId="stock-kline-chip-drawer"
       bodyClassName="min-h-0 flex-1 overflow-y-auto bg-slate-50 p-4 dark:bg-slate-900"
       actions={(
-        <button
-          type="button"
-          onClick={onNavigate}
-          className="min-h-9 rounded-md border border-cyan-200 bg-cyan-50 px-3 text-xs font-semibold text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-cyan-800 dark:bg-cyan-950/45 dark:text-cyan-200 dark:hover:bg-cyan-900/55"
-        >
-          打开完整走势
-        </button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {onReview && (
+            <button
+              type="button"
+              data-testid={`trend-ai-review-drawer-${tsCode.replace(/\.(SH|SZ|BJ)$/i, '')}`}
+              onClick={onReview}
+              className="min-h-9 rounded-md border border-violet-200 bg-violet-50 px-3 text-xs font-semibold text-violet-800 transition-colors hover:border-violet-300 hover:bg-violet-100 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-violet-800 dark:bg-violet-950/45 dark:text-violet-200 dark:hover:bg-violet-900/55"
+            >
+              AI复核结构
+            </button>
+          )}
+          {onDiscuss && (
+            <button
+              type="button"
+              data-testid={`trend-ai-review-discussion-drawer-${tsCode.replace(/\.(SH|SZ|BJ)$/i, '')}`}
+              onClick={onDiscuss}
+              className="min-h-9 rounded-md border border-indigo-200 bg-indigo-50 px-3 text-xs font-semibold text-indigo-800 transition-colors hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-indigo-800 dark:bg-indigo-950/45 dark:text-indigo-200 dark:hover:bg-indigo-900/55"
+            >
+              带着复核去讨论
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onNavigate}
+            className="min-h-9 rounded-md border border-cyan-200 bg-cyan-50 px-3 text-xs font-semibold text-cyan-800 transition-colors hover:border-cyan-300 hover:bg-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500 dark:border-cyan-800 dark:bg-cyan-950/45 dark:text-cyan-200 dark:hover:bg-cyan-900/55"
+          >
+            打开完整走势
+          </button>
+        </div>
       )}
     >
       <section data-testid="stock-kline-chip-content" className="overflow-hidden rounded-md border border-slate-700 bg-slate-800 shadow-sm">
@@ -604,9 +737,14 @@ export const StockKlineChipDrawer: React.FC<Props> = ({
                   {candleTooltip.pctChg != null && (
                     <div className={`mt-1 font-mono ${tooltipPctColor}`}>
                       {candleTooltip.pctChg > 0 ? '+' : ''}{candleTooltip.pctChg.toFixed(2)}%
-                      {candleTooltip.amount != null && <span className="ml-2 text-slate-400">{(candleTooltip.amount / 100000).toFixed(2)}亿</span>}
                     </div>
                   )}
+                  <div className="mt-1 font-mono text-slate-400">
+                    量 {candleTooltip.vol != null ? `${Number(candleTooltip.vol.toFixed(0)).toLocaleString('zh-CN')}手` : '—'}
+                    {candleTooltip.amount != null && (
+                      <span className="ml-2">额 {(candleTooltip.amount / 100000).toFixed(2)}亿</span>
+                    )}
+                  </div>
                 </div>
               )
             })()}

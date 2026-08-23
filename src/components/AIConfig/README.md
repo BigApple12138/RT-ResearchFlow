@@ -21,7 +21,9 @@
 ## 特殊逻辑备忘
 
 - ChatGPT 行支持填写 OpenAI-compatible Base URL, 可用于接入自定义 GPT 端点。
-- `gpt-5.6-sol` 与 GPT 5.5 均作为 `chatgpt` 厂商下的模型选项展示，不新增独立厂商；`gpt-5.6-sol` 继续走现有 OpenAI-compatible Chat Completions，未附加未经核验的专属参数。
+- 模型字段为可输入组合框：可从厂商建议列表选择，也可手动填写三方/本地端点的真实模型 ID；保存时按原文写入 `provider_configs.model`。
+- 厂商配置以卡片呈现，每张卡片右下角「保存此厂商」写入该行模型/Key/Base URL/最大输出；底部「保存全局设置」不写 API Key。提示词入口文案为「提示词已配 / 配置提示词」，避免与 Key 状态混淆。
+- `gpt-5.6-sol` 与 GPT 5.5 均作为 `chatgpt` 厂商下的建议选项展示，不新增独立厂商；`gpt-5.6-sol` 继续走现有 OpenAI-compatible Chat Completions，未附加未经核验的专属参数。
 - 文章分析系统默认提示词以事实、推断、影响传导、风险反证和验证清单为主线，允许没有股票候选；厂商级自定义提示词仍优先于系统默认值。
 - 最大输出 Tokens 是厂商级配置, 未配置时默认 `4096`, 会传入对应 AI 调用。
 - API Key 留空保存时不会覆盖已加密存储的旧密钥。
