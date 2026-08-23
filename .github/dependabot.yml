@@ -1,0 +1,20 @@
+# Dependabot 配置：npm 与 GitHub Actions 双生态，每周检查。
+# 说明：electron 与 better-sqlite3 为原生模块，升级须按 Electron ABI 重建并人工评估，
+# 因此显式 ignore，不接受 Dependabot 自动升级。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # 原生模块需按 Electron ABI 重建，升级须人工评估
+      - dependency-name: electron
+      - dependency-name: better-sqlite3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
