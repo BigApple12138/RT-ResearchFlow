@@ -5275,6 +5275,27 @@ const MIGRATIONS: DatabaseMigration[] = [
       DROP INDEX IF EXISTS idx_sector_flow_daily_date_source;
       DROP TABLE IF EXISTS sector_flow_daily;
     `
+  },
+  {
+    // FR-221 消息中心跨会话事件（D1）
+    version: 158,
+    sql: `
+      CREATE TABLE IF NOT EXISTS message_center_events (
+        id            TEXT PRIMARY KEY,
+        fingerprint   TEXT NOT NULL UNIQUE,
+        title         TEXT NOT NULL,
+        description   TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        tone          TEXT NOT NULL CHECK (tone IN ('info', 'success', 'warning', 'danger')),
+        action_kind   TEXT,
+        created_at    INTEGER NOT NULL CHECK (created_at > 0),
+        dismissed_at  INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_center_events_created
+        ON message_center_events(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_message_center_events_dismissed
+        ON message_center_events(dismissed_at, created_at DESC);
+    `
   }
 ]
 

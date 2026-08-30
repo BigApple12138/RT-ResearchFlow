@@ -25,7 +25,7 @@ import { publishAppToast } from '../shared/appToastBus'
 import { ResearchAuditTrace, type ResearchAuditTraceView } from '../shared/ResearchAuditTrace'
 import { ResearchAgentPanel, type ResearchAgentTimelineContext } from './ResearchAgentPanel'
 import { DeepResearchTurnView } from './DeepResearchTurnView'
-import { detectResearchAgentIntent } from './researchAgentIntent'
+import { buildIndustryResearchLaunchPayload, detectResearchAgentIntent } from './researchAgentIntent'
 import {
   buildAgentTimelineModel,
   deriveAgentStatusScroll,
@@ -428,6 +428,7 @@ const candidateEvidenceLabel: Record<StructuredCandidateStock['evidenceLevel'], 
 }
 
 export function AIAnalysis() {
+  const openAIAnalysisWorkbench = useAppStore((state) => state.openAIAnalysisWorkbench)
   const { aiSessions, loadAISessions, isAnalyzing } = useAppStore()
   const navigateToStock = useAppStore((state) => state.navigateToStock)
   const pendingDiscussionSessionId = useAppStore((state) => state.pendingResearchDiscussionSessionId)
@@ -1019,7 +1020,7 @@ export function AIAnalysis() {
     setActiveTab('chat')
   }
 
-  async function runQuickChip(mode: 'analyze' | 'list' | 'checkConfig') {
+  async function runQuickChip(mode: 'analyze' | 'list' | 'checkConfig' | 'newsDigest') {
     if (sendingFollowUp || startingDiscussion || sessionAgentBusy) return
     setSendingFollowUp(true)
     try {
@@ -1027,7 +1028,9 @@ export function AIAnalysis() {
         ? '我有哪些持仓'
         : mode === 'checkConfig'
           ? '检查 AI 配置'
-          : '请基于下列持仓事实简要研判'
+          : mode === 'newsDigest'
+            ? '相对持仓总结今日资讯'
+            : '请基于下列持仓事实简要研判'
       let sessionId = detail?.discussion ? detail.id : null
       // 先建会话并立刻跳转，避免等 AI 返回期间仍停在「新对话」空态。
       if (sessionId == null) {
@@ -1095,7 +1098,7 @@ export function AIAnalysis() {
     setAgentSuggest({ intent, question: message })
     setPreferredAgentQuestion(message)
     if (intent === 'industry_research') {
-      showToast('产业研究将作为聊天 subagent 接入（下一期）；深度研究可先用「启动深度研究」。')
+      showToast('已识别产业研究意图，请确认后启动（会消耗 AI/联网额度）。')
     }
     return true
   }
@@ -1224,9 +1227,35 @@ export function AIAnalysis() {
       <div className="mb-2 flex flex-wrap gap-1.5" data-testid="research-quick-chips">
         <button type="button" data-testid="chip-analyze-portfolio" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('analyze') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">分析我的持仓</button>
         <button type="button" data-testid="chip-list-portfolio" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('list') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">我有哪些持仓</button>
+        <button type="button" data-testid="chip-portfolio-news-digest" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('newsDigest') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">相对持仓总结今日资讯</button>
         <button type="button" data-testid="chip-check-ai-config" disabled={sendingFollowUp || startingDiscussion || sessionAgentBusy} onClick={() => { void runQuickChip('checkConfig') }} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">检查 AI 配置</button>
       </div>
     )
+  }
+
+  async function handleStartIndustryFromSuggest(question: string) {
+    if (sendingFollowUp) return
+    setSendingFollowUp(true)
+    try {
+      const payload = buildIndustryResearchLaunchPayload(question)
+      const response = await window.api.industryResearch.startGeneration(payload) as {
+        ok: boolean
+        data?: { projectId: string; run: { id: string } }
+        message?: string
+        error?: string
+      }
+      if (!response.ok || !response.data) {
+        showToast(response.message || response.error || '启动产业研究失败')
+        return
+      }
+      setAgentSuggest(null)
+      openAIAnalysisWorkbench('industryResearch', response.data.projectId)
+      showToast('产业研究已启动，可在后台任务条查看进度')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '启动产业研究失败')
+    } finally {
+      setSendingFollowUp(false)
+    }
   }
 
   function renderAgentSuggestCard() {
@@ -1234,7 +1263,7 @@ export function AIAnalysis() {
     return (
       <div data-testid="research-agent-suggest" className="mb-2 rounded-lg border border-cyan-200 bg-cyan-50 px-3 py-2.5 text-xs text-cyan-950 dark:border-cyan-900 dark:bg-cyan-950/40 dark:text-cyan-100">
         <div className="font-semibold">
-          {agentSuggest.intent === 'deep_research' ? '手动启动深度研究（兜底）' : '产业研究 subagent（下一期）'}
+          {agentSuggest.intent === 'deep_research' ? '手动启动深度研究（兜底）' : '启动产业研究'}
         </div>
         <div className="mt-1 line-clamp-3 text-[11px] opacity-90">{agentSuggest.question}</div>
         <div className="mt-2 flex flex-wrap gap-2">
@@ -1252,7 +1281,15 @@ export function AIAnalysis() {
               启动深度研究
             </button>
           ) : (
-            <button type="button" disabled className="rounded-md bg-slate-300 px-2.5 py-1 text-[11px] font-semibold text-white dark:bg-slate-700">产业研究即将接入</button>
+            <button
+              type="button"
+              data-testid="research-agent-suggest-industry-confirm"
+              disabled={sendingFollowUp}
+              className="rounded-md bg-cyan-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-cyan-800 disabled:opacity-50"
+              onClick={() => { void handleStartIndustryFromSuggest(agentSuggest.question) }}
+            >
+              {sendingFollowUp ? '启动中…' : '启动产业研究'}
+            </button>
           )}
           <button
             type="button"

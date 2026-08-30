@@ -458,13 +458,12 @@ pnpm run test:e2e -- tests/e2e/user-journey.spec.ts
 
 ## 已知限制
 
-与 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md) 的「已知限制」保持一致：
+与 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md) 的「已知限制」保持一致，并含缺口闭环书面结案回填：
 
-- 本次只提供 Windows x64 安装包，macOS 尚未纳入发布验收。
-- 安装包尚未进行商业代码签名。
-- 策略实验室「通用日线 DSL / 两阶段组合」仍留给后续批次。
-- 云端分钟数据服务（`minuteData:saveCloudConfig`）尚未启用。
-- 竞价价史 snapshot IPC 在冷启动大批量候选时仍可能较长阻塞（已知技术债）。
+- 本次只提供 Windows x64 安装包；macOS 发布验收与商业代码签名在本程序**书面结案不做**（见 [`docs/superpowers/specs/2026-08-30-release-macos-codesign-wontfix-design.md`](docs/superpowers/specs/2026-08-30-release-macos-codesign-wontfix-design.md)）。
+- 策略实验室「通用日线 DSL / 两阶段组合」已在缺口闭环 Wave 6 落地（内置模板可跑；规则编辑器仍以分钟积木为主，日线以 profile/快照为准）。
+- 云端分钟数据服务（`minuteData:saveCloudConfig`）**书面结案不做**，保持 `NOT_IMPLEMENTED`（见 [`docs/superpowers/specs/2026-08-30-cloud-minute-save-config-wontfix-design.md`](docs/superpowers/specs/2026-08-30-cloud-minute-save-config-wontfix-design.md)）；待后端契约后再开 SDD。
+- 竞价价史 snapshot IPC 冷启动已做本地首包+远端后台（C1）；极端大批量仍可能有可感延迟。
 - 应用不执行下单、自动交易、仓位控制或收益预测。
 
 以上以当前版本 Release 说明为准，后续版本如有变化以对应 [`docs/releases/`](docs/releases/) 文档为准。
@@ -473,13 +472,12 @@ pnpm run test:e2e -- tests/e2e/user-journey.spec.ts
 
 ## 路线图
 
-以下为方向性计划，由 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md)「已知限制」反推而来，**不承诺交付时间**：
+以下为方向性计划，**不承诺交付时间**：
 
-- 策略实验室「通用日线 DSL / 两阶段组合」落地。
-- 云端分钟数据服务（`minuteData:saveCloudConfig`）启用。
-- 竞价价史 snapshot IPC 冷启动性能债清理。
-- 安装包商业代码签名。
-- macOS 纳入发布验收。
+- 策略实验室「通用日线 DSL / 两阶段组合」落地（缺口闭环 Track F 已交付内置模板）。
+- 云端分钟配置：依赖经批准的后端契约后另开 SDD（G1 已书面结案）。
+- 竞价价史极端规模下的进一步性能优化。
+- 安装包商业代码签名 / macOS 发布验收：另开发布工程 SDD。
 - 其余方向以 Discussions Ideas 中用户反馈为准；以上条目也适合作为 `good first issue` / `help wanted` 的出处，欢迎认领。
 
 ---

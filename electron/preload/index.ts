@@ -1744,6 +1744,58 @@ const api = {
     setMarketHeatmapProvider: (provider: 'sina' | 'eastmoney' | 'tushare') => ipcRenderer.invoke('settings:setMarketHeatmapProvider', provider) as Promise<'ok'>
   },
 
+  messageCenter: {
+    list: (payload?: { limit?: number; includeDismissed?: boolean }) =>
+      ipcRenderer.invoke('messageCenter:list', payload) as Promise<{
+        ok: boolean
+        items?: Array<{
+          id: string
+          fingerprint: string
+          title: string
+          description: string
+          source: string
+          tone: 'info' | 'success' | 'warning' | 'danger'
+          actionKind: 'feed' | 'decision-center' | 'onboarding' | null
+          createdAt: number
+          dismissedAt: number | null
+        }>
+        error?: string
+        message?: string
+      }>,
+    append: (payload: {
+      fingerprint: string
+      title: string
+      description: string
+      source: string
+      tone: 'info' | 'success' | 'warning' | 'danger'
+      actionKind?: 'feed' | 'decision-center' | 'onboarding' | null
+      createdAt?: number
+    }) =>
+      ipcRenderer.invoke('messageCenter:append', payload) as Promise<{
+        ok: boolean
+        item?: {
+          id: string
+          fingerprint: string
+          title: string
+          description: string
+          source: string
+          tone: 'info' | 'success' | 'warning' | 'danger'
+          actionKind: 'feed' | 'decision-center' | 'onboarding' | null
+          createdAt: number
+          dismissedAt: number | null
+        }
+        error?: string
+        message?: string
+      }>,
+    dismiss: (id: string) =>
+      ipcRenderer.invoke('messageCenter:dismiss', { id }) as Promise<{
+        ok: boolean
+        dismissed?: boolean
+        error?: string
+        message?: string
+      }>,
+  },
+
   // ── Premarket external facts ───────────────────────────
   premarket: {
     getStatus: () => ipcRenderer.invoke('premarket:getStatus') as Promise<PremarketCaptureStatusView>,
@@ -1955,7 +2007,7 @@ const api = {
     runPortfolioBrief: (payload: {
       requestId: string
       sessionId?: number | null
-      mode?: 'analyze' | 'list' | 'checkConfig'
+      mode?: 'analyze' | 'list' | 'checkConfig' | 'newsDigest'
     }) =>
       ipcRenderer.invoke('ai:runPortfolioBrief', payload) as Promise<{
         ok: boolean

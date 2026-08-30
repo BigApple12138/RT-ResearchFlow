@@ -6,7 +6,7 @@
 
 本地投研 Agent Phase 1 起，研判记录默认常驻「新对话」composer（不再空态弹窗门槛，也不盲选历史第一条会话）；首条消息 create-and-send；快捷芯片「分析我的持仓 / 我有哪些持仓 / 检查 AI 配置」经 `ai:runPortfolioBrief` 写入讨论，持仓事实默认不含成本价。主工作区对气泡与研判正文启用文本选中（`select-text`），便于复制；应用壳层导航仍保持 `select-none`。
 
-Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片；点「启动深度研究」后按 **自动化 skill / 多 agent** 直接 `startRun`（从会话抽取股票代码、短问题自动扩写），**不再弹预检表单**；失败仅 toast。会话内深度研究 busy 时禁用追问。产业研究意图仅灰态提示，本阶段不自动启动。
+Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口）。匹配「深挖 / 深度研究」等意图时展示建议卡片；点「启动深度研究」后按 **自动化 skill / 多 agent** 直接 `startRun`（从会话抽取股票代码、短问题自动扩写），**不再弹预检表单**；失败仅 toast。会话内深度研究 busy 时禁用追问。匹配产业研究意图时展示可点「启动产业研究」；确认后 `industryResearch:startGeneration`（无 projectId 则新建），成功后切到产业研究工作台。快捷芯片含「相对持仓总结今日资讯」（`mode: newsDigest`：今日 BJ 日 + 持仓相关资讯本地过滤后 AI 摘要，空态/未配置不乱烧 Token）。
 
 **One-page（2026-08-12）：** 深度研究不是底部常驻账本窗，而是聊天时间线中的回合块（`DeepResearchTurnView`：可折叠过程 + 结论 + 来源提示；详情复用 `ResearchAgentRunDetail`）。`ResearchAgentPanel` 仅作启动/进度控制器（预检 modal / 确认框），经 `onTimelineContextChange` 把 runs 投影给父级。
 

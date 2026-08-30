@@ -4,6 +4,7 @@ interface MessageCenterDrawerProps {
   open: boolean
   messages: MessageCenterItem[]
   onClose: () => void
+  onDismiss?: (persistedId: string) => void
 }
 
 const toneClass: Record<MessageTone, string> = {
@@ -13,7 +14,7 @@ const toneClass: Record<MessageTone, string> = {
   danger: 'border-red-100 bg-red-50 text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-200'
 }
 
-export function MessageCenterDrawer({ open, messages, onClose }: MessageCenterDrawerProps) {
+export function MessageCenterDrawer({ open, messages, onClose, onDismiss }: MessageCenterDrawerProps) {
   if (!open) return null
 
   return (
@@ -47,7 +48,11 @@ export function MessageCenterDrawer({ open, messages, onClose }: MessageCenterDr
           ) : (
             <div className="space-y-2">
               {messages.map(message => (
-                <article key={message.id} className={`rounded-lg border p-3 ${toneClass[message.tone]}`}>
+                <article
+                  key={message.id}
+                  data-testid={`message-center-item-${message.id}`}
+                  className={`rounded-lg border p-3 ${toneClass[message.tone]}`}
+                >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold">{message.title}</div>
@@ -57,15 +62,27 @@ export function MessageCenterDrawer({ open, messages, onClose }: MessageCenterDr
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-2 text-xs opacity-80">
                     <span>{message.timeLabel ?? '刚刚'}</span>
-                    {message.actionLabel && message.onAction && (
-                      <button
-                        type="button"
-                        onClick={message.onAction}
-                        className="rounded border border-current px-2 py-1 font-medium transition-colors hover:bg-white/50 focus:outline-none focus:ring-2 focus:ring-current dark:hover:bg-black/20"
-                      >
-                        {message.actionLabel}
-                      </button>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {message.persistedId && onDismiss && (
+                        <button
+                          type="button"
+                          data-testid={`message-center-dismiss-${message.persistedId}`}
+                          onClick={() => onDismiss(message.persistedId!)}
+                          className="rounded border border-current/40 px-2 py-1 font-medium transition-colors hover:bg-white/50 focus:outline-none focus:ring-2 focus:ring-current dark:hover:bg-black/20"
+                        >
+                          忽略
+                        </button>
+                      )}
+                      {message.actionLabel && message.onAction && (
+                        <button
+                          type="button"
+                          onClick={message.onAction}
+                          className="rounded border border-current px-2 py-1 font-medium transition-colors hover:bg-white/50 focus:outline-none focus:ring-2 focus:ring-current dark:hover:bg-black/20"
+                        >
+                          {message.actionLabel}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </article>
               ))}

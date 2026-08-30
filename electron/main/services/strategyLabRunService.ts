@@ -15,12 +15,14 @@ import { ensureDefaultStrategyLabStrategies, getStrategyLabStrategy, type Strate
 import { runScreener, type ScreenerSnapshot } from './stockScreenerService'
 import { ensureDefaultConditionTemplates, getConditionTemplate, listConditionMatches, listConditionTemplates } from '../database/conditionBlockRepository'
 import { runConditionBlockScan, type ConditionBlockScanMode, type ConditionBlockScanProgress } from './conditionBlocks/blockScanEngine'
+import { runDailyDslScan } from './dailyDsl/dailyDslScan'
+import { createDefaultDailyDslTemplate } from './dailyDsl/types'
 import { resolveMinuteUserTier } from './minuteData/minuteDataProviderRegistry'
 import { insertSignalsBatch, type ShortTermSignalInsert } from '../database/shortTermSignalsRepository'
 import { runStrategyBacktest } from './backtest/strategyBacktestEngine'
 import type { TradePlan } from './backtest/types'
 
-export type StrategyLabRunProgressStage = 'prepare' | 'screener' | 'conditionBlocks' | 'save' | 'done' | 'failed' | 'cancelled'
+export type StrategyLabRunProgressStage = 'prepare' | 'screener' | 'conditionBlocks' | 'dailyDsl' | 'twoPhase' | 'save' | 'done' | 'failed' | 'cancelled'
 
 export interface StrategyLabRunProgressEvent {
   runId: number
@@ -236,6 +238,143 @@ async function runScreenerStrategy(db: Database.Database, strategy: StrategyLabS
   }
 }
 
+async function runDailyDslStrategy(
+  db: Database.Database,
+  strategy: StrategyLabStrategyDetail,
+  runId: number,
+  controller: AbortController,
+  webContents?: WebContents,
+): Promise<{ summary: StrategyLabRunSummary; matches: ReturnType<typeof mapScreenerMatches> }> {
+  const runConfig = parseRunConfig(strategy)
+  const template = strategy.ruleDraft.dailyDslProfile?.templateSnapshot ?? createDefaultDailyDslTemplate()
+  emit(webContents, { runId, strategyId: strategy.id, stage: 'dailyDsl', current: 1, total: 2, message: '运行日线 DSL 扫描' })
+  const result = runDailyDslScan(db, {
+    template,
+    stockPoolSources: strategy.ruleDraft.stockPool.sources,
+    manualTsCodes: strategy.ruleDraft.stockPool.manualTsCodes,
+    lookbackDays: Math.max(runConfig.lookbackDays, 60),
+    dateEnd: runConfig.dateEnd,
+    limit: runConfig.dailyPrefilterLimit,
+    signal: controller.signal,
+  })
+  const matches = result.matches.map((match) => ({
+    strategyId: strategy.id,
+    strategyKey: strategy.strategyKey,
+    source: strategy.source,
+    tsCode: match.tsCode,
+    stockName: match.stockName,
+    tradeDate: match.tradeDate,
+    score: match.score,
+    signalStrength: match.score,
+    matchedFrom: 'dailyDsl',
+    evidenceJson: JSON.stringify({
+      engine: 'dailyDsl',
+      summary: match.evaluation.summary,
+      dataStatus: match.evaluation.dataStatus,
+      totalScore: match.evaluation.totalScore,
+      flatConditions: match.evaluation.flatConditions,
+      root: match.evaluation.root,
+    }),
+    actionJson: JSON.stringify(strategy.actions),
+  }))
+  return {
+    summary: {
+      totalStocks: result.totalStocks,
+      matchedCount: matches.length,
+      dateStart: result.dateEnd,
+      dateEnd: result.dateEnd,
+      source: strategy.source,
+      engine: 'dailyDsl',
+      coverage: { lookbackDays: runConfig.lookbackDays, templateKey: template.key },
+    },
+    matches,
+  }
+}
+
+async function runTwoPhaseStrategy(
+  db: Database.Database,
+  strategy: StrategyLabStrategyDetail,
+  runId: number,
+  controller: AbortController,
+  webContents?: WebContents,
+): Promise<{ summary: StrategyLabRunSummary; matches: ReturnType<typeof mapConditionMatches> }> {
+  const runConfig = parseRunConfig(strategy)
+  if (!strategy.ruleDraft.dailyDslProfile?.enabled || !strategy.ruleDraft.conditionBlocksProfile?.enabled) {
+    throw new Error('TWO_PHASE_PROFILES_REQUIRED')
+  }
+  emit(webContents, { runId, strategyId: strategy.id, stage: 'twoPhase', current: 1, total: 4, message: '两阶段：日线 DSL 预筛' })
+  const daily = await runDailyDslStrategy(db, strategy, runId, controller, webContents)
+  if (daily.matches.length === 0) {
+    return {
+      summary: {
+        ...daily.summary,
+        engine: 'twoPhase',
+        coverage: {
+          ...daily.summary.coverage,
+          phase: 'daily_only',
+          dailyMatched: 0,
+          minuteMatched: 0,
+        },
+      },
+      matches: [],
+    }
+  }
+  const templateSnapshot = strategy.ruleDraft.conditionBlocksProfile.templateSnapshot
+  if (!templateSnapshot) throw new Error('CONDITION_TEMPLATE_SNAPSHOT_REQUIRED')
+  const scopedSnapshot = {
+    ...templateSnapshot,
+    scope: {
+      ...templateSnapshot.scope,
+      stockPoolSources: ['manual' as const],
+      manualStocks: daily.matches.map((match) => ({
+        tsCode: match.tsCode,
+        stockName: match.stockName,
+      })),
+      dailyPrefilterLimit: Math.max(daily.matches.length, runConfig.dailyPrefilterLimit),
+    },
+  }
+  const patched: StrategyLabStrategyDetail = {
+    ...strategy,
+    ruleDraft: {
+      ...strategy.ruleDraft,
+      conditionBlocksProfile: {
+        ...strategy.ruleDraft.conditionBlocksProfile,
+        templateSnapshot: scopedSnapshot,
+      },
+    },
+  }
+  emit(webContents, { runId, strategyId: strategy.id, stage: 'twoPhase', current: 3, total: 4, message: '两阶段：分钟条件确认' })
+  const minute = await runConditionStrategy(db, patched, runId, controller, webContents)
+  return {
+    summary: {
+      totalStocks: daily.summary.totalStocks,
+      matchedCount: minute.matches.length,
+      dateStart: minute.summary.dateStart,
+      dateEnd: minute.summary.dateEnd,
+      source: strategy.source,
+      engine: 'twoPhase',
+      coverage: {
+        ...minute.summary.coverage,
+        dailyMatched: daily.matches.length,
+        minuteMatched: minute.matches.length,
+        dailyEngine: 'dailyDsl',
+        minuteEngine: 'conditionBlocks',
+      },
+    },
+    matches: minute.matches.map((match) => ({
+      ...match,
+      matchedFrom: `twoPhase.${match.matchedFrom}`,
+      evidenceJson: JSON.stringify({
+        ...(JSON.parse(match.evidenceJson) as Record<string, unknown>),
+        twoPhase: {
+          dailyPrefiltered: daily.matches.length,
+          dailyCandidate: match.tsCode,
+        },
+      }),
+    })),
+  }
+}
+
 async function runConditionStrategy(db: Database.Database, strategy: StrategyLabStrategyDetail, runId: number, controller: AbortController, webContents?: WebContents): Promise<{ summary: StrategyLabRunSummary; matches: ReturnType<typeof mapConditionMatches> }> {
   const runConfig = parseRunConfig(strategy)
   const templateKey = strategy.ruleDraft.conditionBlocksProfile?.templateKey ?? 'intraday_amount_surge_hold'
@@ -321,9 +460,17 @@ export async function runStrategyLabStrategy(db: Database.Database, strategyId: 
   runningRunId = runId
   try {
     emit(webContents, { runId, strategyId: strategy.id, stage: 'prepare', current: 0, total: 1, message: '准备策略实验室运行' })
-    const result = strategy.source === 'conditionBlocks'
-      ? await runConditionStrategy(db, strategy, runId, controller, webContents)
-      : await runScreenerStrategy(db, strategy, runId, webContents)
+    const useTwoPhase = runConfig.scanMode === 'twoPhase'
+      && strategy.ruleDraft.dailyDslProfile?.enabled === true
+      && strategy.ruleDraft.conditionBlocksProfile?.enabled === true
+    const useDailyDsl = !useTwoPhase && strategy.ruleDraft.dailyDslProfile?.enabled === true
+    const result = useTwoPhase
+      ? await runTwoPhaseStrategy(db, strategy, runId, controller, webContents)
+      : useDailyDsl
+        ? await runDailyDslStrategy(db, strategy, runId, controller, webContents)
+        : strategy.source === 'conditionBlocks'
+          ? await runConditionStrategy(db, strategy, runId, controller, webContents)
+          : await runScreenerStrategy(db, strategy, runId, webContents)
     emit(webContents, { runId, strategyId: strategy.id, stage: 'save', current: 1, total: 1, message: '保存统一命中结果' })
     completeRun(db, {
       runId,

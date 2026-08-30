@@ -1845,7 +1845,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   ipcMain.handle('ai:runPortfolioBrief', async (_e, data: {
     requestId?: string
     sessionId?: number | null
-    mode?: 'analyze' | 'list' | 'checkConfig'
+    mode?: 'analyze' | 'list' | 'checkConfig' | 'newsDigest'
   }) => {
     const requestId = typeof data?.requestId === 'string' ? data.requestId : ''
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
@@ -1855,7 +1855,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     if (sessionId != null && (!Number.isInteger(sessionId) || sessionId <= 0)) {
       return { ok: false, code: 'INVALID_PARAM', message: 'sessionId 无效' }
     }
-    const mode = data?.mode === 'list' || data?.mode === 'checkConfig' || data?.mode === 'analyze'
+    const mode = data?.mode === 'list' || data?.mode === 'checkConfig' || data?.mode === 'analyze' || data?.mode === 'newsDigest'
       ? data.mode
       : 'analyze'
     try {
