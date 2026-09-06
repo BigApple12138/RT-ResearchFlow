@@ -1795,19 +1795,38 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     const { requestId, sessionId, message } = validation.data
     const db = getDb()
     const win = getWindow()
-    return runDiscussionFollowUp(db, {
-      requestId,
-      sessionId,
-      message,
-    }, {
-      onSuccess: (database, id) => refreshStructuredResultInBackground(database, id, 'follow up'),
-      onDelta: (event) => {
-        if (!win || win.isDestroyed()) return
-        try {
-          win.webContents.send('ai:followUpDelta', event)
-        } catch { /* UI only */ }
-      },
-    })
+    const { registerFollowUpAbort, removeFollowUpAbort } = await import('../services/followUpAbortRegistry')
+    const controller = registerFollowUpAbort(requestId)
+    try {
+      return await runDiscussionFollowUp(db, {
+        requestId,
+        sessionId,
+        message,
+      }, {
+        signal: controller.signal,
+        onSuccess: (database, id) => refreshStructuredResultInBackground(database, id, 'follow up'),
+        onDelta: (event) => {
+          if (!win || win.isDestroyed()) return
+          try {
+            win.webContents.send('ai:followUpDelta', event)
+          } catch { /* UI only */ }
+        },
+      })
+    } finally {
+      removeFollowUpAbort(requestId)
+    }
+  })
+
+  // ── ai:followUpStop ───────────────────────────────────────────────────────────
+  ipcMain.handle('ai:followUpStop', async (_e, data: { requestId?: unknown }) => {
+    const requestId = typeof data?.requestId === 'string' ? data.requestId.trim() : ''
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+      return { ok: false, code: 'INVALID_PARAM', message: 'requestId 格式无效' }
+    }
+    const { abortFollowUp } = await import('../services/followUpAbortRegistry')
+    const aborted = abortFollowUp(requestId)
+    if (!aborted) return { ok: false, code: 'NOT_RUNNING' }
+    return { ok: true }
   })
 
   // ── ai:agentTurn ──────────────────────────────────────────────────────────────

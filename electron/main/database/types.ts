@@ -1338,7 +1338,7 @@ export interface DiscussionMessageArchiveRow {
   archived_at: number
 }
 
-export type DiscussionTurnRequestStatus = 'running' | 'succeeded' | 'failed'
+export type DiscussionTurnRequestStatus = 'running' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface DiscussionTurnRequestRow {
   request_id: string

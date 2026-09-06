@@ -5296,6 +5296,35 @@ const MIGRATIONS: DatabaseMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_message_center_events_dismissed
         ON message_center_events(dismissed_at, created_at DESC);
     `
+  },
+  {
+    // AI 讨论追问：允许 status=cancelled（停止生成）
+    version: 159,
+    sql: `
+      CREATE TABLE ai_discussion_turn_requests_v159 (
+        request_id     TEXT PRIMARY KEY,
+        session_id     INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        status         TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
+        user_message   TEXT NOT NULL,
+        response_text  TEXT,
+        error_message  TEXT,
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL,
+        completed_at   INTEGER
+      );
+      INSERT INTO ai_discussion_turn_requests_v159 (
+        request_id, session_id, status, user_message, response_text,
+        error_message, created_at, updated_at, completed_at
+      )
+      SELECT
+        request_id, session_id, status, user_message, response_text,
+        error_message, created_at, updated_at, completed_at
+      FROM ai_discussion_turn_requests;
+      DROP TABLE ai_discussion_turn_requests;
+      ALTER TABLE ai_discussion_turn_requests_v159 RENAME TO ai_discussion_turn_requests;
+      CREATE INDEX idx_ai_discussion_turn_requests_session
+        ON ai_discussion_turn_requests(session_id, created_at DESC, request_id);
+    `
   }
 ]
 

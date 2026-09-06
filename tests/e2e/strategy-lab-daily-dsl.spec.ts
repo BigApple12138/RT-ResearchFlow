@@ -53,6 +53,16 @@ test('策略实验室展示日线 DSL 与两阶段内置模板且文案诚实', 
 
     await window.getByText('日线 DSL 示例').first().click()
     await expect(window.getByText('完整扫描').first()).toBeVisible({ timeout: 15_000 })
+
+    // 打开配置抽屉：日线 DSL 编辑器可见，minPctChg 来自快照默认 3
+    await window.getByTestId('strategy-open-config').click()
+    await expect(window.getByTestId('daily-dsl-rule-editor')).toBeVisible({ timeout: 20_000 })
+    await expect(window.getByTestId('strategy-rule-builder')).toHaveAttribute('data-rule-kind', 'dailyDsl')
+    const minPct = window.locator('[data-param-key="minPctChg"]').first()
+    await expect(minPct).toHaveValue('3')
+    await minPct.fill('5')
+    await window.getByTestId('strategy-save-draft').click()
+    await expect(window.getByText(/副本|草稿已保存/).first()).toBeVisible({ timeout: 20_000 })
   } finally {
     await app?.close()
     rmSync(userDataDir, { recursive: true, force: true })

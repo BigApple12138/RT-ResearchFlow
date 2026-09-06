@@ -44,7 +44,8 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - `normalizeAIResponseMarkdown`: 在ReactMarkdown解析前修复模型常见的 `**标签：**正文`/`__标签：__正文` 闭合歧义。只调整展示投影，跳过代码围栏、行内代码和转义内容；首轮、第二轮和assistant追问共用，数据库原文不变。
 - `followUpInput/sendingFollowUp`: 控制追问/新对话输入与发送状态；无选中会话时走 create-and-send。
 - 讨论消息由主进程分配稳定 `sequence`；Renderer 不计算或用数组下标定位消息。`ai:followUp` / `ai:agentTurn` 必须携带 UUID `requestId`，同一请求重放返回已有 turn，不重复追加 user/assistant。
-- FR（流式）：`ai:followUp` 期间主进程通过 `ai:followUpDelta`（`start` / `delta` / `reset` / `error`）推送累计正文；Renderer 展示 `ai-followup-streaming` 草稿气泡，**结束再**以 `getSession` 权威消息替换。流式过程不写 `messages` JSON。含网页搜索的 turn 可降级为整段返回并明示。深度研究保留 `researchAgent:progress`，写作步另推 `researchAgent:delta`；同时桥接进 `ai:agentEvent`。时间线 `deep-research-timeline` / `DeepResearchTurnView` 展示过程与结论投影。
+- FR（流式）：`ai:followUp` 期间主进程通过 `ai:followUpDelta`（`start` / `delta` / `reset` / `error` / `stop`）推送累计正文；Renderer 展示 `ai-followup-streaming` 草稿气泡，**结束再**以 `getSession` 权威消息替换。流式过程不写 `messages` JSON。含网页搜索的 turn 可降级为整段返回并明示。深度研究保留 `researchAgent:progress`，写作步另推 `researchAgent:delta`；同时桥接进 `ai:agentEvent`。时间线 `deep-research-timeline` / `DeepResearchTurnView` 展示过程与结论投影。
+- FR（停止生成）：流式追问期间发送按钮切换为「停止」（`ai-followup-stop`）；`ai:followUpStop` 按 requestId 中止 HTTP 流且不续跑 fallback；有 partial 时诚实落库并标注「（已停止）」，无 partial 不落助手消息；会话锁正常释放。
 - FR（抽屉）：`sessionDrawerPrefs` 按会话 kind 回退默认；讨论默认右收、文章默认右开；研究增量 `xl` 右抽屉 + `<xl` 内联（`ai-research-increment-inline`）。
 - FR（Agent 正文流式）：`ai:agentTurn` 对用户可见 final 推送 `ai:agentEvent` `message`（`stream: 'delta'|'final'`）；UI `ai-agent-turn-live`（过程→草稿）；无正文时明示整段返回，不独占空「思考中…」。
 - 研究讨论的消息热区只保留未归档原文；历史原文进入归档账本，累计摘要独立保存并在模型调用时与 `promptSent` 硬事实、热消息一起组装。摘要不是一条伪造的 chat message，也不进入 FR-239 变更游标。

@@ -1910,6 +1910,14 @@ const api = {
         error?: string
         code?: string
         warning?: string
+        cancelled?: boolean
+        ok?: boolean
+      }>,
+    followUpStop: (payload: { requestId: string }) =>
+      ipcRenderer.invoke('ai:followUpStop', payload) as Promise<{
+        ok: boolean
+        code?: string
+        message?: string
       }>,
     agentTurn: (payload: { requestId: string; sessionId: number; message: string }) =>
       ipcRenderer.invoke('ai:agentTurn', payload) as Promise<{
@@ -2053,7 +2061,7 @@ const api = {
     },
     onFollowUpDelta: (
       listener: (data: {
-        type: 'start' | 'delta' | 'reset' | 'error'
+        type: 'start' | 'delta' | 'reset' | 'error' | 'stop'
         requestId: string
         sessionId: number
         streaming?: boolean

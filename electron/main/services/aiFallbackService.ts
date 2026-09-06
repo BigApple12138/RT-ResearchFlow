@@ -118,6 +118,8 @@ export async function callWithFallback(
     onDelta?: (accumulated: string) => void
     /** 即将尝试下一厂商时回调（用于 UI reset） */
     onProviderAttempt?: (provider: AIProvider) => void
+    /** 用户停止生成：中止当前厂商请求，且不续跑下一厂商 */
+    signal?: AbortSignal
   },
 ): Promise<AIFallbackResult> {
   const candidates = listProviderCandidates(db)
@@ -126,6 +128,11 @@ export async function callWithFallback(
   let encryptedCredentialCount = 0
   let unavailableCredentialCount = 0
   for (const provider of candidates) {
+    if (params.signal?.aborted) {
+      const abortError = new Error('AbortError')
+      abortError.name = 'AbortError'
+      throw abortError
+    }
     if (params.nativeWebSearchOnly && provider !== 'chatgpt') continue
     const providerConfig = getProviderConfig(db, provider)
     if (!providerConfig?.apiKeyEncrypted) continue
@@ -152,6 +159,7 @@ export async function callWithFallback(
         messages: params.messages,
         webSearch: params.webSearch,
         onDelta: params.onDelta,
+        signal: params.signal,
       })
       return {
         provider: provider as AIProvider,
@@ -164,6 +172,13 @@ export async function callWithFallback(
       }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
+      if (
+        lastError.name === 'AbortError'
+        || /abort|user[_ ]?cancel/i.test(lastError.message)
+        || params.signal?.aborted
+      ) {
+        throw lastError
+      }
       console.warn(`[callWithFallback] ${provider}/${model} failed:`, lastError.message, '— trying next provider')
     }
   }
