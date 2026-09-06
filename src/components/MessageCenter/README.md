@@ -6,17 +6,19 @@
 
 ## 实现思路
 
-首版不新增 IPC 和数据库表, 由 App 基于现有前端状态派生 `MessageCenterItem[]`, 再交给 `MessageCenterDrawer` 展示。消息中心只负责告知、解释和跳转来源, 不承接今日看板的处置和复盘语义。
+实时态（扫描中、未读计数等）仍由 App 基于前端状态派生。跨会话历史经 Migration 158 表 `message_center_events` 持久化：`messageCenter:list/append/dismiss`；扫描完成 / 初始化失败 / 补漏终态由 Renderer 幂等 append。抽屉合并实时+持久（同主题去重），持久项可「忽略」。
 
 ## 主要 props/state/事件流
 
 - `MessageCenterDrawer.open`: 控制抽屉是否显示。
 - `MessageCenterDrawer.messages`: 当前消息列表。
 - `MessageCenterDrawer.onClose`: 关闭抽屉。
+- `MessageCenterDrawer.onDismiss`: 忽略持久消息。
 - `MessageCenterItem.onAction`: 可选跳转动作, 由 App 注入, 通常切换到资讯、今日看板或打开初始化引导。
+- `persistedId` / `fingerprint`: 持久化事件标识。
 
 ## 特殊逻辑备忘
 
 - 消息中心入口位于左侧栏配置中心上方, 与配置中心同属全局辅助入口。
 - 今日看板高优先级信号只在消息中心提示, 具体研判仍回到今日看板完成。
-- 若后续需要跨会话消息历史, 必须另行规划 DB Migration, 不应把持久化逻辑塞进当前前端派生模型。
+- 跨会话消息历史见 `messageCenterEventRepository` 与 FR D1（2026-08-30）。

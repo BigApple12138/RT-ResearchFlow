@@ -16,7 +16,14 @@ import { ConfigDrawer, type ConfigDrawerTab } from './components/ConfigDrawer/Co
 import { MessageCenterDrawer } from './components/MessageCenter/MessageCenterDrawer'
 import { AppTitleBar } from './components/AppWindow/AppTitleBar'
 import { PrimaryNavigationIcon, type PrimaryNavigationIconName } from './components/AppWindow/PrimaryNavigationIcon'
-import { formatBjTime, type MessageCenterItem } from './components/MessageCenter/messageCenterModel'
+import {
+  formatBjTime,
+  hashFingerprintPart,
+  mergeLiveAndPersistedMessages,
+  persistedEventToItem,
+  type MessageCenterActionKind,
+  type MessageCenterItem,
+} from './components/MessageCenter/messageCenterModel'
 import { ColdStartGuide } from './components/Onboarding/ColdStartGuide'
 import { buildOnboardingModel, type DiagnosticsHealthSnapshot } from './components/Onboarding/onboardingModel'
 import { buildInitializationModel } from './components/Onboarding/initializationModel'
@@ -179,6 +186,7 @@ export default function App() {
   const [configDrawerOpen, setConfigDrawerOpen] = useState(false)
   const [configDrawerTab, setConfigDrawerTab] = useState<ConfigDrawerTab>('settings')
   const [messageCenterOpen, setMessageCenterOpen] = useState(false)
+  const [persistedMessages, setPersistedMessages] = useState<MessageCenterItem[]>([])
   const [navigationExpanded, setNavigationExpanded] = useState(() => readNavigationExpanded())
   const [expandedNavTab, setExpandedNavTab] = useState<Tab | null>(null)
   const [navFlyoutTab, setNavFlyoutTab] = useState<Tab | null>(null)
@@ -808,6 +816,85 @@ export default function App() {
     setNavFlyoutTab(null)
   }
 
+  const resolveMessageAction = useCallback((kind: MessageCenterActionKind | null) => {
+    if (kind === 'feed') return () => { setActiveTab('feed'); setMessageCenterOpen(false) }
+    if (kind === 'decision-center') return () => { setActiveTab('decision-center'); setMessageCenterOpen(false) }
+    if (kind === 'onboarding') return () => { openOnboardingGuide(); setMessageCenterOpen(false) }
+    return undefined
+    // openOnboardingGuide 为组件内函数声明；故意不列入 deps，避免每渲染重建导致 list 死循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setActiveTab])
+
+  const reloadPersistedMessages = useCallback(async () => {
+    try {
+      const result = await window.api.messageCenter.list({ limit: 50 })
+      if (!result.ok || !result.items) return
+      setPersistedMessages(result.items.map((item) => persistedEventToItem(item, resolveMessageAction)))
+    } catch {
+      /* ignore */
+    }
+  }, [resolveMessageAction])
+
+  useEffect(() => {
+    void reloadPersistedMessages()
+  }, [reloadPersistedMessages])
+
+  useEffect(() => {
+    if (!scanStatus?.lastScanAt || isScanning) return
+    const ymd = new Date(scanStatus.lastScanAt + 8 * 3600_000).toISOString().slice(0, 10)
+    void window.api.messageCenter.append({
+      fingerprint: `scan-last:${ymd}`,
+      title: '最近一次资讯扫描完成',
+      description: `上次扫描时间 ${formatBjTime(scanStatus.lastScanAt)}。立即扫描已移入资讯页工具区。`,
+      source: '资讯',
+      tone: 'success',
+      actionKind: 'feed',
+      createdAt: scanStatus.lastScanAt,
+    }).then((result) => {
+      if (result.ok) void reloadPersistedMessages()
+    }).catch(() => { /* ignore */ })
+  }, [isScanning, reloadPersistedMessages, scanStatus?.lastScanAt])
+
+  useEffect(() => {
+    if (!initializationFlow.error || initializationFlow.running) return
+    void window.api.messageCenter.append({
+      fingerprint: `initialization-error:${hashFingerprintPart(initializationFlow.error)}`,
+      title: '初始化任务需要处理',
+      description: initializationFlow.error,
+      source: '初始化',
+      tone: 'danger',
+      actionKind: 'onboarding',
+    }).then((result) => {
+      if (result.ok) void reloadPersistedMessages()
+    }).catch(() => { /* ignore */ })
+  }, [initializationFlow.error, initializationFlow.running, reloadPersistedMessages])
+
+  useEffect(() => {
+    if (!catchUpMessage) return
+    if (!catchUpMessage.includes('完成') && !catchUpMessage.includes('失败')) return
+    void window.api.messageCenter.append({
+      fingerprint: `catch-up:${hashFingerprintPart(catchUpMessage)}`,
+      title: '启动补漏状态更新',
+      description: catchUpMessage,
+      source: '资讯',
+      tone: catchUpMessage.includes('失败') ? 'danger' : 'success',
+      actionKind: 'feed',
+    }).then((result) => {
+      if (result.ok) void reloadPersistedMessages()
+    }).catch(() => { /* ignore */ })
+  }, [catchUpMessage, reloadPersistedMessages])
+
+  const handleDismissPersistedMessage = useCallback(async (persistedId: string) => {
+    try {
+      const result = await window.api.messageCenter.dismiss(persistedId)
+      if (result.ok) {
+        setPersistedMessages((prev) => prev.filter((item) => item.persistedId !== persistedId))
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
   const messages = useMemo<MessageCenterItem[]>(() => {
     const items: MessageCenterItem[] = []
     if (catchUpMessage) {
@@ -886,8 +973,8 @@ export default function App() {
         onAction: () => { openOnboardingGuide(); setMessageCenterOpen(false) }
       })
     }
-    return items
-  }, [catchUpMessage, decisionUnreadHighPriorityCount, initializationFlow.error, initializationFlow.message, initializationFlow.running, isScanning, scanStatus?.lastScanAt, setActiveTab, unreadCount])
+    return mergeLiveAndPersistedMessages(items, persistedMessages)
+  }, [catchUpMessage, decisionUnreadHighPriorityCount, initializationFlow.error, initializationFlow.message, initializationFlow.running, isScanning, openOnboardingGuide, persistedMessages, scanStatus?.lastScanAt, setActiveTab, unreadCount])
 
   return (
     <div className="flex h-screen flex-col bg-slate-50 text-slate-900 select-none dark:bg-slate-950 dark:text-slate-100">
@@ -950,7 +1037,12 @@ export default function App() {
         onShowNextPriorityNewsPreview={showNextPriorityNewsPreview}
         onStopPriorityNewsPreview={priorityNewsPreview.stop}
       />
-      <MessageCenterDrawer open={messageCenterOpen} messages={messages} onClose={() => setMessageCenterOpen(false)} />
+      <MessageCenterDrawer
+        open={messageCenterOpen}
+        messages={messages}
+        onClose={() => setMessageCenterOpen(false)}
+        onDismiss={(id) => { void handleDismissPersistedMessage(id) }}
+      />
       {onboardingOpen && (
         <ColdStartGuide
           snapshot={onboardingSnapshot}

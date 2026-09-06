@@ -9,6 +9,7 @@ import {
 import {
   completeDiscussionTurnRequest,
   failDiscussionTurnRequest,
+  cancelDiscussionTurnRequest,
   getDiscussionTurnRequest,
   insertDiscussionTurnRequest,
 } from '../database/discussionTurnRequestRepository'
@@ -39,6 +40,7 @@ export interface DiscussionFollowUpAICallInput {
   messages: ConversationMessage[]
   onDelta?: (accumulated: string) => void
   onProviderAttempt?: (provider: AIProvider) => void
+  signal?: AbortSignal
 }
 
 export type DiscussionFollowUpAICaller = (
@@ -51,6 +53,7 @@ export type DiscussionFollowUpDeltaEvent =
   | { type: 'delta'; requestId: string; sessionId: number; accumulated: string }
   | { type: 'reset'; requestId: string; sessionId: number; provider?: string }
   | { type: 'error'; requestId: string; sessionId: number; message: string }
+  | { type: 'stop'; requestId: string; sessionId: number }
 
 export interface DiscussionFollowUpOptions {
   callAI?: DiscussionFollowUpAICaller
@@ -58,6 +61,7 @@ export interface DiscussionFollowUpOptions {
   isBusy?: (db: Database.Database, sessionId: number) => boolean
   onSuccess?: (db: Database.Database, sessionId: number) => void | Promise<void>
   onDelta?: (event: DiscussionFollowUpDeltaEvent) => void
+  signal?: AbortSignal
 }
 
 export interface DiscussionFollowUpResult {
@@ -66,6 +70,8 @@ export interface DiscussionFollowUpResult {
   error?: string
   code?: string
   warning?: string
+  cancelled?: boolean
+  ok?: boolean
 }
 
 function injectTimePrefix(prompt: string): string {
@@ -87,6 +93,7 @@ function defaultCallAI(
     ...request,
     onDelta: input.onDelta,
     onProviderAttempt: input.onProviderAttempt,
+    signal: input.signal,
   })
 }
 
@@ -94,9 +101,16 @@ function normalizeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function errorResult(code: string, error: string, messages: NormalizedConversationMessage[] = []): DiscussionFollowUpResult {
-  return { error, code, messages }
+function isAbortError(_error: unknown, signal?: AbortSignal): boolean {
+  // 仅认用户停止（signal.aborted），避免网络 timeout/connection abort 被误判为取消而跳过 fallback
+  return signal?.aborted === true
 }
+
+function errorResult(code: string, error: string, messages: NormalizedConversationMessage[] = []): DiscussionFollowUpResult {
+  return { error, code, messages, ok: false }
+}
+
+const STOPPED_SUFFIX = '\n\n（已停止）'
 
 async function runDiscussionFollowUpWithinLock(
   db: Database.Database,
@@ -122,6 +136,15 @@ async function runDiscussionFollowUpWithinLock(
     }
     if (existing.status === 'running') {
       return errorResult('REQUEST_IN_PROGRESS', '该追问请求正在处理中', getSessionMessages(db, input.sessionId))
+    }
+    if (existing.status === 'cancelled') {
+      return {
+        ok: true,
+        cancelled: true,
+        text: existing.response_text ?? undefined,
+        messages: getSessionMessages(db, input.sessionId),
+        code: 'CANCELLED',
+      }
     }
     return errorResult('REQUEST_FAILED', existing.error_message ?? '该追问请求已失败，请重新发送', getSessionMessages(db, input.sessionId))
   }
@@ -161,6 +184,7 @@ async function runDiscussionFollowUpWithinLock(
   if (warning) console.warn(`[ai:followUp] ${warning}`)
   messages = prepared.hotMessages
   const requestMessages: ConversationMessage[] = [...messages, userMessage]
+  let lastAccumulated = ''
 
   try {
     const callAI = options.callAI ?? defaultCallAI
@@ -177,8 +201,10 @@ async function runDiscussionFollowUpWithinLock(
     const result = await callAI(db, {
       sessionId: input.sessionId,
       messages: requestMessages,
+      signal: options.signal,
       onDelta: streaming
         ? (accumulated) => {
+            lastAccumulated = accumulated
             options.onDelta?.({
               type: 'delta',
               requestId: input.requestId,
@@ -191,6 +217,7 @@ async function runDiscussionFollowUpWithinLock(
         ? (provider) => {
             attempt += 1
             if (attempt > 1) {
+              lastAccumulated = ''
               options.onDelta?.({
                 type: 'reset',
                 requestId: input.requestId,
@@ -249,11 +276,59 @@ async function runDiscussionFollowUpWithinLock(
       )
     }
     return {
+      ok: true,
       text: persistedText,
       messages: getSessionMessages(db, input.sessionId),
       ...(warning ? { warning } : {}),
     }
   } catch (error) {
+    if (isAbortError(error, options.signal)) {
+      const partial = lastAccumulated.trim()
+      if (partial) {
+        const stoppedText = partial.endsWith('（已停止）') ? partial : `${partial}${STOPPED_SUFFIX}`
+        const assistant: ConversationMessage = {
+          role: 'assistant',
+          content: stoppedText,
+          requestId: input.requestId,
+        }
+        const persistedMessages = [...requestMessages, assistant]
+        const commit = db.transaction(() => {
+          updateSessionMessages(db, input.sessionId, persistedMessages)
+          cancelDiscussionTurnRequest(db, input.requestId, stoppedText)
+        })
+        commit()
+        options.onDelta?.({
+          type: 'stop',
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+        })
+        return {
+          ok: true,
+          cancelled: true,
+          text: stoppedText,
+          messages: getSessionMessages(db, input.sessionId),
+          ...(warning ? { warning } : {}),
+        }
+      }
+      // 无 partial 也要保留已发送的用户句，避免 UI 清空 composer 后会话里凭空消失
+      const commitUserOnly = db.transaction(() => {
+        updateSessionMessages(db, input.sessionId, requestMessages)
+        cancelDiscussionTurnRequest(db, input.requestId, null)
+      })
+      commitUserOnly()
+      options.onDelta?.({
+        type: 'stop',
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+      })
+      return {
+        ok: false,
+        cancelled: true,
+        code: 'CANCELLED',
+        error: '已停止生成',
+        messages: getSessionMessages(db, input.sessionId),
+      }
+    }
     const message = normalizeError(error)
     options.onDelta?.({
       type: 'error',

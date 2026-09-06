@@ -60,11 +60,29 @@ export function failDiscussionTurnRequest(
 ): DiscussionTurnRequestRow {
   const existing = getDiscussionTurnRequest(db, requestId)
   if (!existing) throw new Error(`讨论 turn request 不存在：${requestId}`)
-  if (existing.status === 'succeeded') return existing
+  if (existing.status === 'succeeded' || existing.status === 'cancelled') return existing
   db.prepare(`
     UPDATE ai_discussion_turn_requests
     SET status = 'failed', error_message = ?, updated_at = ?, completed_at = NULL
     WHERE request_id = ?
   `).run(errorMessage, failedAt, requestId)
+  return getDiscussionTurnRequest(db, requestId)!
+}
+
+export function cancelDiscussionTurnRequest(
+  db: Database.Database,
+  requestId: string,
+  responseText: string | null = null,
+  cancelledAt = Date.now(),
+): DiscussionTurnRequestRow {
+  const existing = getDiscussionTurnRequest(db, requestId)
+  if (!existing) throw new Error(`讨论 turn request 不存在：${requestId}`)
+  if (existing.status === 'succeeded' || existing.status === 'cancelled') return existing
+  db.prepare(`
+    UPDATE ai_discussion_turn_requests
+    SET status = 'cancelled', response_text = ?, error_message = NULL,
+        updated_at = ?, completed_at = ?
+    WHERE request_id = ?
+  `).run(responseText, cancelledAt, cancelledAt, requestId)
   return getDiscussionTurnRequest(db, requestId)!
 }

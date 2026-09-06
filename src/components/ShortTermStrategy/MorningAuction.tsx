@@ -1486,12 +1486,18 @@ export function MorningAuction({ dataTools, onOpenDataTools }: MorningAuctionPro
     void loadSnapshot(false, selectedDate)
   }, [loadSnapshot, selectedDate])
 
-  // 题材仍为异步填充，缺失时 5 秒后自动读取一次更新后的内存快照。
+  // 题材仍为异步填充；价史远端补拉亦后台进行——缺失时 5 秒后自动读取一次更新后的内存快照。
   useEffect(() => {
     if (!snapshot) return
     const allPools = collectSnapshotStocks(snapshot)
-    const hasMissing = allPools.length > 0 && allPools.some(s => s.conceptNames.length === 0)
-    if (!hasMissing) return
+    const hasMissingConcept = allPools.length > 0 && allPools.some(s => s.conceptNames.length === 0)
+    const coverage = snapshot.priceHistoryCoverage
+    const hasIncompletePriceHistory = Boolean(
+      coverage
+      && coverage.requestedCount > 0
+      && coverage.readyCount < coverage.requestedCount,
+    )
+    if (!hasMissingConcept && !hasIncompletePriceHistory) return
     const timer = setTimeout(() => void loadSnapshot(false, snapshot.tradeDate), 5000)
     return () => clearTimeout(timer)
   }, [snapshot, loadSnapshot])

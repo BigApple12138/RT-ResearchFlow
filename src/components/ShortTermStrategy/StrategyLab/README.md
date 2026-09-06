@@ -13,7 +13,8 @@
 - 命中表支持本地搜索、来源筛选和得分/日期/完整性排序；证据展示配置阈值、实际值、通过状态、权重、贡献、硬门槛与数据状态。宽屏使用固定侧栏，1024 等窄屏使用可关闭的右侧证据抽屉。
 - 手动代码只保存证券代码，扫描时优先从 `stock_basic_cache`、其次从 `stock_info` 补齐公司名称。页面刷新只读本地 run/match，只有“运行扫描”或“保存并运行”启动真实计算。
 - `StrategyRuleBuilder` 通过通用 `RightDrawer` 以全窗口模态层覆盖在工作台右侧，打开配置不改变策略库、命中表、研判栏的宽度和滚动位置。抽屉占满视口高度、覆盖Electron标题栏并使用50%暗色蒙层隔离背景，支持焦点约束与恢复、背景滚动锁定、拖动调宽、Esc和减少动态效果；未保存修改与删除策略统一使用项目内 `StrategyConfirmDialog`，默认保留编辑并彻底移除原生确认框。
-- 首批只交付分钟条件自由组合。通用日线 DSL 与真正“日线预筛 -> 分钟确认”两阶段组合仍属于后续批次，不在界面中伪装为已完成能力。
+- 首批已交付分钟条件自由组合；**通用日线 DSL**（涨幅/均线/量比/换手 + AND/OR/NOT）与 **两阶段（日线预筛→分钟确认）** 已接入策略实验室内置模板「日线 DSL 示例」「两阶段：日线预筛→分钟确认」。证据与分钟积木同形；缺日线数据不作 NOT 反证。
+- **日线 DSL 参数编辑器**：打开 `dailyDsl`/`twoPhase`（DB `source=custom` + profile）策略时，`StrategyRuleBuilder` 按 kind 分流，加载 `dailyDslProfile.templateSnapshot`，保存时保留 `custom` source 与 profile，不再静默改写为分钟模板。`DailyDslRuleEditor` 按 `DAILY_DSL_PARAMETER_DEFS` 渲染参数；两阶段同时编辑日线预筛与分钟确认。个性选股白盒文案指向新建「日线 DSL」策略。
 
 ## 实现思路
 

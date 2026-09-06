@@ -8,6 +8,7 @@ import { registerBriefingHandlers } from './ipc/briefingHandlers'
 import { registerSourceHandlers } from './ipc/sourceHandlers'
 import { registerScanHandlers, sendScanEvent } from './ipc/scanHandlers'
 import { registerSettingsHandlers } from './ipc/settingsHandlers'
+import { registerMessageCenterHandlers } from './ipc/messageCenterHandlers'
 import { registerArchiveHandlers } from './ipc/archiveHandlers'
 import { registerDetailHandlers } from './ipc/detailHandlers'
 import { registerAIHandlers } from './ipc/aiHandlers'
@@ -303,6 +304,7 @@ async function bootstrap(): Promise<void> {
   registerSourceHandlers()
   registerScanHandlers()
   registerSettingsHandlers()
+  registerMessageCenterHandlers()
   registerArchiveHandlers()
   registerDetailHandlers()
   registerAIHandlers(() => mainWindow)

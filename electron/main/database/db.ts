@@ -5275,6 +5275,56 @@ const MIGRATIONS: DatabaseMigration[] = [
       DROP INDEX IF EXISTS idx_sector_flow_daily_date_source;
       DROP TABLE IF EXISTS sector_flow_daily;
     `
+  },
+  {
+    // FR-221 消息中心跨会话事件（D1）
+    version: 158,
+    sql: `
+      CREATE TABLE IF NOT EXISTS message_center_events (
+        id            TEXT PRIMARY KEY,
+        fingerprint   TEXT NOT NULL UNIQUE,
+        title         TEXT NOT NULL,
+        description   TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        tone          TEXT NOT NULL CHECK (tone IN ('info', 'success', 'warning', 'danger')),
+        action_kind   TEXT,
+        created_at    INTEGER NOT NULL CHECK (created_at > 0),
+        dismissed_at  INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_center_events_created
+        ON message_center_events(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_message_center_events_dismissed
+        ON message_center_events(dismissed_at, created_at DESC);
+    `
+  },
+  {
+    // AI 讨论追问：允许 status=cancelled（停止生成）
+    version: 159,
+    sql: `
+      CREATE TABLE ai_discussion_turn_requests_v159 (
+        request_id     TEXT PRIMARY KEY,
+        session_id     INTEGER NOT NULL REFERENCES ai_analysis_sessions(id) ON DELETE CASCADE,
+        status         TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled')),
+        user_message   TEXT NOT NULL,
+        response_text  TEXT,
+        error_message  TEXT,
+        created_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL,
+        completed_at   INTEGER
+      );
+      INSERT INTO ai_discussion_turn_requests_v159 (
+        request_id, session_id, status, user_message, response_text,
+        error_message, created_at, updated_at, completed_at
+      )
+      SELECT
+        request_id, session_id, status, user_message, response_text,
+        error_message, created_at, updated_at, completed_at
+      FROM ai_discussion_turn_requests;
+      DROP TABLE ai_discussion_turn_requests;
+      ALTER TABLE ai_discussion_turn_requests_v159 RENAME TO ai_discussion_turn_requests;
+      CREATE INDEX idx_ai_discussion_turn_requests_session
+        ON ai_discussion_turn_requests(session_id, created_at DESC, request_id);
+    `
   }
 ]
 

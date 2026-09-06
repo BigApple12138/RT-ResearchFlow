@@ -14,7 +14,7 @@ body:
     attributes:
       label: RT-ResearchFlow 版本
       description: 可在 Release 名称或安装包文件名中查看。
-      placeholder: 例如 v0.1.0-beta.5
+      placeholder: 例如 v0.1.0-beta.6
     validations:
       required: true
 

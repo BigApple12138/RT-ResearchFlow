@@ -87,8 +87,6 @@ test('趋势雷达支持单只与批量 AI 结构复核，并保留本地状态'
     await row.getByRole('checkbox', { name: '选择待补样本' }).check()
     await expect(window.getByTestId('trend-ai-review-batch')).toBeEnabled()
     await window.getByTestId('trend-ai-review-batch').click()
-    await expect(window.getByTestId('trend-ai-review-batch-confirm')).toContainText('确认串行复核 1 只')
-    await window.getByTestId('trend-ai-review-batch-confirm').getByRole('button', { name: '确认复核', exact: true }).click()
     await expect(window.getByTestId('trend-ai-review-batch-progress')).toContainText('批量复核完成', { timeout: 30_000 })
     await expect(window.getByTestId('trend-ai-review-batch-progress')).toContainText('1 成功')
 

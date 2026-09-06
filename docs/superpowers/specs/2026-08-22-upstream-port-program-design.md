@@ -1,8 +1,9 @@
 # Upstream 借鉴与程序完善总设计
 
-**状态：** Wave 1–2 已完成；Wave 3 待 fork 原生 SDD  
+**状态：** Wave 1–2 已完成；Wave 3 由缺口闭环总控承接  
 **日期：** 2026-08-22  
-**Plan：** [`../plans/2026-08-22-upstream-port-program.md`](../plans/2026-08-22-upstream-port-program.md)（Wave 1 细节见 `port-upstream-polish`）
+**Plan：** [`../plans/2026-08-22-upstream-port-program.md`](../plans/2026-08-22-upstream-port-program.md)（Wave 1 细节见 `port-upstream-polish`）  
+**Wave 3 总控：** [`2026-08-30-gap-closure-program-design.md`](./2026-08-30-gap-closure-program-design.md)
 
 ## 1. 背景
 
@@ -42,7 +43,7 @@
 |---|---|---|
 | **Wave 1** | 验收矩阵 + 竞价历史收盘 + 云图 UI + beta.4 + 停轮询契约 | ✅ PR #13 |
 | **Wave 2** | 剩余 diff 逐行决策（不合入回归项） | ✅ 已结案，见 plan |
-| **Wave 3** | fork 原生 backlog（Agent §8、策略实验室 DSL 等） | ⏳ 待独立 SDD |
+| **Wave 3** | fork 原生 backlog（Agent §8、策略实验室 DSL 等） | ⏳ 见 [`2026-08-30-gap-closure-program-design.md`](./2026-08-30-gap-closure-program-design.md) |
 
 ## 5. 验收
 
