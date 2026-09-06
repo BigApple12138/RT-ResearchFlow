@@ -6,18 +6,26 @@ import {
 } from '../database/aiAnalysisSessionRepository'
 import { getAIConfig, getConfiguredProviders } from '../database/aiConfigRepository'
 import { listPortfolioStocks } from '../database/portfolioRepository'
+import { listBriefings } from '../database/briefingRepository'
 import { callWithFallback, resolveProviderCredentials } from './aiFallbackService'
 import { getPortfolioDashboard } from './portfolioDashboardService'
 import { startResearchDiscussion } from './researchDiscussionContextService'
 import { withDiscussionSessionLock } from './discussionSessionLock'
+import { getBeijingYmd } from './marketSettlementPolicy'
 
-export type PortfolioBriefMode = 'analyze' | 'list' | 'checkConfig'
+export type PortfolioBriefMode = 'analyze' | 'list' | 'checkConfig' | 'newsDigest'
 
 export const PORTFOLIO_EMPTY_MESSAGE =
   '尚未添加持仓。左侧或个股页的「已缓存个股」不是持仓；请到走势图使用「+ 持仓」后再分析。'
 
 export const PORTFOLIO_BRIEF_USER_PROMPT =
   '请基于下列本地持仓事实做简要研判：关注异动、证据缺口与需继续验证的点。不要给出买卖、目标价或仓位建议。若需深挖个股可提示用户手动启动深度研究。'
+
+export const PORTFOLIO_NEWS_DIGEST_USER_PROMPT =
+  '请基于下列「与持仓相关的今日资讯」做简要总结：按主题归类、标出需关注的持仓关联点与证据缺口。不要给出买卖、目标价或仓位建议。资讯不足时明确说明。'
+
+export const PORTFOLIO_NEWS_DIGEST_EMPTY =
+  '今日暂无与持仓直接相关的资讯（本地过滤）。可切换资讯页「全部」浏览，或稍后再试。'
 
 export interface PortfolioBriefHoldingFact {
   tsCode: string
@@ -69,6 +77,17 @@ export function formatAiConfigCheckMessage(input: {
     ? `已配置厂商：${input.configuredProviders.join('、')}。`
     : ''
   return `AI 已配置。当前优先厂商 ${input.provider ?? '未知'}，模型 ${input.model ?? '未知'}。${extras}`
+}
+
+export function formatPortfolioNewsDigestFacts(
+  items: Array<{ title: string; summary: string; impactRating: string; relevanceHits?: string[] }>,
+): string {
+  if (items.length === 0) return PORTFOLIO_NEWS_DIGEST_EMPTY
+  return items.map((item, index) => {
+    const hits = item.relevanceHits?.length ? `；命中：${item.relevanceHits.join('、')}` : ''
+    const summary = item.summary.trim() ? item.summary.trim().slice(0, 200) : '无摘要'
+    return `${index + 1}. [${item.impactRating}] ${item.title}\n   ${summary}${hits}`
+  }).join('\n')
 }
 
 function parseMessages(raw: string | null): ConversationMessage[] {
@@ -156,6 +175,71 @@ async function runPortfolioBriefUnlocked(
     return { ok: true, sessionId: ensured.sessionId, text }
   }
 
+  if (mode === 'newsDigest') {
+    const ensured = await ensureBriefSession(db, {
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      initialQuestion: '相对持仓总结今日资讯',
+    })
+    if (!ensured.ok) return ensured
+    const sessionId = ensured.sessionId
+    if (holdings.length === 0) {
+      const text = formatEmptyPortfolioMessage()
+      appendExchange(db, sessionId, '相对持仓总结今日资讯', text)
+      return { ok: true, sessionId, text }
+    }
+    const todayYmd = getBeijingYmd()
+    const today = /^\d{8}$/.test(todayYmd)
+      ? `${todayYmd.slice(0, 4)}-${todayYmd.slice(4, 6)}-${todayYmd.slice(6, 8)}`
+      : todayYmd
+    const listed = listBriefings({
+      date: today,
+      relevance: 'portfolio',
+      limit: 20,
+      offset: 0,
+    }, db)
+    const factsText = formatPortfolioNewsDigestFacts(
+      listed.items.map((item) => ({
+        title: item.title,
+        summary: item.summary ?? '',
+        impactRating: item.impactRating,
+        relevanceHits: item.relevanceHits,
+      })),
+    )
+    if (listed.items.length === 0) {
+      appendExchange(db, sessionId, '相对持仓总结今日资讯', factsText)
+      return { ok: true, sessionId, text: factsText }
+    }
+    if (!resolveProviderCredentials(db)) {
+      const text = formatAiConfigCheckMessage({
+        hasApiKey: false,
+        provider: null,
+        model: null,
+        configuredProviders: [],
+      })
+      appendExchange(db, sessionId, '相对持仓总结今日资讯', text)
+      return { ok: false, code: 'AI_NOT_CONFIGURED', message: text, sessionId }
+    }
+    const session = getSession(db, sessionId)!
+    const messages = parseMessages(session.messages)
+    const userContent = `${PORTFOLIO_NEWS_DIGEST_USER_PROMPT}\n\n【今日相关资讯 ${listed.items.length} 条 · ${today}】\n${factsText}`
+    messages.push({ role: 'user', content: userContent })
+    try {
+      const result = await callWithFallback(db, {
+        messages: messages.map((message) => ({ role: message.role, content: message.content })),
+      })
+      messages.push({ role: 'assistant', content: result.text, webSearchTrace: result.webSearchTrace })
+      updateSessionMessages(db, sessionId, messages)
+      return { ok: true, sessionId, text: result.text }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const text = `资讯总结失败：${message}`
+      messages.push({ role: 'assistant', content: text })
+      updateSessionMessages(db, sessionId, messages)
+      return { ok: false, code: 'AI_CALL_FAILED', message: text, sessionId }
+    }
+  }
+
   const ensured = await ensureBriefSession(db, {
     requestId: input.requestId,
     sessionId: input.sessionId,
@@ -231,7 +315,9 @@ export async function runPortfolioBrief(
     ? '我有哪些持仓'
     : mode === 'checkConfig'
       ? '检查 AI 配置'
-      : PORTFOLIO_BRIEF_USER_PROMPT
+      : mode === 'newsDigest'
+        ? '相对持仓总结今日资讯'
+        : PORTFOLIO_BRIEF_USER_PROMPT
   const ensured = await ensureBriefSession(db, {
     requestId: input.requestId,
     sessionId: null,

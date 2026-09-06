@@ -42,9 +42,11 @@ import {
 import { buildMorningAuctionMarketThemes } from './morningAuctionMarketThemeModel'
 import {
   MorningAuctionPriceHistoryCoordinator,
+  buildMorningAuctionPriceHistoryCoverage,
   loadMorningAuctionPriceHistoryEntries,
   type MorningAuctionPriceHistoryCoverage,
   type MorningAuctionPriceHistoryEntry,
+  type MorningAuctionPriceHistoryLoadDependencies,
 } from './morningAuctionPriceHistoryCoordinator'
 import { getBeijingYmd } from './marketSettlementPolicy'
 import {
@@ -622,6 +624,7 @@ let cachedSnapshot: MorningAuctionSnapshot | null = null
 // ===== 题材列异步填充 =====
 let _conceptCache: { tradeDate: string; data: Map<string, string[]> } | null = null
 let _conceptFetchInFlight = false
+let _priceHistoryRemoteInFlight = false
 
 /** 将缓存好的题材数据 apply 到快照中所有 conceptNames 为空的股票 */
 function applyConceptToSnap(snap: MorningAuctionSnapshot, data: Map<string, string[]>): void {
@@ -712,18 +715,20 @@ async function mergeConceptData(snap: MorningAuctionSnapshot, tradeDate: string)
 }
 
 // ===== FR-134/275: N 日涨跌风险列与增量完整性 =====
-const priceHistoryCoordinator = new MorningAuctionPriceHistoryCoordinator(async (tradeDate, tsCodes) => {
+function createPriceHistoryLoadDependencies(localOnly: boolean): MorningAuctionPriceHistoryLoadDependencies {
   const db = getDb()
   let token: string | null = null
-  try {
-    const config = getDataSourceConfig(db)
-    token = config.tushareEnabled && config.tushareTokenEncrypted
-      ? decryptApiKey(config.tushareTokenEncrypted)
-      : null
-  } catch {
-    token = null
+  if (!localOnly) {
+    try {
+      const config = getDataSourceConfig(db)
+      token = config.tushareEnabled && config.tushareTokenEncrypted
+        ? decryptApiKey(config.tushareTokenEncrypted)
+        : null
+    } catch {
+      token = null
+    }
   }
-  return loadMorningAuctionPriceHistoryEntries(tradeDate, tsCodes, {
+  return {
     queryLocal: (codes, startDate) => queryDailyClose(db, codes, startDate),
     fetchRemote: token
       ? async (tsCode, startDate, endDate) => {
@@ -734,7 +739,15 @@ const priceHistoryCoordinator = new MorningAuctionPriceHistoryCoordinator(async 
           return rows
         }
       : undefined,
-  })
+  }
+}
+
+const priceHistoryCoordinator = new MorningAuctionPriceHistoryCoordinator(async (tradeDate, tsCodes) => {
+  return loadMorningAuctionPriceHistoryEntries(
+    tradeDate,
+    tsCodes,
+    createPriceHistoryLoadDependencies(false),
+  )
 })
 
 function applyHistoryToSnap(
@@ -757,19 +770,51 @@ function applyHistoryToSnap(
   }
 }
 
+async function mergePriceHistoryRemoteBackground(tradeDate: string, tsCodes: string[]): Promise<void> {
+  if (_priceHistoryRemoteInFlight || tsCodes.length === 0) return
+  _priceHistoryRemoteInFlight = true
+  try {
+    const entries = await priceHistoryCoordinator.ensure(tradeDate, tsCodes)
+    if (!cachedSnapshot || cachedSnapshot.tradeDate !== tradeDate) return
+    applyHistoryToSnap(cachedSnapshot, entries)
+    cachedSnapshot.priceHistoryCoverage = priceHistoryCoordinator.getCoverage(tradeDate, tsCodes)
+  } catch (err) {
+    console.error('[mergePriceHistoryRemoteBackground] failed:', err)
+  } finally {
+    _priceHistoryRemoteInFlight = false
+  }
+}
+
+/**
+ * 价史合并：默认本地首包不阻塞远端（对齐题材异步）；refresh / retryUnresolved 仍完整 await。
+ */
 async function mergePriceHistory(
   snap: MorningAuctionSnapshot,
   tradeDate: string,
-  options: { retryUnresolved?: boolean } = {},
+  options: { retryUnresolved?: boolean; awaitRemote?: boolean } = {},
 ): Promise<void> {
   const tsCodes = [...new Set(getSnapshotPools(snap).flat().map(stock => stock.tsCode))]
   if (tsCodes.length === 0) {
     snap.priceHistoryCoverage = priceHistoryCoordinator.getCoverage(tradeDate, [])
     return
   }
-  const entries = await priceHistoryCoordinator.ensure(tradeDate, tsCodes, options)
-  applyHistoryToSnap(snap, entries)
-  snap.priceHistoryCoverage = priceHistoryCoordinator.getCoverage(tradeDate, tsCodes)
+
+  const awaitRemote = options.awaitRemote === true || options.retryUnresolved === true
+  if (awaitRemote) {
+    const entries = await priceHistoryCoordinator.ensure(tradeDate, tsCodes, options)
+    applyHistoryToSnap(snap, entries)
+    snap.priceHistoryCoverage = priceHistoryCoordinator.getCoverage(tradeDate, tsCodes)
+    return
+  }
+
+  const localEntries = await loadMorningAuctionPriceHistoryEntries(
+    tradeDate,
+    tsCodes,
+    createPriceHistoryLoadDependencies(true),
+  )
+  applyHistoryToSnap(snap, localEntries)
+  snap.priceHistoryCoverage = buildMorningAuctionPriceHistoryCoverage(tsCodes, localEntries, Date.now())
+  void mergePriceHistoryRemoteBackground(tradeDate, tsCodes)
 }
 
 /**
@@ -922,9 +967,8 @@ export async function getOrCreateMorningAuctionSnapshot(tradeDate: string): Prom
   const currentTradeDate = isCurrentMorningAuctionTradeDate(tradeDate, getBeijingYmd())
   mergeTradeDateClose(cachedSnapshot, tradeDate, { replaceExisting: !currentTradeDate })
   if (currentTradeDate) mergeCurrentPrices(cachedSnapshot)
-  // FR-134: 填充 3d/5d 数据
-  // DB 全命中时 mergePriceHistory 仅做 SQLite 查询（< 5ms），await 对用户无感知；
-  // 仅当候选股为新股/首次使用时才会触发 Tushare API 补拉（~1s），比原来「5s 后二次刷新」快得多。
+  // FR-134/C1: 价史本地首包；远端补拉后台进行（对齐题材异步），前端 5s 后再 get 可拿到更新。
+  // 显式 refresh 仍 await 完整 ensure（retryUnresolved）。
   await mergePriceHistory(cachedSnapshot, tradeDate)
   applyThemeAttributionToSnapshot(cachedSnapshot)
   emitMorningAuctionDecisionSignals(cachedSnapshot)

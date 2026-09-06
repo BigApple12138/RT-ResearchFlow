@@ -91,3 +91,63 @@ export function decideAutoDeepResearchStart(input: {
   }
   return { auto: true }
 }
+
+/** 从产业研究意图句中抽取产业名（启发式）。 */
+export function extractIndustryNameFromIntent(text: string): string | null {
+  const normalized = text.trim()
+  if (!normalized) return null
+  const patterns = [
+    /(?:对|关于|针对)\s*([^\s，。；、]{2,20}?)\s*(?:做|进行|开展)?\s*(?:产业|产业链|行业)/,
+    /(?:启动|开展)\s*([^\s，。；、]{2,20}?)\s*(?:产业|产业链|行业)/,
+    /(?:产业研究|产业链研究|行业深度)\s*([^\s，。；、]{2,20})/,
+    /([^\s，。；、]{2,20}?)\s*(?:产业研究|产业链研究|行业深度)/,
+  ]
+  const noiseName = /^(做个|做一个|进行|开展|帮我做|请帮我|帮我|请做|研究|分析|启动)$/
+  const stripLeadingNoise = (name: string) =>
+    name.replace(/^(请|帮我|做一下|做一个|做个|做|启动|开展|进行)+/, '').trim()
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern)
+    const raw = match?.[1]?.trim()
+    const name = raw ? stripLeadingNoise(raw) : ''
+    if (name && name.length >= 2 && !noiseName.test(name)) {
+      return name.slice(0, 40)
+    }
+  }
+  const stripped = stripLeadingNoise(
+    normalized
+      .replace(INDUSTRY_RESEARCH_PATTERN, ' ')
+      .replace(/请|帮我|一下|个|的/g, ' ')
+      .replace(/\s+/g, '')
+      .trim(),
+  )
+  if (stripped.length >= 2 && stripped.length <= 20 && !noiseName.test(stripped)) {
+    return stripped
+  }
+  return null
+}
+
+export function buildIndustryResearchLaunchPayload(question: string): {
+  researchQuestion: string
+  scope: {
+    title: string
+    industryName: string
+    purpose: 'learning'
+    depth: 'standard'
+    enableWebRetrieval: true
+  }
+  sourceType: 'ai_analysis'
+} {
+  const industryName = extractIndustryNameFromIntent(question) || '待确认产业'
+  const researchQuestion = question.trim().slice(0, 4000) || `开展${industryName}产业研究`
+  return {
+    researchQuestion,
+    sourceType: 'ai_analysis',
+    scope: {
+      title: `${industryName}产业研究`,
+      industryName,
+      purpose: 'learning',
+      depth: 'standard',
+      enableWebRetrieval: true,
+    },
+  }
+}

@@ -2,11 +2,13 @@
 
 ## 模块功能
 
-`BriefingDetail` 是资讯情报台右侧详情研判区, 用于展示单条资讯的元信息、摘要、研判线索、按需抓取的正文内容、原文链接、一键 AI 分析入口和产业链分析入口。
+`BriefingDetail` 是资讯情报台右侧详情研判区, 用于展示单条资讯的元信息、摘要、研判线索、按需抓取的正文内容、原文链接、一键 AI 分析入口、相关股票「+观察池」和产业链分析入口。
 
 ## 实现思路
 
 组件先根据 `briefingId` 读取简报元数据, 再通过 `window.api.detail.getContent()` 获取正文 HTML。正文渲染前使用 DOMPurify 清洗, 仅保留安全 HTML 与图片展示所需属性。详情区顶部按研判面板组织元信息、标题、关联方向和主要动作, 中段根据当前资讯的影响等级、影响评分、来源、发布时间和已读状态动态生成“为什么值得先看”线索, 操作区复用既有 AI 分析和统一产业分析抽屉。
+
+FR（资讯详情+观察池，2026-08-30）起：`briefingRelatedStocksModel` 从标题/摘要/正文与同条 AI 会话的 `STOCK_CODES`/结构化候选合并相关股票（上限 12）；映射区 `data-testid="briefing-detail-related-stocks"` 提供行级 `+观察池` 与「全部加入」；入池走 `trend:addStocks`，已在池/持仓由 `trend:listTrackedTsCodes` 灰态展示；无代码时不渲染映射区。一键 AI 分析成功后用返回的 `sessionId` 拉取会话以丰富映射。
 
 ## 主要 props/state/事件流
 
@@ -17,7 +19,8 @@
 - `isAnalyzing`: AI 分析按钮的执行状态。
 - `tone`: 由 `impactRating` 与 `impactRatingScore` 派生的优先级说明和下一步动作建议。
 - `chainText/showChain`: 产业链分析抽屉的输入文本与开关状态。
-- 点击“一键AI分析”后调用 `window.api.ai.analyze()`, 成功后刷新 AI 会话列表。
+- `relatedStocks` / `trackedTsCodes` / `sessionProtocolTexts` / `sessionCandidates`: 相关股票映射与观察池状态。
+- 点击“一键AI分析”后调用 `window.api.ai.analyze()`, 成功后刷新 AI 会话列表并 enrich 映射。
 - 点击“产业链分析”后打开 `IndustryAnalysisDrawer`, 输入为当前资讯标题与摘要。
 
 ## 特殊逻辑备忘

@@ -20,6 +20,7 @@ import {
   type ConditionBlockType,
   type ConditionGroup,
 } from './conditionBlocks/types'
+import { createDefaultDailyDslTemplate, type DailyDslTemplate } from './dailyDsl/types'
 
 export type StrategyLabStockPoolSource = 'allMarket' | 'portfolio' | 'trendWatchlist' | 'chipMonitor' | 'manual'
 export type StrategyLabScanMode = 'quick' | 'complete' | 'twoPhase'
@@ -44,6 +45,11 @@ export interface StrategyLabRuleDraft {
     templateId?: number | null
     templateVersion?: number | null
     templateSnapshot?: BlockStrategyTemplate | null
+  }
+  /** F1：通用日线 DSL；与分钟积木并行，不伪装为白盒可编辑。 */
+  dailyDslProfile?: {
+    enabled: boolean
+    templateSnapshot: DailyDslTemplate
   }
   scoring: {
     minScore: number
@@ -149,6 +155,55 @@ export function createConditionBlocksDraft(): StrategyLabRuleDraft {
   }
 }
 
+export function createDailyDslDraft(): StrategyLabRuleDraft {
+  return {
+    schemaVersion: 1,
+    source: 'custom',
+    stockPool: {
+      sources: ['portfolio', 'allMarket'],
+      manualTsCodes: [],
+      excludeST: true,
+      excludeBJ: false,
+    },
+    dailyDslProfile: {
+      enabled: true,
+      templateSnapshot: createDefaultDailyDslTemplate(),
+    },
+    conditionBlocksProfile: {
+      enabled: false,
+      templateKey: 'intraday_amount_surge_hold',
+      templateId: null,
+    },
+    scoring: {
+      minScore: 60,
+      weights: { dailyDslScore: 100 },
+    },
+  }
+}
+
+export function createTwoPhaseDraft(): StrategyLabRuleDraft {
+  return {
+    schemaVersion: 1,
+    source: 'custom',
+    stockPool: defaultStockPool(),
+    dailyDslProfile: {
+      enabled: true,
+      templateSnapshot: createDefaultDailyDslTemplate(),
+    },
+    conditionBlocksProfile: {
+      enabled: true,
+      templateKey: 'intraday_amount_surge_hold',
+      templateId: null,
+      templateVersion: DEFAULT_CONDITION_BLOCK_TEMPLATES[0].version,
+      templateSnapshot: cloneTemplate(DEFAULT_CONDITION_BLOCK_TEMPLATES[0]),
+    },
+    scoring: {
+      minScore: 70,
+      weights: { dailyDslScore: 40, conditionScore: 60 },
+    },
+  }
+}
+
 export function createCustomDraft(): StrategyLabRuleDraft {
   return {
     schemaVersion: 1,
@@ -213,6 +268,28 @@ const BUILTIN_STRATEGIES: StrategyLabStrategyInput[] = [
     isBuiltin: true,
     ruleDraftJson: JSON.stringify(createConditionBlocksDraft()),
     runConfigJson: JSON.stringify(createDefaultRunConfig()),
+    actionsJson: JSON.stringify(createDefaultActions()),
+  },
+  {
+    name: '日线 DSL 示例',
+    description: '通用日线条件（涨幅/均线/量比/换手）本地求值；不伪装为白盒可编辑参数。',
+    source: 'custom',
+    status: 'ready',
+    enabled: true,
+    isBuiltin: true,
+    ruleDraftJson: JSON.stringify(createDailyDslDraft()),
+    runConfigJson: JSON.stringify({ ...createDefaultRunConfig(), lookbackDays: 60 }),
+    actionsJson: JSON.stringify(createDefaultActions()),
+  },
+  {
+    name: '两阶段：日线预筛→分钟确认',
+    description: '先跑日线 DSL 得候选，再对候选跑分钟条件积木确认。',
+    source: 'custom',
+    status: 'ready',
+    enabled: true,
+    isBuiltin: true,
+    ruleDraftJson: JSON.stringify(createTwoPhaseDraft()),
+    runConfigJson: JSON.stringify({ ...createDefaultRunConfig(), scanMode: 'twoPhase', lookbackDays: 60 }),
     actionsJson: JSON.stringify(createDefaultActions()),
   },
   {
@@ -363,7 +440,9 @@ export function validateStrategyLabRuleDraft(value: StrategyLabRuleDraft, source
   if (sources.includes('manual') && manualTsCodes.length === 0) throw new Error('MANUAL_STOCK_POOL_REQUIRED')
   if (source === 'screener' && !value.screenerProfile?.enabled) throw new Error('SCREENER_PROFILE_REQUIRED')
   if (source === 'conditionBlocks' && !value.conditionBlocksProfile?.enabled) throw new Error('CONDITION_BLOCKS_PROFILE_REQUIRED')
-  if (source === 'custom' && !value.screenerProfile && !value.conditionBlocksProfile) throw new Error('CUSTOM_PROFILE_REQUIRED')
+  if (source === 'custom' && !value.screenerProfile && !value.conditionBlocksProfile && !value.dailyDslProfile) {
+    throw new Error('CUSTOM_PROFILE_REQUIRED')
+  }
   const profile = value.conditionBlocksProfile
     ? {
         enabled: value.conditionBlocksProfile.enabled === true,
@@ -379,6 +458,14 @@ export function validateStrategyLabRuleDraft(value: StrategyLabRuleDraft, source
           : null,
       }
     : undefined
+  const dailyDslProfile = value.dailyDslProfile?.enabled && value.dailyDslProfile.templateSnapshot
+    ? {
+        enabled: true,
+        templateSnapshot: value.dailyDslProfile.templateSnapshot,
+      }
+    : value.dailyDslProfile
+      ? { enabled: false, templateSnapshot: value.dailyDslProfile.templateSnapshot ?? createDefaultDailyDslTemplate() }
+      : undefined
   return {
     ...value,
     stockPool: {
@@ -388,6 +475,7 @@ export function validateStrategyLabRuleDraft(value: StrategyLabRuleDraft, source
       excludeBJ: value.stockPool.excludeBJ === true,
     },
     conditionBlocksProfile: profile,
+    dailyDslProfile,
     scoring: {
       minScore: Math.max(0, Math.min(100, Math.round(Number(value.scoring?.minScore) || 0))),
       weights: value.scoring?.weights ?? {},
@@ -518,7 +606,11 @@ export function ensureDefaultStrategyLabStrategies(db: Database.Database): void 
       ? 'builtin-screener'
       : strategy.name === '条件积木分钟模板'
         ? 'builtin-condition-blocks'
-        : 'builtin-new-rule'
+        : strategy.name === '日线 DSL 示例'
+          ? 'builtin-daily-dsl'
+          : strategy.name === '两阶段：日线预筛→分钟确认'
+            ? 'builtin-two-phase'
+            : 'builtin-new-rule'
     const existing = getStrategyByKey(db, key)
     if (existing) {
       if (key === 'builtin-screener') {

@@ -69,6 +69,14 @@ function uniqueCodes(tsCodes: string[]): string[] {
   return [...new Set(tsCodes.filter(Boolean))]
 }
 
+export function shouldAutoRetryMorningAuctionPriceHistoryEntry(
+  entry: MorningAuctionPriceHistoryEntry | undefined,
+): boolean {
+  if (!entry) return false
+  if (entry.state === 'failed') return true
+  return entry.state === 'partial' && entry.reason === 'REMOTE_BACKFILL_FAILED'
+}
+
 function isComplete(entry: MorningAuctionPriceHistoryEntry | undefined): boolean {
   return entry?.state === 'ready'
 }
@@ -283,9 +291,10 @@ export class MorningAuctionPriceHistoryCoordinator {
     if (requested.length === 0) return new Map()
     const state = this.getOrCreateState(tradeDate)
 
-    // failed 不视为终态：每次 ensure 自动清缓存重试（无需显式 refresh）
+    // failed / 远端失败导致的 partial 不视为终态：每次 ensure 自动清缓存重试
     for (const code of requested) {
-      if (state.entries.get(code)?.state === 'failed') state.entries.delete(code)
+      const entry = state.entries.get(code)
+      if (shouldAutoRetryMorningAuctionPriceHistoryEntry(entry)) state.entries.delete(code)
     }
 
     if (options.retryUnresolved) {

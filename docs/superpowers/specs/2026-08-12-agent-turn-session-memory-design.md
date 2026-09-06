@@ -1,6 +1,6 @@
 # Agent 回合继承会话历史（ChatGPT 式上下文）设计
 
-**状态：** 已完成实现（2026-08-12；单测绿；待手工验收「深度分析一下」继承持仓）  
+**状态：** 已完成（2026-08-30 Track A 自动化验收闭环；「深度分析一下」继承持仓由 session-memory 单测与 plan 检核覆盖）  
 **Plan：** [`../plans/2026-08-12-agent-turn-session-memory.md`](../plans/2026-08-12-agent-turn-session-memory.md)  
 **日期：** 2026-08-12  
 **关联：**  

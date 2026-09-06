@@ -9,8 +9,11 @@ import {
   formatAiConfigCheckMessage,
   formatEmptyPortfolioMessage,
   formatPortfolioListMessage,
+  formatPortfolioNewsDigestFacts,
+  PORTFOLIO_NEWS_DIGEST_EMPTY,
   runPortfolioBrief,
 } from '../../electron/main/services/portfolioBriefService'
+import { getBeijingYmd } from '../../electron/main/services/marketSettlementPolicy'
 
 const mocks = vi.hoisted(() => ({
   callWithFallback: vi.fn(),
@@ -138,6 +141,88 @@ describe('portfolioBriefService', () => {
         expect.stringContaining('排队追问'),
         '排队追问回答',
       ])
+    } finally {
+      db.close()
+    }
+  })
+
+  it('资讯摘要空列表文案诚实', () => {
+    expect(formatPortfolioNewsDigestFacts([])).toBe(PORTFOLIO_NEWS_DIGEST_EMPTY)
+    const text = formatPortfolioNewsDigestFacts([{
+      title: '贵州茅台提价',
+      summary: '渠道调研',
+      impactRating: 'IMPORTANT',
+      relevanceHits: ['贵州茅台'],
+    }])
+    expect(text).toContain('贵州茅台提价')
+    expect(text).toContain('命中：贵州茅台')
+  })
+
+  it('newsDigest 无相关资讯不调 AI', async () => {
+    const db = new Database(':memory:')
+    try {
+      runMigrations(db)
+      addPortfolioStock(db, '600519.SH', '贵州茅台')
+      const result = await runPortfolioBrief(db, {
+        requestId: '00000000-0000-4000-8000-000000000501',
+        mode: 'newsDigest',
+      })
+      expect(result.ok).toBe(true)
+      expect(result.text).toBe(PORTFOLIO_NEWS_DIGEST_EMPTY)
+      expect(mocks.callWithFallback).not.toHaveBeenCalled()
+    } finally {
+      db.close()
+    }
+  })
+
+  it('newsDigest 有相关资讯时调用 AI', async () => {
+    const db = new Database(':memory:')
+    try {
+      runMigrations(db)
+      addPortfolioStock(db, '600519.SH', '贵州茅台')
+      const todayYmd = getBeijingYmd()
+      const today = `${todayYmd.slice(0, 4)}-${todayYmd.slice(4, 6)}-${todayYmd.slice(6, 8)}`
+      const now = Date.now()
+      db.prepare(`
+        INSERT INTO sources (
+          nameCN, nameEN, url, feedUrl, category, authorityWeight,
+          isBuiltIn, isEnabled, status, successRate, parseStrategy
+        ) VALUES ('测源', 'Test', 'https://example.com', NULL, 'FINANCIAL_PRESS', 5, 0, 1, 'ACTIVE', 1, 'RSS')
+      `).run()
+      const source = db.prepare('SELECT id FROM sources ORDER BY id LIMIT 1').get() as { id: number }
+      db.prepare(`
+        INSERT INTO briefings (
+          sourceId, sourceName, originalUrl, title, summary, fullContent,
+          publishedAt, publishedDateBJ, publicationTimeStatus, collectedAt, impactRating,
+          impactRatingScore, deduplicationHash, titleSimhash,
+          isRead, readAt, scanRunId, isCatchUp
+        ) VALUES (?, '测源', ?, ?, ?, NULL, ?, ?, 'exact', ?, 'IMPORTANT', 70, ?, ?, 0, NULL, NULL, 0)
+      `).run(
+        source.id,
+        `https://example.com/news-digest-${now}`,
+        '贵州茅台提价观察',
+        '渠道调研摘要',
+        now,
+        today,
+        now,
+        `h-news-digest-${now}`,
+        `${now}`,
+      )
+      mocks.callWithFallback.mockResolvedValueOnce({
+        provider: 'qwen',
+        model: 'test-model',
+        text: '今日持仓资讯摘要',
+      })
+      const result = await runPortfolioBrief(db, {
+        requestId: '00000000-0000-4000-8000-000000000502',
+        mode: 'newsDigest',
+      })
+      expect(result).toMatchObject({ ok: true, text: '今日持仓资讯摘要' })
+      expect(mocks.callWithFallback).toHaveBeenCalledTimes(1)
+      const userContent = mocks.callWithFallback.mock.calls[0][1].messages.at(-1).content as string
+      expect(userContent).toContain('与持仓相关的今日资讯')
+      expect(userContent).toContain('贵州茅台提价观察')
+      expect(userContent).toContain('不要给出买卖、目标价或仓位建议')
     } finally {
       db.close()
     }

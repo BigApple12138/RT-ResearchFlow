@@ -1,10 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { ImpactBadge } from '../ImpactBadge/ImpactBadge'
 import { formatBjDateTime } from '../BriefingCard/dateFormat'
 import IndustryAnalysisDrawer from '../IndustryChain/IndustryAnalysisDrawer'
 import { useAppStore } from '../../store/appStore'
+import { normalizeAshareTsCode } from '../../utils/normalizeAshareTsCode'
 import type { Briefing } from '../../../electron/main/database/types'
+import {
+  mergeBriefingRelatedStocks,
+  stripHtmlToText,
+  type BriefingRelatedStock,
+} from './briefingRelatedStocksModel'
 
 interface Props {
   briefingId: number | null
@@ -51,6 +57,11 @@ export function BriefingDetail({ briefingId }: Props) {
   const [analyzeToast, setAnalyzeToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [chainText, setChainText] = useState('')
   const [showChain, setShowChain] = useState(false)
+  const [sessionProtocolTexts, setSessionProtocolTexts] = useState<string[]>([])
+  const [sessionCandidates, setSessionCandidates] = useState<Array<{ code: string; name?: string | null }>>([])
+  const [trackedTsCodes, setTrackedTsCodes] = useState<Set<string>>(new Set())
+  const [watchlistAddingCode, setWatchlistAddingCode] = useState<string | null>(null)
+  const [watchlistBatchAdding, setWatchlistBatchAdding] = useState(false)
 
   // Load briefing metadata
   useEffect(() => {
@@ -58,14 +69,50 @@ export function BriefingDetail({ briefingId }: Props) {
     if (!briefingId) {
       setBriefing(null)
       setDetailContent(null)
+      setSessionProtocolTexts([])
+      setSessionCandidates([])
       return
     }
     setBriefing(null)
     setDetailContent(null)
+    setSessionProtocolTexts([])
+    setSessionCandidates([])
     window.api.briefings.getById(briefingId).then((b) => {
       console.log('[detail] briefing loaded:', b?.id, b?.originalUrl)
       setBriefing(b)
     })
+  }, [briefingId])
+
+  // 打开已有成功 AI 会话的资讯时，仍要拉协议正文/结构化候选作相关股票来源
+  useEffect(() => {
+    if (!briefingId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const sessions = await window.api.ai.listSessions() as Array<{
+          id: number
+          briefingId?: number | null
+          isError?: number | boolean | null
+        }>
+        const hit = sessions.find((item) => item.briefingId === briefingId && !item.isError)
+        if (!hit || cancelled) return
+        await enrichFromSession(hit.id)
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => { cancelled = true }
+  }, [briefingId])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.api.trend.listTrackedTsCodes().then((response) => {
+      if (cancelled || !response.ok || !response.codes) return
+      setTrackedTsCodes(new Set(response.codes.map((code) => normalizeAshareTsCode(code))))
+    }).catch(() => {
+      /* ignore */
+    })
+    return () => { cancelled = true }
   }, [briefingId])
 
   // Load detail content when briefing is available
@@ -86,6 +133,98 @@ export function BriefingDetail({ briefingId }: Props) {
       })
       .finally(() => setIsLoadingDetail(false))
   }, [briefing?.id])
+
+  async function enrichFromSession(sessionId: number) {
+    try {
+      const session = await window.api.ai.getSession(sessionId)
+      if (!session) return
+      const protocolTexts = [session.promptSent, session.response, session.responseRound2].filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      )
+      const structured = session.structuredResult as {
+        candidateStocks?: Array<{ code: string; name?: string | null }>
+      } | null
+      const candidates = Array.isArray(structured?.candidateStocks)
+        ? structured.candidateStocks.map((stock) => ({
+            code: stock.code,
+            name: stock.name ?? null,
+          }))
+        : []
+      setSessionProtocolTexts(protocolTexts)
+      setSessionCandidates(candidates)
+    } catch {
+      /* ignore session enrich failures */
+    }
+  }
+
+  async function handleAddToWatchlist(stock: BriefingRelatedStock) {
+    if (trackedTsCodes.has(stock.tsCode) || watchlistAddingCode) return
+    setWatchlistAddingCode(stock.code)
+    try {
+      const result = await window.api.trend.addStocks([{
+        tsCode: stock.tsCode,
+        stockName: stock.name || stock.tsCode,
+      }])
+      if (!result.ok) {
+        setAnalyzeToast({ type: 'error', message: result.message || result.error || '加入观察池失败' })
+        setTimeout(() => setAnalyzeToast(null), 4000)
+        return
+      }
+      setTrackedTsCodes((prev) => new Set([...prev, stock.tsCode]))
+      setAnalyzeToast({ type: 'success', message: `已加入观察池：${stock.name || stock.code}` })
+      setTimeout(() => setAnalyzeToast(null), 4000)
+    } catch (error) {
+      setAnalyzeToast({
+        type: 'error',
+        message: error instanceof Error ? error.message : '加入观察池失败',
+      })
+      setTimeout(() => setAnalyzeToast(null), 4000)
+    } finally {
+      setWatchlistAddingCode(null)
+    }
+  }
+
+  async function handleAddAllToWatchlist(stocks: BriefingRelatedStock[]) {
+    const pending = stocks.filter((stock) => !trackedTsCodes.has(stock.tsCode))
+    if (pending.length === 0 || watchlistBatchAdding) return
+    setWatchlistBatchAdding(true)
+    try {
+      const result = await window.api.trend.addStocks(
+        pending.map((stock) => ({
+          tsCode: stock.tsCode,
+          stockName: stock.name || stock.tsCode,
+        })),
+      )
+      if (!result.ok) {
+        setAnalyzeToast({ type: 'error', message: result.message || result.error || '批量加入观察池失败' })
+        setTimeout(() => setAnalyzeToast(null), 4000)
+        return
+      }
+      setTrackedTsCodes((prev) => new Set([...prev, ...pending.map((stock) => stock.tsCode)]))
+      setAnalyzeToast({ type: 'success', message: `已加入观察池 ${pending.length} 只` })
+      setTimeout(() => setAnalyzeToast(null), 4000)
+    } catch (error) {
+      setAnalyzeToast({
+        type: 'error',
+        message: error instanceof Error ? error.message : '批量加入观察池失败',
+      })
+      setTimeout(() => setAnalyzeToast(null), 4000)
+    } finally {
+      setWatchlistBatchAdding(false)
+    }
+  }
+
+  const relatedStocks = useMemo(() => {
+    if (!briefing) return [] as BriefingRelatedStock[]
+    const detailText = detailContent?.content ? stripHtmlToText(detailContent.content) : ''
+    return mergeBriefingRelatedStocks({
+      protocolTexts: sessionProtocolTexts,
+      candidateStocks: sessionCandidates,
+      freeTexts: [briefing.title, briefing.summary ?? '', detailText],
+    })
+  }, [briefing, detailContent?.content, sessionProtocolTexts, sessionCandidates])
+
+  const pendingWatchlistStocks = relatedStocks.filter((stock) => !trackedTsCodes.has(stock.tsCode))
 
   if (!briefingId) {
     return (
@@ -120,8 +259,15 @@ export function BriefingDetail({ briefingId }: Props) {
       if (result && 'error' in result) {
         setAnalyzeToast({ type: 'error', message: (result as { error: { message: string } }).error.message || 'AI分析失败' })
         setTimeout(() => setAnalyzeToast(null), 4000)
+        if ('sessionId' in result && typeof (result as { sessionId?: number }).sessionId === 'number') {
+          await enrichFromSession((result as { sessionId: number }).sessionId)
+        }
       } else {
         await loadAISessions()
+        const sessionId = result && typeof result === 'object' && 'sessionId' in result
+          ? (result as { sessionId?: number }).sessionId
+          : undefined
+        if (typeof sessionId === 'number') await enrichFromSession(sessionId)
         setAnalyzeToast({ type: 'success', message: 'AI分析完成，结果已保存至AI分析Tab' })
         setTimeout(() => setAnalyzeToast(null), 4000)
       }
@@ -228,6 +374,61 @@ export function BriefingDetail({ briefingId }: Props) {
           </a>
         </div>
       </section>
+
+      {relatedStocks.length > 0 && (
+        <section
+          data-testid="briefing-detail-related-stocks"
+          className="mb-3 rounded-md border border-violet-100 bg-violet-50/60 p-3 dark:border-violet-400/20 dark:bg-violet-400/10"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">相关股票</h3>
+            {pendingWatchlistStocks.length > 0 && (
+              <button
+                type="button"
+                data-testid="briefing-add-all-to-watchlist"
+                disabled={watchlistBatchAdding}
+                onClick={() => { void handleAddAllToWatchlist(relatedStocks) }}
+                className="rounded border border-violet-300 bg-white px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-200"
+              >
+                {watchlistBatchAdding ? '加入中…' : `全部加入观察池（${pendingWatchlistStocks.length}）`}
+              </button>
+            )}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {relatedStocks.map((stock) => {
+              const inWatchlist = trackedTsCodes.has(stock.tsCode)
+              return (
+                <div
+                  key={stock.tsCode}
+                  className="flex min-w-[9.5rem] flex-col rounded-lg border border-violet-200 bg-white px-2.5 py-2 dark:border-violet-800 dark:bg-slate-950/40"
+                >
+                  <span className="truncate text-xs font-medium text-slate-800 dark:text-slate-100">
+                    {stock.name || '名称待补全'}
+                  </span>
+                  <span className="text-[10px] text-slate-400">{stock.code}</span>
+                  <div className="mt-2">
+                    {inWatchlist ? (
+                      <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">
+                        已在池
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        data-testid={`briefing-add-to-watchlist-${stock.code}`}
+                        disabled={watchlistAddingCode === stock.code || watchlistBatchAdding}
+                        onClick={() => { void handleAddToWatchlist(stock) }}
+                        className="rounded border border-violet-300 bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200"
+                      >
+                        {watchlistAddingCode === stock.code ? '加入中…' : '+观察池'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
 
       <section className="mb-3 rounded-md border border-cyan-100 bg-cyan-50/70 p-3 dark:border-cyan-400/20 dark:bg-cyan-400/10">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">为什么值得先看</h3>

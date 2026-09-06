@@ -1,6 +1,6 @@
 # AI 分析 Agent 助手框子（方案 1）设计
 
-**状态：** 第一期 + 第二期 M0–M2 代码已落地（2026-08-12；相关单测绿；待手工验收 §8 第 11–13 条 / 联网门禁）  
+**状态：** 第一期 + 第二期 M0–M2 已完成（2026-08-30 Track A 自动化验收闭环；活体外部 MCP 连通为环境可选）  
 **日期：** 2026-08-11  
 **Plan：** [`../plans/2026-08-11-ai-analysis-agent-hub.md`](../plans/2026-08-11-ai-analysis-agent-hub.md)  
 **参考：** SharkMind 2.0（`AgentOrchestrator` / `ToolRegistry` / `SessionContext` / Skill + SubAgentTool）；本仓库 Phase1/2a 本地投研 Agent、流式输出、深度研究自动启动

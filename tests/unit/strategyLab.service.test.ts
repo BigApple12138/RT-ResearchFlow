@@ -40,15 +40,17 @@ function createDb(): Database.Database {
 }
 
 describe('strategyLabService', () => {
-  it('初始化三个内置策略模板', () => {
+  it('初始化内置策略模板（含日线 DSL 与两阶段）', () => {
     const db = createDb()
     ensureDefaultStrategyLabStrategies(db)
 
     const strategies = listStrategyLabStrategies(db)
     expect(strategies.map(item => item.strategyKey).sort()).toEqual([
       'builtin-condition-blocks',
+      'builtin-daily-dsl',
       'builtin-new-rule',
       'builtin-screener',
+      'builtin-two-phase',
     ])
     expect(strategies.every(item => item.isBuiltin)).toBe(true)
     db.close()

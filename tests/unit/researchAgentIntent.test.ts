@@ -7,6 +7,8 @@ import {
   decideAutoDeepResearchStart,
   extractTsCodesFromText,
   resolveAutoDeepResearchStocks,
+  extractIndustryNameFromIntent,
+  buildIndustryResearchLaunchPayload,
 } from '../../src/components/AIAnalysis/researchAgentIntent'
 
 describe('researchAgentIntent', () => {
@@ -75,5 +77,21 @@ describe('researchAgentIntent', () => {
       stockCount: 0,
       projectCount: 0,
     }).auto).toBe(false)
+  })
+
+  it('从产业意图句抽取产业名', () => {
+    expect(extractIndustryNameFromIntent('帮我做产业研究光模块')).toBe('光模块')
+    expect(extractIndustryNameFromIntent('启动光伏产业研究')).toContain('光伏')
+    expect(extractIndustryNameFromIntent('对固态电池做产业研究')).toBe('固态电池')
+  })
+
+  it('构建产业研究启动 payload', () => {
+    const payload = buildIndustryResearchLaunchPayload('启动光模块产业研究')
+    expect(payload.researchQuestion).toContain('光模块')
+    expect(payload.scope.industryName).toBeTruthy()
+    expect(payload.scope.purpose).toBe('learning')
+    expect(payload.scope.depth).toBe('standard')
+    expect(payload.scope.enableWebRetrieval).toBe(true)
+    expect(payload.sourceType).toBe('ai_analysis')
   })
 })

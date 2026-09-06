@@ -1,0 +1,15 @@
+# 统一换行符为 LF，避免跨平台检出产生 CRLF 噪声
+
+# 所有文本文件统一按 LF 处理，检出到工作区一律 LF
+* text=auto eol=lf
+
+# 二进制资源显式声明，不参与文本/换行符处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.zip binary

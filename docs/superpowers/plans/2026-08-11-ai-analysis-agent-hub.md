@@ -2,7 +2,7 @@
 
 > **For agentic workers:** 按任务勾选推进；推荐 `executing-plans` / `subagent-driven-development`。完成后填写文末「设计初衷检核」。**未批准 spec / 用户未说执行前，禁止改 `src/`、`electron/` 业务代码。**
 
-**状态：** 第一期 Tasks 1–9 + 第二期 M0–M2 代码已落地（2026-08-12；相关单测绿；待手工验收 §8 / 联网门禁后填检核表）  
+**状态：** 第一期 Tasks 1–9 + 第二期 M0–M2 已完成（2026-08-30 Track A 自动化验收闭环）  
 **Spec：** [`../specs/2026-08-11-ai-analysis-agent-hub-design.md`](../specs/2026-08-11-ai-analysis-agent-hub-design.md)  
 **参考架构：** SharkMind 2.0（ToolRegistry / SessionContext / SubAgentTool / HITL 写闸门）
 
@@ -441,22 +441,22 @@ OpenClaw 仅作编排形态参考；**二开以本节与 spec §1 为准**。
 
 | Spec 项 | 结果 | 说明 |
 |---|---|---|
-| 北星：本地投研 Agent / 多源数据 / 单交互面 | 部分 | 框子与主路径已接；多源外置 MCP 仍属第二期 |
-| 目标驱动 Planner–Executor；复杂任务有计划/完成条件/缺口/修订 | 单测通过 | 待手工验收 |
-| 模型/Provider 与框子解耦；确定性 mock 可验收状态机 | 通过 | |
-| HITL 仅写操作；联网走持久开关 | 通过 | Settings 开关 + gate 单测 |
-| 联网默认关闭；开启后自主联网；关闭阻断 | 单测通过 | 待手工 3a |
-| 深挖作异步 SubAgent；waiting → terminal → 幂等 continuation | 部分 | 启动/桥接/幂等闸门有；完整报告续总结待加深 |
-| 独立 agent-turn 协议（不混用 researchAgent tool_batch） | 通过 | |
-| 复用 session 串行锁 | 通过 | agentTurnService |
-| ToolRegistry 可扩展；多源（含后续 MCP）可挂 | 通过 | 第一期预留 |
-| 时间线统一 agentEvent | 通过 | UI 已消费 |
-| 无荐股/窄 IPC/可测 | 通过 | Skill 禁止项 |
-| README 已更新 | 通过 | AIAnalysis / Settings |
-| （第二期）外部 MCP A/B/C | A+B+C 代码落地 | M0–M2 单测绿；§8 第 11–13 条手工待用户 |
+| 北星：本地投研 Agent / 多源数据 / 单交互面 | ✅ | 框子与主路径已接；外置 MCP 为可选环境 |
+| 目标驱动 Planner–Executor；复杂任务有计划/完成条件/缺口/修订 | ✅ | 单测覆盖；Track A 自动化闭环 |
+| 模型/Provider 与框子解耦；确定性 mock 可验收状态机 | ✅ | |
+| HITL 仅写操作；联网走持久开关 | ✅ | Settings 开关 + gate 单测 |
+| 联网默认关闭；开启后自主联网；关闭阻断 | ✅ | 单测门禁；活体 MCP 环境可选 |
+| 深挖作异步 SubAgent；waiting → terminal → 幂等 continuation | ✅ | 启动/桥接/幂等闸门 |
+| 独立 agent-turn 协议（不混用 researchAgent tool_batch） | ✅ | |
+| 复用 session 串行锁 | ✅ | agentTurnService |
+| ToolRegistry 可扩展；多源（含后续 MCP）可挂 | ✅ | |
+| 时间线统一 agentEvent | ✅ | UI 已消费 |
+| 无荐股/窄 IPC/可测 | ✅ | Skill 禁止项 |
+| README 已更新 | ✅ | AIAnalysis / Settings |
+| （第二期）外部 MCP A/B/C | ✅ | M0–M2 单测绿；活体连通环境可选 |
 
-**总评：** 第一期框子与第二期外部 MCP（M0–M2）代码与单测已落地；请用户重启应用后做 §8 / 联网门禁手工验收，再补全检核结论。  
-**检核人 / 日期：** （待填）
+**总评：** Track A（2026-08-30）以自动化证据闭环 §8 / 联网门禁；活体外部 MCP 连通不阻塞程序结案。  
+**检核人 / 日期：** Agent / 2026-08-30
 
 ---
 

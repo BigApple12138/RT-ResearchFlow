@@ -151,6 +151,52 @@ describe('早盘历史涨跌增量协调器', () => {
     expect(batches).toEqual([['000001.SZ'], ['000001.SZ']])
     expect(second.get('000001.SZ')?.state).toBe('ready')
   })
+
+  it('partial + REMOTE_BACKFILL_FAILED 在下次 ensure 自动重试', async () => {
+    const batches: string[][] = []
+    let attempt = 0
+    const coordinator = new MorningAuctionPriceHistoryCoordinator(async (_tradeDate, codes) => {
+      attempt += 1
+      batches.push([...codes])
+      if (attempt === 1) {
+        return new Map(codes.map(code => [code, {
+          p3d: 1.5,
+          p5d: null,
+          state: 'partial' as const,
+          availableDays: 4,
+          reason: 'REMOTE_BACKFILL_FAILED' as const,
+          remoteAttempted: true,
+        }]))
+      }
+      return new Map(codes.map(code => [code, ready(attempt)]))
+    })
+
+    await coordinator.ensure('20260812', ['000001.SZ'])
+    const second = await coordinator.ensure('20260812', ['000001.SZ'])
+
+    expect(batches).toEqual([['000001.SZ'], ['000001.SZ']])
+    expect(second.get('000001.SZ')?.state).toBe('ready')
+  })
+
+  it('partial + SAMPLE_INSUFFICIENT 普通 ensure 不自动重试', async () => {
+    const batches: string[][] = []
+    const coordinator = new MorningAuctionPriceHistoryCoordinator(async (_tradeDate, codes) => {
+      batches.push([...codes])
+      return new Map(codes.map(code => [code, {
+        p3d: 1.5,
+        p5d: null,
+        state: 'partial' as const,
+        availableDays: 4,
+        reason: 'SAMPLE_INSUFFICIENT' as const,
+        remoteAttempted: true,
+      }]))
+    })
+
+    await coordinator.ensure('20260812', ['000001.SZ'])
+    await coordinator.ensure('20260812', ['000001.SZ'])
+
+    expect(batches).toEqual([['000001.SZ']])
+  })
 })
 
 describe('早盘历史涨跌本地优先加载', () => {

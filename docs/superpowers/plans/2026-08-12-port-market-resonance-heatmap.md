@@ -6,7 +6,7 @@
 
 **Architecture:** 基于 `origin/develop` cherry-pick 两提交 → Migration 改号为下一可用版本。
 
-**状态：** 已合入分支 `port/market-resonance-heatmap-cao`（相对 `origin/develop`，待 PR）  
+**状态：** 已完成（历史合入；勿再按「待 PR」执行。以当前 `develop`/主线为准）  
 **Spec：** [`../specs/2026-08-12-port-market-resonance-heatmap-design.md`](../specs/2026-08-12-port-market-resonance-heatmap-design.md)
 
 ## 分支与提交

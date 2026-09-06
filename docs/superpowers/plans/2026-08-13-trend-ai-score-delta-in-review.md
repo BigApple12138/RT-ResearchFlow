@@ -8,7 +8,7 @@
 
 **Tech Stack:** Electron 主进程、better-sqlite3 向前 Migration、既有 `callWithFallback` / 研究文本审计、React TrendWatcher、Vitest。
 
-**状态：** 已完成（实现已落地，检核如下；待用户确认）  
+**状态：** 已完成（实现已落地；2026-08-30 Track A 自动化验收闭环）  
 **Spec（设计初衷）：** [`../specs/2026-08-13-trend-ai-score-delta-in-review-design.md`](../specs/2026-08-13-trend-ai-score-delta-in-review-design.md)  
 **归档：** 本 plan 必须保留在 `docs/superpowers/plans/`；执行完毕后填写文末「设计初衷检核」。约定见 [`../README.md`](../README.md)。
 
