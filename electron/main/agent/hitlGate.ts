@@ -28,6 +28,11 @@ export interface HitlGate {
   /** 发起写操作确认；resolveHitl 后 Promise 结算 */
   requestHitl(input: HitlRequestInput): Promise<HitlResolveResult>
   resolveHitl(requestId: string, approved: boolean): void
+  /**
+   * 拒绝所有 requestId 以 `prefix` 开头的挂起 HITL（用于 Agent turn 停止，避免死等）。
+   * 返回被拒绝的条数。
+   */
+  rejectPendingByPrefix(prefix: string): number
 }
 
 type PendingHitl = {
@@ -100,6 +105,19 @@ export function createHitlGate(): HitlGate {
         oneShotApprovals.set(entry.toolName, (oneShotApprovals.get(entry.toolName) ?? 0) + 1)
       }
       entry.settle({ requestId: id, approved })
+    },
+
+    rejectPendingByPrefix(prefix: string): number {
+      const p = prefix?.trim()
+      if (!p) return 0
+      let count = 0
+      for (const [id, entry] of [...pending.entries()]) {
+        if (!id.startsWith(p)) continue
+        pending.delete(id)
+        entry.settle({ requestId: id, approved: false })
+        count += 1
+      }
+      return count
     },
   }
 }

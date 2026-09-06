@@ -68,6 +68,8 @@ export type ReasoningCallInput = {
   stepCount: number
   /** 最终叙述路径可选；累计正文回调（与 followUp onDelta 同语义） */
   onDelta?: (accumulated: string) => void
+  /** 用户停止：透传给 callWithFallback / provider */
+  signal?: AbortSignal
 }
 
 export type ReasoningCall = (input: ReasoningCallInput) => Promise<string>
@@ -227,6 +229,10 @@ function aborted(signal?: AbortSignal): boolean {
   return Boolean(signal?.aborted)
 }
 
+function isUserAbort(_error: unknown, signal?: AbortSignal): boolean {
+  return aborted(signal)
+}
+
 /**
  * 运行一轮 Agent turn（内存态）。每轮唯一终态：done | error | cancelled。
  */
@@ -304,6 +310,18 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
   }
 
   emit(onEvent, { type: 'start', requestId, sessionId, payload: { userMessage: input.userMessage } })
+
+  if (signal) {
+    const onAbortHitl = () => {
+      try {
+        input.hitlGate?.rejectPendingByPrefix(`${requestId}:`)
+      } catch {
+        /* ignore */
+      }
+    }
+    if (signal.aborted) onAbortHitl()
+    else signal.addEventListener('abort', onAbortHitl, { once: true })
+  }
 
   if (aborted(signal)) {
     goal = { ...goal, status: 'cancelled' }
@@ -387,42 +405,53 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
       if (evaluation.decision === 'complete' && lastObservation) {
         // 已满足完成条件：再要一轮 final 文案（若尚无）
         if (!finalText) {
-          const raw = await input.reasoningCall({
-            messages,
-            goal,
-            plan,
-            observations,
-            session,
-            stepCount,
-            onDelta: (accumulated) => {
-              try {
-                const action = parseAgentAction(accumulated)
-                if (action.type === 'final' && action.text) {
-                  emit(onEvent, {
-                    type: 'message',
-                    requestId,
-                    sessionId,
-                    payload: { text: action.text, stream: 'delta' },
-                  })
-                }
-              } catch {
-                // 半截 JSON：忽略
-              }
-            },
-          })
-          if (aborted(signal)) {
-            goal = { ...goal, status: 'cancelled' }
-            return finish('cancelled')
-          }
+          let streamed = ''
           try {
-            const action = parseAgentAction(raw)
-            if (action.type === 'final') {
-              finalText = action.text
-            } else {
+            const raw = await input.reasoningCall({
+              messages,
+              goal,
+              plan,
+              observations,
+              session,
+              stepCount,
+              signal,
+              onDelta: (accumulated) => {
+                try {
+                  const action = parseAgentAction(accumulated)
+                  if (action.type === 'final' && action.text) {
+                    streamed = action.text
+                    emit(onEvent, {
+                      type: 'message',
+                      requestId,
+                      sessionId,
+                      payload: { text: action.text, stream: 'delta' },
+                    })
+                  }
+                } catch {
+                  // 半截 JSON：忽略
+                }
+              },
+            })
+            if (aborted(signal)) {
+              goal = { ...goal, status: 'cancelled' }
+              return finish('cancelled', { text: streamed || finalText })
+            }
+            try {
+              const action = parseAgentAction(raw)
+              if (action.type === 'final') {
+                finalText = action.text
+              } else {
+                finalText = lastObservation.summary || '已完成目标。'
+              }
+            } catch {
               finalText = lastObservation.summary || '已完成目标。'
             }
-          } catch {
-            finalText = lastObservation.summary || '已完成目标。'
+          } catch (err) {
+            if (isUserAbort(err, signal)) {
+              goal = { ...goal, status: 'cancelled' }
+              return finish('cancelled', { text: streamed || finalText })
+            }
+            throw err
           }
         }
         emitAssistantMessage(onEvent, requestId, sessionId, finalText ?? '')
@@ -491,33 +520,45 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
         payload: { decision: 'continue', stepCount },
       })
 
-      const rawAction = await input.reasoningCall({
-        messages,
-        goal,
-        plan,
-        observations,
-        session,
-        stepCount,
-        onDelta: (accumulated) => {
-          try {
-            const action = parseAgentAction(accumulated)
-            if (action.type === 'final' && action.text) {
-              emit(onEvent, {
-                type: 'message',
-                requestId,
-                sessionId,
-                payload: { text: action.text, stream: 'delta' },
-              })
+      let streamed = ''
+      let rawAction: string
+      try {
+        rawAction = await input.reasoningCall({
+          messages,
+          goal,
+          plan,
+          observations,
+          session,
+          stepCount,
+          signal,
+          onDelta: (accumulated) => {
+            try {
+              const action = parseAgentAction(accumulated)
+              if (action.type === 'final' && action.text) {
+                streamed = action.text
+                emit(onEvent, {
+                  type: 'message',
+                  requestId,
+                  sessionId,
+                  payload: { text: action.text, stream: 'delta' },
+                })
+              }
+            } catch {
+              // 半截 JSON 或 tool 动作：不推正文
             }
-          } catch {
-            // 半截 JSON 或 tool 动作：不推正文
-          }
-        },
-      })
+          },
+        })
+      } catch (err) {
+        if (isUserAbort(err, signal)) {
+          goal = { ...goal, status: 'cancelled' }
+          return finish('cancelled', { text: streamed || finalText })
+        }
+        throw err
+      }
 
       if (aborted(signal)) {
         goal = { ...goal, status: 'cancelled' }
-        return finish('cancelled')
+        return finish('cancelled', { text: streamed || finalText })
       }
 
       let action
@@ -804,6 +845,10 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
       }
     }
   } catch (err) {
+    if (isUserAbort(err, signal) || (err instanceof Error && err.name === 'AbortError' && aborted(signal))) {
+      goal = { ...goal, status: 'cancelled' }
+      return finish('cancelled', { text: finalText })
+    }
     const message = err instanceof Error ? err.message : String(err)
     goal = { ...goal, status: 'blocked' }
     return finish('error', { errorMessage: message })

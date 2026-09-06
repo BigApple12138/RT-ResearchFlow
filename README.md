@@ -117,7 +117,7 @@ flowchart LR
 |---|---|
 | **Agent Context Engine** | 讨论自动/手动压缩、研究笔记 flush、检查点列表与恢复 |
 | **Agent 工作台（Agent Hub）** | Planner–Executor 回合、本地只读 Tool、HITL 写闸门、外部 MCP 投影 |
-| **Cursor 式 AI 会话面** | 可折叠侧栏、Agent 正文流式、深度研究时间线块；`followUp` 可停止生成 |
+| **Cursor 式 AI 会话面** | 可折叠侧栏、Agent 正文流式、深度研究时间线块；followUp / agentTurn 均可停止生成 |
 | **趋势 AI 锚定偏差分** | 本地结构复核与 AI 第二意见并排；EOD 事实绑定，不随盘中刷新误作废 |
 | **自定义数据目录（FR-265）** | 引导文件 + 智能迁移，窄 IPC，env 锁定只读 |
 | **指数分时专业版** | 预设指数蜡烛 + VWAP，带后缀缓存键 |
@@ -464,7 +464,6 @@ pnpm run test:e2e -- tests/e2e/user-journey.spec.ts
 - 本次只提供 Windows x64 安装包；macOS 发布验收与商业代码签名在本程序**书面结案不做**（见 [`docs/superpowers/specs/2026-08-30-release-macos-codesign-wontfix-design.md`](docs/superpowers/specs/2026-08-30-release-macos-codesign-wontfix-design.md)）。
 - 云端分钟数据服务（`minuteData:saveCloudConfig`）**书面结案不做**，保持 `NOT_IMPLEMENTED`（见 [`docs/superpowers/specs/2026-08-30-cloud-minute-save-config-wontfix-design.md`](docs/superpowers/specs/2026-08-30-cloud-minute-save-config-wontfix-design.md)）；待后端契约后再开 SDD。
 - 竞价价史在极端大批量候选下仍可能有可感延迟。
-- **Agent Hub 主路径（`ai:agentTurn`）流式期间尚无统一「停止」按钮**；`followUp` 路径已支持停止。
 - 策略实验室日线 DSL 首版以参数编辑与内置模板为主，不做拖拽式图形编排。
 - 应用不执行下单、自动交易、仓位控制或收益预测。
 
@@ -476,7 +475,6 @@ pnpm run test:e2e -- tests/e2e/user-journey.spec.ts
 
 以下为方向性计划，**不承诺交付时间**：
 
-- Agent 主路径停止生成（与 `followUp` 停止对齐）。
 - 云端分钟配置：依赖经批准的后端契约后另开 SDD（G1 已书面结案）。
 - 竞价价史极端规模下的进一步性能优化。
 - 策略实验室日线 DSL 条件增删 / 图形编排（backlog）。

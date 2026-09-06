@@ -295,6 +295,33 @@ describe('agentOrchestrator', () => {
     expect(eventsB.filter((e) => e.type === 'done' || e.type === 'error')).toHaveLength(0)
   })
 
+  it('reasoningCall 抛 Abort 且 signal.aborted 时为 cancelled', async () => {
+    const registry = createToolRegistry()
+    const ac = new AbortController()
+    const events: AgentEvent[] = []
+    const pending = runAgentTurn({
+      sessionId: 51,
+      userMessage: 'abort mid call',
+      requestId: 'req-abort-mid',
+      registry,
+      signal: ac.signal,
+      onEvent: (e) => events.push(e),
+      reasoningCall: async (input) => {
+        ac.abort()
+        if (input.signal?.aborted) {
+          const err = new Error('AbortError')
+          err.name = 'AbortError'
+          throw err
+        }
+        return JSON.stringify({ type: 'final', text: 'should not' })
+      },
+    })
+    const result = await pending
+    expect(result.terminal).toBe('cancelled')
+    expect(events.some((e) => e.type === 'cancelled')).toBe(true)
+    expect(events.some((e) => e.type === 'done' || e.type === 'error')).toBe(false)
+  })
+
   it('network 关闭阻断；write 走 HITL；tool_result size cap', async () => {
     const registry = createToolRegistry()
     let networkHits = 0

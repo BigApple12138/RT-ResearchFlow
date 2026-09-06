@@ -29,6 +29,7 @@ Phase 2a 起，AI 分析仅为聊天页（侧栏不再有深度/产业子入口�
 - **写闸门**：`sideEffect=write` 推 HITL 条，经 `ai:agentConfirm` 确认/拒绝后继续；未确认不执行。
 - **联网关闭提示**：时间线展示「去设置开启」文案（非逐次确认）。
 - 结束后仍以 `getSession` 权威刷新消息；流式/工具回合不并发整表覆盖 `messages`。
+- **停止生成（2026-09-06）：** Agent 主路径与 followUp 共用 `ai:followUpStop` + Abort 注册表；回合进行中 composer 显示「停止」；用户句必留，有流式正文则助手尾部「（已停止）」；HITL 等待中停止会拒绝挂起确认。已 `wait_subagent` 的深度研究仍用 `researchAgent:cancelRun`，不经本按钮。
 - 本会话深度研究 `queued|running|paused` 时拒绝新的 agentTurn（忙碌文案）；Agent 已启动 run 的 progress/delta 仍桥接进 `ai:agentEvent`，避免自锁。
 
 ## 实现思路

@@ -15,6 +15,7 @@ import {
   failDiscussionTurnRequest,
   getDiscussionTurnRequest,
   insertDiscussionTurnRequest,
+  cancelDiscussionTurnRequest,
 } from '../database/discussionTurnRequestRepository'
 import { callWithFallback } from './aiFallbackService'
 import { buildDiscussionModelMessages } from './researchDiscussionContextService'
@@ -43,6 +44,10 @@ import {
   type ResearchAgentBridgeProgress,
 } from '../agent/researchAgentBridge'
 import { getResearchAgentRun } from '../database/researchAgentRunRepository'
+import {
+  registerFollowUpAbort,
+  removeFollowUpAbort,
+} from './followUpAbortRegistry'
 
 export interface AgentTurnInput {
   requestId: string
@@ -57,6 +62,7 @@ export interface AgentTurnResult {
   waitingSubagent?: { runId: string }
   error?: string
   code?: string
+  cancelled?: boolean
 }
 
 export interface AgentTurnOptions {
@@ -81,7 +87,7 @@ function errorResult(code: string, error: string, messages: NormalizedConversati
   return { error, code, messages }
 }
 
-function buildDefaultReasoningCall(db: Database.Database): ReasoningCall {
+function buildDefaultReasoningCall(db: Database.Database, signal?: AbortSignal): ReasoningCall {
   return async (input) => {
     const registry = getAgentToolRegistry(() => db)
     const fromOrchestrator = input.messages.find((m) => m.role === 'system')?.content
@@ -109,9 +115,16 @@ function buildDefaultReasoningCall(db: Database.Database): ReasoningCall {
       messages: chatMessages,
       webSearch: undefined,
       onDelta: input.onDelta,
+      signal: input.signal ?? signal,
     })
     return result.text
   }
+}
+
+function stoppedAssistantText(partial?: string): string {
+  const body = partial?.trim() ?? ''
+  if (!body) return ''
+  return body.includes('（已停止）') ? body : `${body}\n\n（已停止）`
 }
 
 function mapBridgeProgressToAgentEvent(
@@ -184,6 +197,14 @@ async function runAgentTurnWithinLock(
         terminal: 'done',
       }
     }
+    if (existing.status === 'cancelled') {
+      return {
+        text: existing.response_text ?? '',
+        messages: getSessionMessages(db, input.sessionId),
+        terminal: 'cancelled',
+        cancelled: true,
+      }
+    }
     if (existing.status === 'running') {
       return errorResult('REQUEST_IN_PROGRESS', '该请求正在处理中', getSessionMessages(db, input.sessionId))
     }
@@ -248,6 +269,7 @@ async function runAgentTurnWithinLock(
 
   // 桥接保留到 wait_subagent 之后：本轮若启动深挖，progress/delta 继续扇出
   let keepBridge = false
+  const abortController = registerFollowUpAbort(input.requestId)
   const unsubscribeBridge = subscribeResearchAgentBridge((kind, event) => {
     if (kind === 'progress') {
       const progress = event as ResearchAgentBridgeProgress
@@ -280,7 +302,7 @@ async function runAgentTurnWithinLock(
         mcpErr instanceof Error ? mcpErr.message : String(mcpErr),
       )
     }
-    const reasoningCall = options.reasoningCall ?? buildDefaultReasoningCall(db)
+    const reasoningCall = options.reasoningCall ?? buildDefaultReasoningCall(db, abortController.signal)
     const result: RunAgentTurnResult = await runAgentTurn({
       sessionId: input.sessionId,
       userMessage: rawMessage,
@@ -292,6 +314,7 @@ async function runAgentTurnWithinLock(
       hitlGate: getAgentHitlGate(),
       getNetworkEnabled: options.getNetworkEnabled ?? (() => getAiAgentNetworkEnabled()),
       maxSteps: options.maxSteps,
+      signal: abortController.signal,
     })
 
     if (result.waitingSubagent?.runId) {
@@ -324,13 +347,33 @@ async function runAgentTurnWithinLock(
       })
     }
 
+    if (result.terminal === 'cancelled') {
+      const stopped = stoppedAssistantText(result.text)
+      const persistedMessages = stopped
+        ? [
+            ...requestMessages,
+            { role: 'assistant' as const, content: stopped, requestId: input.requestId },
+          ]
+        : requestMessages
+      const commit = db.transaction(() => {
+        updateSessionMessages(db, input.sessionId, persistedMessages)
+        cancelDiscussionTurnRequest(db, input.requestId, stopped || null)
+      })
+      commit()
+      return {
+        text: stopped || undefined,
+        messages: getSessionMessages(db, input.sessionId),
+        terminal: 'cancelled',
+        cancelled: true,
+        code: 'CANCELLED',
+      }
+    }
+
     const assistantText =
       result.text?.trim() ||
       (result.waitingSubagent
         ? `已启动深度研究（runId=${result.waitingSubagent.runId}），完成后可在时间线与研究面板查看进度。`
-        : result.terminal === 'cancelled'
-          ? '本轮已取消。'
-          : result.errorMessage || '本轮已结束。')
+        : result.errorMessage || '本轮已结束。')
 
     if (result.terminal === 'error') {
       failDiscussionTurnRequest(db, input.requestId, result.errorMessage || assistantText)
@@ -376,6 +419,27 @@ async function runAgentTurnWithinLock(
       waitingSubagent: result.waitingSubagent,
     }
   } catch (error) {
+    if (abortController.signal.aborted) {
+      const persistedMessages = requestMessages
+      const commit = db.transaction(() => {
+        updateSessionMessages(db, input.sessionId, persistedMessages)
+        cancelDiscussionTurnRequest(db, input.requestId, null)
+      })
+      commit()
+      pushEvent({
+        type: 'cancelled',
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        at: Date.now(),
+        payload: {},
+      })
+      return {
+        messages: getSessionMessages(db, input.sessionId),
+        terminal: 'cancelled',
+        cancelled: true,
+        code: 'CANCELLED',
+      }
+    }
     const message = error instanceof Error ? error.message : String(error)
     failDiscussionTurnRequest(db, input.requestId, message)
     pushEvent({
@@ -387,6 +451,7 @@ async function runAgentTurnWithinLock(
     })
     return errorResult('AI_CALL_FAILED', message, getSessionMessages(db, input.sessionId))
   } finally {
+    removeFollowUpAbort(input.requestId)
     if (!keepBridge) unsubscribeBridge()
   }
 }

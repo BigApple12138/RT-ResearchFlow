@@ -70,4 +70,14 @@ describe('agentHitlGate', () => {
     const gate = createHitlGate()
     expect(() => gate.resolveHitl('missing', true)).toThrow(/未知|unknown|HITL/i)
   })
+
+  it('rejectPendingByPrefix 拒绝同前缀挂起 HITL', async () => {
+    const gate = createHitlGate()
+    const a = gate.requestHitl({ toolName: 'config.set', requestId: 'req-1:hitl:config.set:0' })
+    const b = gate.requestHitl({ toolName: 'config.set', requestId: 'req-2:hitl:config.set:0' })
+    expect(gate.rejectPendingByPrefix('req-1')).toBe(1)
+    await expect(a).resolves.toEqual({ requestId: 'req-1:hitl:config.set:0', approved: false })
+    gate.resolveHitl('req-2:hitl:config.set:0', true)
+    await expect(b).resolves.toEqual({ requestId: 'req-2:hitl:config.set:0', approved: true })
+  })
 })

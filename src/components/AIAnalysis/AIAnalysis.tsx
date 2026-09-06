@@ -2089,7 +2089,7 @@ export function AIAnalysis() {
                   rows={2}
                   className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
                 />
-                {sendingFollowUp && followUpDraft?.streaming ? (
+                {sendingFollowUp && (followUpDraft?.streaming || (agentPathEnabled && !agentTimeline.terminal)) ? (
                   <button
                     type="button"
                     data-testid="ai-followup-stop"
@@ -2132,14 +2132,26 @@ export function AIAnalysis() {
                   rows={2}
                   className="min-h-[52px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-blue-300 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950"
                 />
-                <button
-                  type="button"
-                  onClick={() => { void handleComposerSend() }}
-                  disabled={!followUpInput.trim() || sendingFollowUp || startingDiscussion}
-                  className="h-[52px] flex-shrink-0 rounded-lg bg-blue-600 px-4 text-xs text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700"
-                >
-                  发送
-                </button>
+                {sendingFollowUp && agentPathEnabled && !agentTimeline.terminal ? (
+                  <button
+                    type="button"
+                    data-testid="ai-followup-stop"
+                    aria-label="停止生成"
+                    onClick={() => { void handleFollowUpStop() }}
+                    className="h-[52px] flex-shrink-0 rounded-lg border border-rose-300 bg-white px-4 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-50 dark:border-rose-800 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-950/40"
+                  >
+                    停止
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { void handleComposerSend() }}
+                    disabled={!followUpInput.trim() || sendingFollowUp || startingDiscussion}
+                    className="h-[52px] flex-shrink-0 rounded-lg bg-blue-600 px-4 text-xs text-white transition-colors hover:bg-blue-700 disabled:bg-slate-300 dark:disabled:bg-slate-700"
+                  >
+                    发送
+                  </button>
+                )}
               </div>
             </div>
           </div>

@@ -1818,6 +1818,7 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
   })
 
   // ── ai:followUpStop ───────────────────────────────────────────────────────────
+  // 同时覆盖 followUp 与 agentTurn（共用 requestId 注册表）
   ipcMain.handle('ai:followUpStop', async (_e, data: { requestId?: unknown }) => {
     const requestId = typeof data?.requestId === 'string' ? data.requestId.trim() : ''
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
@@ -1826,6 +1827,11 @@ export function registerAIHandlers(getWindow: () => BrowserWindow | null): void 
     const { abortFollowUp } = await import('../services/followUpAbortRegistry')
     const aborted = abortFollowUp(requestId)
     if (!aborted) return { ok: false, code: 'NOT_RUNNING' }
+    try {
+      getAgentHitlGate().rejectPendingByPrefix(`${requestId}:`)
+    } catch {
+      /* HITL 闸门未初始化时忽略 */
+    }
     return { ok: true }
   })
 
