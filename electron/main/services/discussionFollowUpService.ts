@@ -101,11 +101,9 @@ function normalizeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function isAbortError(error: unknown, signal?: AbortSignal): boolean {
-  if (signal?.aborted) return true
-  if (!(error instanceof Error)) return false
-  if (error.name === 'AbortError') return true
-  return /abort|user[_ ]?cancel|已停止/i.test(error.message)
+function isAbortError(_error: unknown, signal?: AbortSignal): boolean {
+  // 仅认用户停止（signal.aborted），避免网络 timeout/connection abort 被误判为取消而跳过 fallback
+  return signal?.aborted === true
 }
 
 function errorResult(code: string, error: string, messages: NormalizedConversationMessage[] = []): DiscussionFollowUpResult {
@@ -312,13 +310,24 @@ async function runDiscussionFollowUpWithinLock(
           ...(warning ? { warning } : {}),
         }
       }
-      cancelDiscussionTurnRequest(db, input.requestId, null)
+      // 无 partial 也要保留已发送的用户句，避免 UI 清空 composer 后会话里凭空消失
+      const commitUserOnly = db.transaction(() => {
+        updateSessionMessages(db, input.sessionId, requestMessages)
+        cancelDiscussionTurnRequest(db, input.requestId, null)
+      })
+      commitUserOnly()
       options.onDelta?.({
         type: 'stop',
         requestId: input.requestId,
         sessionId: input.sessionId,
       })
-      return errorResult('CANCELLED', '已停止生成', getSessionMessages(db, input.sessionId))
+      return {
+        ok: false,
+        cancelled: true,
+        code: 'CANCELLED',
+        error: '已停止生成',
+        messages: getSessionMessages(db, input.sessionId),
+      }
     }
     const message = normalizeError(error)
     options.onDelta?.({

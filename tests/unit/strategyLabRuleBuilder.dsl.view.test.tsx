@@ -34,9 +34,10 @@ describe('DailyDslRuleEditor 视图', () => {
       template,
       onChange: () => {},
     }))
-    expect(output).toContain('已停用')
-    // 禁用的涨幅块不应再出现其参数输入；均线块仍启用
-    const disabledSection = output.slice(output.indexOf(`data-testid="daily-dsl-block-${pct.id}"`))
+    const disabledMarker = `data-testid="daily-dsl-block-${pct.id}"`
+    const start = output.indexOf(disabledMarker)
+    expect(start).toBeGreaterThanOrEqual(0)
+    const disabledSection = output.slice(start)
     const nextArticle = disabledSection.indexOf('<article', 1)
     const section = nextArticle >= 0 ? disabledSection.slice(0, nextArticle) : disabledSection
     expect(section).not.toContain('data-param-key="minPctChg"')

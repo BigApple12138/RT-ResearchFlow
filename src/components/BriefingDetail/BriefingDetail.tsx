@@ -83,6 +83,27 @@ export function BriefingDetail({ briefingId }: Props) {
     })
   }, [briefingId])
 
+  // 打开已有成功 AI 会话的资讯时，仍要拉协议正文/结构化候选作相关股票来源
+  useEffect(() => {
+    if (!briefingId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const sessions = await window.api.ai.listSessions() as Array<{
+          id: number
+          briefingId?: number | null
+          isError?: number | boolean | null
+        }>
+        const hit = sessions.find((item) => item.briefingId === briefingId && !item.isError)
+        if (!hit || cancelled) return
+        await enrichFromSession(hit.id)
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => { cancelled = true }
+  }, [briefingId])
+
   useEffect(() => {
     let cancelled = false
     void window.api.trend.listTrackedTsCodes().then((response) => {

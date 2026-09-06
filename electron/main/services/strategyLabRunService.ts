@@ -248,13 +248,16 @@ async function runDailyDslStrategy(
   const runConfig = parseRunConfig(strategy)
   const template = strategy.ruleDraft.dailyDslProfile?.templateSnapshot ?? createDefaultDailyDslTemplate()
   emit(webContents, { runId, strategyId: strategy.id, stage: 'dailyDsl', current: 1, total: 2, message: '运行日线 DSL 扫描' })
+  const effectiveLookbackDays = Math.max(runConfig.lookbackDays, 60)
   const result = runDailyDslScan(db, {
     template,
     stockPoolSources: strategy.ruleDraft.stockPool.sources,
     manualTsCodes: strategy.ruleDraft.stockPool.manualTsCodes,
-    lookbackDays: Math.max(runConfig.lookbackDays, 60),
+    excludeST: strategy.ruleDraft.stockPool.excludeST,
+    excludeBJ: strategy.ruleDraft.stockPool.excludeBJ,
+    lookbackDays: effectiveLookbackDays,
     dateEnd: runConfig.dateEnd,
-    limit: runConfig.dailyPrefilterLimit,
+    allMarketLimit: runConfig.dailyPrefilterLimit,
     signal: controller.signal,
   })
   const matches = result.matches.map((match) => ({
@@ -285,7 +288,7 @@ async function runDailyDslStrategy(
       dateEnd: result.dateEnd,
       source: strategy.source,
       engine: 'dailyDsl',
-      coverage: { lookbackDays: runConfig.lookbackDays, templateKey: template.key },
+      coverage: { lookbackDays: effectiveLookbackDays, templateKey: template.key },
     },
     matches,
   }

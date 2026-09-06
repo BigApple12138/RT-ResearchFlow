@@ -39,13 +39,16 @@ describe('runDiscussionFollowUp 停止生成', () => {
 
     const events: string[] = []
     const db = { transaction: (fn: () => void) => () => fn() } as unknown as Database.Database
+    const controller = new AbortController()
     const result = await runDiscussionFollowUp(db, {
       requestId: '11111111-1111-4111-8111-111111111111',
       sessionId: 1,
       message: '请简要研判',
     }, {
+      signal: controller.signal,
       callAI: async (_db, input) => {
         input.onDelta?.('半段正文')
+        controller.abort()
         const err = new Error('The operation was aborted')
         err.name = 'AbortError'
         throw err
@@ -60,15 +63,18 @@ describe('runDiscussionFollowUp 停止生成', () => {
     expect(cancelSpy).toHaveBeenCalled()
   })
 
-  it('AbortError 且无 partial：不落助手消息，返回 CANCELLED', async () => {
+  it('AbortError 且无 partial：仍保留用户句，返回 CANCELLED', async () => {
     const updateMessages = vi.fn()
     await setupMocks(updateMessages)
     const db = { transaction: (fn: () => void) => () => fn() } as unknown as Database.Database
+    const controller = new AbortController()
+    controller.abort()
     const result = await runDiscussionFollowUp(db, {
       requestId: '22222222-2222-4222-8222-222222222222',
       sessionId: 1,
       message: '请简要研判',
     }, {
+      signal: controller.signal,
       callAI: async () => {
         const err = new Error('AbortError')
         err.name = 'AbortError'
@@ -77,7 +83,7 @@ describe('runDiscussionFollowUp 停止生成', () => {
     })
 
     expect(result.code).toBe('CANCELLED')
-    expect(result.cancelled).toBeUndefined()
-    expect(updateMessages).not.toHaveBeenCalled()
+    expect(result.cancelled).toBe(true)
+    expect(updateMessages).toHaveBeenCalledTimes(1)
   })
 })

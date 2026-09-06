@@ -885,9 +885,10 @@ export function AIAnalysis() {
         if (result?.warning) showToast(result.warning)
         if (detail.discussion) clearResearchDiscussionDraft(detail.id)
       } else if (result?.error) {
-        if (result.code === 'CANCELLED') {
+        if (result.code === 'CANCELLED' || result.cancelled) {
           const latest = await window.api.ai.getSession(detail.id)
           if (latest) setDetail(latest)
+          else if (result.messages) setDetail((prev) => prev ? { ...prev, messages: result.messages ?? prev.messages } : prev)
         } else {
           showToast(`追问失败：${result.error}`)
           setDetail((prev) => prev ? { ...prev, messages: detail.messages } : prev)
@@ -1133,6 +1134,7 @@ export function AIAnalysis() {
     error?: string
     code?: string
     warning?: string
+    cancelled?: boolean
   }> {
     if (agentPathEnabled) {
       setAgentRequestId(requestId)

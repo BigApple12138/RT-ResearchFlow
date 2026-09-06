@@ -172,11 +172,8 @@ export async function callWithFallback(
       }
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
-      if (
-        lastError.name === 'AbortError'
-        || /abort|user[_ ]?cancel/i.test(lastError.message)
-        || params.signal?.aborted
-      ) {
+      // 仅当用户主动 abort（signal.aborted）时终止 fallback；网络 AbortError 仍尝试下一厂商
+      if (params.signal?.aborted) {
         throw lastError
       }
       console.warn(`[callWithFallback] ${provider}/${model} failed:`, lastError.message, '— trying next provider')
