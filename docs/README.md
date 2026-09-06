@@ -5,7 +5,7 @@
 | 路径 | 用途 | 谁写 |
 |---|---|---|
 | [`community/`](community/) | GitHub Discussions 首发、社区上线检查清单 | 维护者（发布/社区） |
-| [`releases/`](releases/) | 版本说明、干净机验证清单（见 [`v0.1.0-beta.5.md`](releases/v0.1.0-beta.5.md) 等） | 维护者（发版） |
+| [`releases/`](releases/) | 版本说明、干净机验证清单（见 [`v0.1.0-beta.6.md`](releases/v0.1.0-beta.6.md) 等） | 维护者（发版） |
 | `screenshots/` | README 与说明用产品截图 | 维护者 |
 | [`superpowers/`](superpowers/README.md) | **SDD** 过程归档总说明（核心是 SDD；superpowers 仅为工具路径名） | Agent / 贡献者 |
 | [`superpowers/specs/`](superpowers/specs/) | SDD 设计初衷归档 | 功能开发前；完成后对照检核 |

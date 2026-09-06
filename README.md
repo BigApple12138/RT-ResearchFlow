@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/BigApple12138/RT-ResearchFlow/releases/tag/v0.1.0-beta.5"><b>下载 v0.1.0-beta.5</b></a> ·
+  <a href="https://github.com/BigApple12138/RT-ResearchFlow/releases/tag/v0.1.0-beta.6"><b>下载 v0.1.0-beta.6</b></a> ·
   <a href="#它解决什么问题">解决什么问题</a> ·
   <a href="#工作台一览">工作台</a> ·
   <a href="#ai-研判与-agent-工作台">AI 与 Agent</a> ·
@@ -44,24 +44,24 @@ RT-ResearchFlow 面向希望建立**自己**研究体系的 A 股个人投资者
 
 ## 下载与安装
 
-**当前公开测试版：** [v0.1.0-beta.5](https://github.com/BigApple12138/RT-ResearchFlow/releases/tag/v0.1.0-beta.5)（Windows 10/11 x64）
+**当前公开测试版：** [v0.1.0-beta.6](https://github.com/BigApple12138/RT-ResearchFlow/releases/tag/v0.1.0-beta.6)（Windows 10/11 x64）
 
 | 文件 | 说明 |
 |---|---|
-| `RT-ResearchFlow-Setup-0.1.0-beta.5-x64.exe` | 安装包 |
+| `RT-ResearchFlow-Setup-0.1.0-beta.6-x64.exe` | 安装包 |
 | `SHA256SUMS.txt` | 完整性校验 |
 
 ```powershell
-Get-FileHash .\RT-ResearchFlow-Setup-0.1.0-beta.5-x64.exe -Algorithm SHA256
+Get-FileHash .\RT-ResearchFlow-Setup-0.1.0-beta.6-x64.exe -Algorithm SHA256
 ```
 
 输出应与 Release 页 `SHA256SUMS.txt` 一致。安装包尚未商业代码签名，SmartScreen 提示属预期；请只从本仓库 Releases 下载。
 
 - **安装：** 支持当前用户安装与自选目录；数据默认保存在安装目录下的 `data`。
-- **升级：** 自 beta.1–beta.3 升级会保留 `data` 并自动执行向前 Migration。
+- **升级：** 自 beta.1–beta.5 升级会保留 `data` 并自动执行向前 Migration。
 - **卸载：** 默认询问是否删除本地数据，默认选项为保留。
 
-完整版本说明见 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md)。
+完整版本说明见 [`docs/releases/v0.1.0-beta.6.md`](docs/releases/v0.1.0-beta.6.md)。
 
 ---
 
@@ -109,7 +109,7 @@ flowchart LR
 
 ---
 
-## 本 fork 相对上游的增量（beta.5）
+## 本 fork 相对上游的增量（beta.6）
 
 在合入 upstream 零 Key 公共日线、板块历史、云图抛光等能力之外，本仓库额外包含：
 
@@ -117,10 +117,11 @@ flowchart LR
 |---|---|
 | **Agent Context Engine** | 讨论自动/手动压缩、研究笔记 flush、检查点列表与恢复 |
 | **Agent 工作台（Agent Hub）** | Planner–Executor 回合、本地只读 Tool、HITL 写闸门、外部 MCP 投影 |
-| **Cursor 式 AI 会话面** | 可折叠侧栏、Agent 正文流式、深度研究时间线块 |
+| **Cursor 式 AI 会话面** | 可折叠侧栏、Agent 正文流式、深度研究时间线块；`followUp` 可停止生成 |
 | **趋势 AI 锚定偏差分** | 本地结构复核与 AI 第二意见并排；EOD 事实绑定，不随盘中刷新误作废 |
 | **自定义数据目录（FR-265）** | 引导文件 + 智能迁移，窄 IPC，env 锁定只读 |
 | **指数分时专业版** | 预设指数蜡烛 + VWAP，带后缀缓存键 |
+| **策略实验室日线 DSL** | 内置模板、两阶段扫描、参数编辑器（打开/保存止损） |
 | **工程门禁** | SDD 归档、合入 `develop`/`main` 的 PR 须先 Review |
 
 ---
@@ -181,7 +182,7 @@ flowchart LR
 
 ## 产品预览
 
-主图与下列 `<details>` 中的扩展图均来自 `docs/screenshots/`，与 **beta.5** 当前 UI 对齐。可用文末脚本一键全量重拍（内置 E2E 演示种子，无需手工造数）。
+主图与下列 `<details>` 中的扩展图均来自 `docs/screenshots/`，与 **beta.6** 当前 UI 对齐。可用文末脚本一键全量重拍（内置 E2E 演示种子，无需手工造数）。
 
 ### 今日看板
 
@@ -458,12 +459,13 @@ pnpm run test:e2e -- tests/e2e/user-journey.spec.ts
 
 ## 已知限制
 
-与 [`docs/releases/v0.1.0-beta.5.md`](docs/releases/v0.1.0-beta.5.md) 的「已知限制」保持一致，并含缺口闭环书面结案回填：
+与 [`docs/releases/v0.1.0-beta.6.md`](docs/releases/v0.1.0-beta.6.md) 的「已知限制」保持一致：
 
 - 本次只提供 Windows x64 安装包；macOS 发布验收与商业代码签名在本程序**书面结案不做**（见 [`docs/superpowers/specs/2026-08-30-release-macos-codesign-wontfix-design.md`](docs/superpowers/specs/2026-08-30-release-macos-codesign-wontfix-design.md)）。
-- 策略实验室「通用日线 DSL / 两阶段组合」已在缺口闭环 Wave 6 落地（内置模板可跑；规则编辑器仍以分钟积木为主，日线以 profile/快照为准）。
 - 云端分钟数据服务（`minuteData:saveCloudConfig`）**书面结案不做**，保持 `NOT_IMPLEMENTED`（见 [`docs/superpowers/specs/2026-08-30-cloud-minute-save-config-wontfix-design.md`](docs/superpowers/specs/2026-08-30-cloud-minute-save-config-wontfix-design.md)）；待后端契约后再开 SDD。
-- 竞价价史 snapshot IPC 冷启动已做本地首包+远端后台（C1）；极端大批量仍可能有可感延迟。
+- 竞价价史在极端大批量候选下仍可能有可感延迟。
+- **Agent Hub 主路径（`ai:agentTurn`）流式期间尚无统一「停止」按钮**；`followUp` 路径已支持停止。
+- 策略实验室日线 DSL 首版以参数编辑与内置模板为主，不做拖拽式图形编排。
 - 应用不执行下单、自动交易、仓位控制或收益预测。
 
 以上以当前版本 Release 说明为准，后续版本如有变化以对应 [`docs/releases/`](docs/releases/) 文档为准。
@@ -474,9 +476,10 @@ pnpm run test:e2e -- tests/e2e/user-journey.spec.ts
 
 以下为方向性计划，**不承诺交付时间**：
 
-- 策略实验室「通用日线 DSL / 两阶段组合」落地（缺口闭环 Track F 已交付内置模板）。
+- Agent 主路径停止生成（与 `followUp` 停止对齐）。
 - 云端分钟配置：依赖经批准的后端契约后另开 SDD（G1 已书面结案）。
 - 竞价价史极端规模下的进一步性能优化。
+- 策略实验室日线 DSL 条件增删 / 图形编排（backlog）。
 - 安装包商业代码签名 / macOS 发布验收：另开发布工程 SDD。
 - 其余方向以 Discussions Ideas 中用户反馈为准；以上条目也适合作为 `good first issue` / `help wanted` 的出处，欢迎认领。
 
